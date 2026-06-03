@@ -86,7 +86,7 @@ mod tests {
     }
 
     #[test]
-    fn gradient_y_brighter_at_top_when_configured() {
+    fn light_gradient_top_brighter_than_bottom() {
         let field = light_field_with_mode(LightMode::GradientY);
         let config = SimConfig::load_default().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
@@ -100,6 +100,32 @@ mod tests {
         );
         assert_eq!(field.sample(top), config.environment.gradient_max);
         assert_eq!(field.sample(bottom), config.environment.gradient_min);
+    }
+
+    #[test]
+    fn light_gradient_y_corners_match_vertical_extremes() {
+        let field = light_field_with_mode(LightMode::GradientY);
+        let config = SimConfig::load_default().unwrap();
+        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+        let hx = bounds.half_x;
+        let hy = bounds.half_y;
+        let top_center = Vec2::new(0.0, hy);
+        let top_left = Vec2::new(-hx, hy);
+        let top_right = Vec2::new(hx, hy);
+        let bottom_center = Vec2::new(0.0, -hy);
+        let bottom_left = Vec2::new(-hx, -hy);
+        let bottom_right = Vec2::new(hx, -hy);
+
+        assert_eq!(field.sample(top_left), field.sample(top_center));
+        assert_eq!(field.sample(top_right), field.sample(top_center));
+        assert_eq!(field.sample(bottom_left), field.sample(bottom_center));
+        assert_eq!(field.sample(bottom_right), field.sample(bottom_center));
+        assert!(
+            field.sample(top_left) > field.sample(bottom_left),
+            "bright corners should exceed shaded corners"
+        );
+        assert_eq!(field.sample(top_center), config.environment.gradient_max);
+        assert_eq!(field.sample(bottom_center), config.environment.gradient_min);
     }
 
     #[test]

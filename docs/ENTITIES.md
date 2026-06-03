@@ -17,7 +17,7 @@ Logical components for implementation (names may map 1:1 to Bevy components):
 | `Agent` | `radius` (from phenotype), collision flags | Physics and rendering hull |
 | `Lineage` | `id`, `parent_id`, `generation` | Optional tracking and metrics |
 | `Cooldowns` | `repro_ticks_remaining` | Reproduction timer |
-| `Age` | `ticks: u32` | Sim age since spawn; compared to decoded `max_age_ticks` (Phase 3) |
+| `Age` | `ticks: u32` | Sim age since spawn; drives logarithmic age metabolism |
 
 ### Phase availability
 
@@ -25,8 +25,8 @@ Logical components for implementation (names may map 1:1 to Bevy components):
 |-----------|---------------|----------|
 | Genome, Phenotype, Energy, Health | — | Core |
 | Lineage, Cooldowns | — | Phase 1 |
-| Age | — | Phase 3 |
-| part_hp | — | Phase 4+ (morphology) |
+| Age | — | Phase 3 (**implemented**) |
+| part_hp | — | Phase 4: always `[]` at spawn (core-only damage); Phase 7: one entry per morphology node |
 
 ## Lifecycle
 
@@ -47,7 +47,7 @@ stateDiagram-v2
 
 1. Obtain genome (ancestor template, random viable, or mutated child).
 2. Validate header / version; on failure → stillborn (no entity).
-3. Decode → `Phenotype`; build `Health` (full core HP; part HP from morphology).
+3. Decode → `Phenotype`; build `Health` (full core HP; `part_hp: []` until Phase 7 morphology).
 4. Set `internal_energy` from config spawn energy or `offspring_endowment`.
 5. Assign `Transform` / `Velocity` (random or offset from parent).
 6. Spawn visual representation from `color_*` and `body_radius`.
@@ -59,8 +59,8 @@ Order follows [SIMULATION.md](SIMULATION.md):
 1. Sample environment at position.
 2. Apply energy gains (photosynthesis / chemo / soup per phase).
 3. Subtract upkeeps and metabolism.
-4. Movement if `internal_energy` covers `move_cost`; apply moving metabolism.
-5. Resolve damage to parts / core.
+4. Movement if `internal_energy` covers speed-scaled movement cost (`movement_energy_per_tick`); optional moving metabolism when `k_move_meta > 0`.
+5. Resolve damage to parts / core (Phase 4: core only when `part_hp` empty).
 6. Repair if policy allows and energy available.
 7. Decrement repro cooldown.
 
@@ -73,17 +73,19 @@ Order follows [SIMULATION.md](SIMULATION.md):
 
 **Steps:**
 
-1. Pay `repro_cost` from parent energy.
-2. Compute `p_death` from [GENOME.md](GENOME.md) repro risk formula; roll RNG → parent dies on failure.
+1. Pay `repro_threshold` energy from parent; parent core HP unchanged ([GENOME.md](GENOME.md) energy→HP transfer).
+2. Roll `p_death` and `p_damage` from [GENOME.md](GENOME.md) (scaled by `repro_risk_factor`).
 3. On success: clone genome, apply `mutations_per_offspring`, decode child.
-4. Transfer `offspring_endowment` to child `internal_energy` (deduct from parent).
-5. Spawn child near parent; set `Lineage.parent_id`, increment `generation`.
+4. Child spawns with `internal_energy = 0` and `core_hp` from converted energy (`offspring_endowment` cap).
+5. Place child near parent; set `Lineage.parent_id`, increment `generation`.
 6. Reset parent cooldown from `phenotype.repro_cooldown`.
 
-**Failure modes (configurable):**
+**Failure modes:**
 
-- `failed_spawn` — energy lost, no child
-- `partial_damage` — parent survives, core or random part loses HP
+- Lethal HP cost — parent dies before rolls if vitality payment empties core HP
+- `p_death` — parent dies, no child
+- Stillborn — rolls passed but child genome invalid (parent survives, transfer already paid)
+- `p_damage` — parent survives but loses a fraction of `core_max_hp`
 
 Short cooldown increases reproduction attempts but amplifies risk when energy is chronically low.
 
@@ -93,11 +95,13 @@ Despawn when any of:
 
 | Condition | Phase |
 |-----------|-------|
-| `internal_energy <= 0` | 1+ |
-| `core_hp <= 0` | 1+ |
+| `core_hp <= 0` | 1+ (includes starvation: metabolic deficit at `internal_energy == 0`) |
 | Repro risk roll kills parent | 1+ |
-| `age_ticks >= phenotype.max_age_ticks` | 3+ (heritable locus; see [PHASE_3.md](PHASE_3.md)) |
 | Performance failsafe cull | emergency only |
+
+Old-age despawn was removed; aging adds logarithmic metabolism instead ([GENOME.md](GENOME.md)).
+
+`internal_energy == 0` is **not** fatal. Unpaid metabolic deficit (costs minus photosynthetic gain) drains `core_hp` each tick until the agent dies as `CoreDestroyed`.
 
 **Phase 0 note:** collision overlap currently despawns both entities. This is **removed** in Phase 1 default config; collisions become damage (Phase 4) or ignored.
 
@@ -109,6 +113,15 @@ Despawn when any of:
 | Entity–entity collision | 4+ | Damage from relative speed; no instant despawn |
 | Hazard zones | 4+ | Damage per tick; hardness mitigates |
 | Predation / absorption | future | Optional; out of v1 scope |
+
+### Damage routing (Phase 4 vs 7)
+
+| `part_hp` | Phase | Incoming damage |
+|-----------|-------|-----------------|
+| Empty (`[]`) | 4 (now) | All hazard and collision damage subtracts from `core_hp` via `Health::apply_damage_to_core` |
+| Non-empty | 7+ | Route to appendages by exposure; overflow to core |
+
+Repair (Phase 4D) may restore `core_hp` and any manually populated `part_hp` slots per `repair_policy`; interaction damage remains core-only until Phase 7.
 
 ## Performance failsafe (not ecology)
 

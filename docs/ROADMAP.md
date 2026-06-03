@@ -2,7 +2,7 @@
 
 Phased implementation plan from the current proof of concept through sexual reproduction. Each phase lists scope, acceptance criteria, and explicit **out of scope** items to prevent creep.
 
-**Current state:** Phase 1 complete ([`src/main.rs`](../src/main.rs), [PHASE_1.md](PHASE_1.md)).
+**Current state:** Phase 3 complete ([`src/main.rs`](../src/main.rs), [PHASE_1.md](PHASE_1.md), [PHASE_2.md](PHASE_2.md), [PHASE_3.md](PHASE_3.md)).
 
 ## Overview
 
@@ -10,13 +10,14 @@ Phased implementation plan from the current proof of concept through sexual repr
 |-------|--------|--------|
 | 0 | Movement PoC | Done |
 | 1 | Genome, energy, health, risky repro | Done |
-| 2 | Light + photosynthesis (local energy) | Planned |
-| 3 | Headless, metrics, evolvable lifespan | Planned |
-| 4 | Hazards, per-part damage, skin | Planned |
+| 2 | Light + photosynthesis (local energy) | Done |
+| 3 | Headless, metrics, evolvable lifespan | Done |
+| 4 | Hazards, damage, skin, green photosynthesis | Planned |
 | 5 | Sensors, vents, chemo threshold | Planned |
 | 6 | Soup, spatial energy | Planned |
 | 7 | Appendage tree + rendering | Planned |
 | 8 | Sexual reproduction | Optional |
+| 9 | Seasons and climate cycles | Planned |
 
 ---
 
@@ -65,31 +66,32 @@ Phased implementation plan from the current proof of concept through sexual repr
 
 ---
 
-## Phase 2 — Light and photosynthesis
+## Phase 2 — Light and photosynthesis (done)
 
 **Detailed plan:** [PHASE_2.md](PHASE_2.md) (checklist, sub-phases 2A–2L, crowding/overlap decision).
 
 **Scope**
 
-- `energy_model = "local"`.
-- Light field: `uniform` and `gradient_y`.
-- Photosynthetic gain from `photo_strength * light(pos) * solar_constant`.
-- `photo_upkeep` and metabolism applied each tick.
-- Locomotion (`max_speed` / `move_cost`) — **implemented in Phase 1**; Phase 2 verifies only.
+- `energy_model = "local"` (default); `legacy_flat` for Phase 1 regression tests.
+- Light field: `uniform` and `gradient_y` via `LightField` + `sense_exposure`.
+- Photosynthetic gain: `photo_strength * light(pos) * solar_constant`.
+- `photo_upkeep` and metabolism each tick; optional `crowding_blocks_photosynthesis` (default off).
+- Locomotion (`max_speed` / `move_cost`) — implemented in Phase 1; verified in Phase 2G.
+- Visual debug: light gradient overlay, selected-agent energy bar.
 
-**Acceptance**
+**Acceptance** (see `cargo test` — `sim::acceptance::`, `sim::light::`, `sim::systems::metabolism::`)
 
-- High-photo strains grow in bright regions but lose net energy in shade when upkeep exceeds gain.
-- Low-photo, low-metabolism strains persist in shade (niche viability).
-- Population does not grow unbounded without failsafe under default config tuning.
+- High-photo strains gain net energy in bright bands; lose net energy in shade when upkeep exceeds gain.
+- Low-photo, low-metabolism strains outlast high-photo strains in shade.
+- Default `gradient_y` config: population survives 5k–10k ticks headless without unbounded growth past failsafe slack.
 
 **Out of scope**
 
-- Global pool (B), spatial shading (C), vents, sensors, part HP.
+- Global pool (B), spatial shading (C), `light_mode = "map"`, vents, sensors, part HP.
 
 ---
 
-## Phase 3 — Headless CLI, metrics, and evolvable lifespan
+## Phase 3 — Headless CLI, metrics, and evolvable lifespan (done)
 
 **Detailed plan:** [PHASE_3.md](PHASE_3.md) (checklist, sub-phases 3A–3F, lifespan design).
 
@@ -113,10 +115,13 @@ Phased implementation plan from the current proof of concept through sexual repr
 
 - Hazards, morphology, pool energy model.
 - Config-only max age without a heritable locus (unless added later as a hard ceiling).
+- Color-mediated photosynthesis tradeoff (lands in Phase 4).
 
 ---
 
-## Phase 4 — Hazards, armor, per-part health
+## Phase 4 — Hazards, armor, per-part health, green photosynthesis
+
+**Detailed plan:** [PHASE_4.md](PHASE_4.md) (checklist, sub-phases 4A–4G, hazard/collision/repair and green-niche design).
 
 **Scope**
 
@@ -125,15 +130,20 @@ Phased implementation plan from the current proof of concept through sexual repr
 - `part_hp` when morphology absent: core only; prepare vector for Phase 7.
 - Collision damage (replaces despawn); relative speed formula.
 - Repair policies consuming energy.
+- **Green photosynthesis niche:** greenness from `color_r` / `color_g` / `color_b`; photosynthesis buff on local gain; smaller metabolism penalty on the same axis; config tuning (`[genetics.color_photosynthesis]` or decode ranges); color loci become **Tradeoff** in [GENOME.md](GENOME.md).
 
 **Acceptance**
 
 - High-hardness entities survive hazard longer at equal energy but grow slower in safe zones (upkeep + move penalty).
 - Repair drains energy measurably in metrics.
+- Headless A/B: high-G / low-RB ancestor gains more net energy in bright `gradient_y` than an otherwise-identical low-G control; pays measurably higher metabolism per tick.
+- Unit test: metabolism penalty from greenness is strictly less than photosynthesis buff at the same greenness (reference light level documented in [PHASE_4.md](PHASE_4.md#47--green-photosynthesis-niche-canonical)).
+- Metrics: `color_bins` and mean energy diverge when greenness differs across seeded 5k-tick runs.
 
 **Out of scope**
 
 - Vents, soup, appendage rendering, sexual repro.
+- Full spectral light model, chlorophyll chemistry, or per-channel mutation operators beyond existing color loci.
 
 ---
 
@@ -154,7 +164,7 @@ Phased implementation plan from the current proof of concept through sexual repr
 
 **Out of scope**
 
-- Full appendage tree rendering, soup fields, pool energy.
+- Full appendage tree rendering, soup fields, pool energy, **seasons** (Phase 9).
 
 ---
 
@@ -173,7 +183,7 @@ Phased implementation plan from the current proof of concept through sexual repr
 
 **Out of scope**
 
-- Full procedural appendages, sexual repro.
+- Full procedural appendages, sexual repro, **seasonal cycles** (Phase 9).
 
 ---
 
@@ -215,6 +225,43 @@ Phased implementation plan from the current proof of concept through sexual repr
 
 ---
 
+## Phase 9 — Seasons and climate cycles
+
+**Detailed plan:** [PHASE_9.md](PHASE_9.md) (checklist, sub-phases 9A–9E, seasonal modulation design).
+
+**Prerequisite:** Phases 2–6 (light, hazards, vents, soup) so seasons have environmental knobs to drive. Phase 3 lifespan and Phase 4 green photosynthesis provide selection pressure targets.
+
+**Scope**
+
+- Cyclic **season clock** from sim tick: `season_index`, `phase ∈ [0, 1)` within current season, optional year counter.
+- **`environment_tick` implementation** — advance season state once per sim tick (currently no-op; pool recharge in Phase 6 shares this hook).
+- **Modulated parameters** (configurable per season or interpolated): `solar_constant`, light field scale (`gradient_min` / `gradient_max`), hazard `damage_per_tick`, vent `vent_flux`, soup regen rates.
+- **Waveforms:** piecewise-constant seasons (spring/summer/fall/winter table) or smooth sine/cosine blend between season keyframes.
+- **Metrics:** `season_index`, `season_phase`, optional per-season population / energy aggregates in JSONL.
+- **Visual (optional):** tint or overlay indicating current season; no gameplay in render layer.
+
+**Design intent**
+
+- No single genotype dominates all year — bright-season photo specialists, winter low-metabolism survivors, vent/soup opportunists during “lean” seasons.
+- Lifespan and repro cooldown interact with cycle length (configurable `ticks_per_season` vs `max_age_ticks`).
+- Same seed + config ⇒ identical season phase at each metrics sample (determinism preserved).
+
+**Acceptance**
+
+- Headless A/B: config with strong summer/winter solar swing → mean population energy correlates with season phase over 2+ full cycles.
+- Low-photo, low-metabolism lineage outlasts high-photo lineage through a configured “winter” stretch at equal starting energy (harness test).
+- Metrics lines include `season_index` / `season_phase`; values repeat with period `seasons.len() * ticks_per_season`.
+- Default seasons **off** (`[[environment.seasons]]` empty or `seasons_enabled = false`) — Phase 2–8 behavior unchanged.
+
+**Out of scope**
+
+- Latitude, axial tilt physics, weather RNG (storms as separate feature).
+- Heritable “hibernation” or diapause loci (defer unless reserved bytes available).
+- Multi-decade climate *change* (non-cyclic drift) — future follow-up.
+- Calendar UI, named holidays, player-triggered season skip.
+
+---
+
 ## Documentation maintenance
 
 When implementation diverges from docs, update the relevant `docs/*.md` in the same PR as the code change. Genome version bumps require a new `GenomeVersion` section in [GENOME.md](GENOME.md).
@@ -222,7 +269,9 @@ When implementation diverges from docs, update the relevant `docs/*.md` in the s
 ## Further reading
 
 - [PHASE_1.md](PHASE_1.md) — Phase 1 implementation checklist and sub-phases
-- [PHASE_2.md](PHASE_2.md) — Phase 2 light field, Model A gain, overlap/crowding decision
+- [PHASE_2.md](PHASE_2.md) — Phase 2 light field, Model A gain (complete)
 - [PHASE_3.md](PHASE_3.md) — Phase 3 headless CLI, metrics, evolvable lifespan / old-age death
+- [PHASE_4.md](PHASE_4.md) — Phase 4 hazards, collision damage, armor, repair, green photosynthesis niche
+- [PHASE_9.md](PHASE_9.md) — Phase 9 seasons, climate cycles, environment_tick modulation
 - [VISION.md](VISION.md) — Project goals
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Module targets per phase

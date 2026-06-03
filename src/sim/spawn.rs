@@ -7,7 +7,7 @@ use crate::config::{SimConfig, WorldConfig};
 use super::agent_material::AgentColorMaterial;
 use crate::genome::{decode, Genome as GenomeData, Phenotype as PhenotypeData};
 
-use super::components::{LifeBundle, LightExposure, Velocity};
+use super::components::{HazardExposure, LifeBundle, LightExposure, Velocity};
 use super::world::{NextEntityId, SimRng, WorldBounds};
 
 /// Agent mesh Z (draw order comes from [`AgentColorMaterial::depth_bias`](super::agent_material::AgentColorMaterial)).
@@ -60,6 +60,7 @@ pub fn build_spawn_params(
         parent_id,
         generation,
         config.economy.spawn_energy,
+        config.economy.core_max_hp,
     )
 }
 
@@ -72,10 +73,11 @@ pub fn build_offspring_spawn_params(
     parent_id: Option<u64>,
     generation: u32,
     initial_energy: f32,
+    initial_core_hp: f32,
 ) -> SpawnParams {
     let color = phenotype_to_color(&phenotype);
     let body_radius = phenotype.body_radius;
-    let life = LifeBundle::from_parts_with_energy(
+    let life = LifeBundle::from_parts_with_vitals(
         genome,
         phenotype,
         config,
@@ -83,6 +85,7 @@ pub fn build_offspring_spawn_params(
         parent_id,
         generation,
         initial_energy,
+        initial_core_hp,
     );
 
     SpawnParams {
@@ -199,6 +202,7 @@ pub fn spawn_agent_entity(
             params.life,
             Velocity(params.velocity),
             LightExposure(0.0),
+            HazardExposure::default(),
             Mesh2d(meshes.add(Circle::new(params.body_radius))),
             MeshMaterial2d(materials.add(AgentColorMaterial::new(params.color, lineage_id))),
             Transform::from_translation(params.position.extend(AGENT_MESH_Z)),
@@ -299,6 +303,24 @@ mod tests {
         let mut bad = Genome::ancestor_from_config(&config).unwrap();
         bad.bytes[0] = b'X';
         assert!(try_prepare_spawn(bad, &config).is_none());
+    }
+
+    #[test]
+    fn offspring_spawn_has_empty_part_hp() {
+        let config = SimConfig::load_default().unwrap();
+        let genome = Genome::ancestor_from_config(&config).unwrap();
+        let (_, phenotype) = try_prepare_spawn(genome.clone(), &config).unwrap();
+        let params = build_offspring_spawn_params(
+            genome,
+            phenotype,
+            &config,
+            2,
+            Some(1),
+            1,
+            config.economy.spawn_energy,
+            config.economy.spawn_energy,
+        );
+        assert!(params.life.health.part_hp.is_empty());
     }
 
     #[test]

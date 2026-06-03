@@ -73,7 +73,7 @@ The repo currently contains **Phase 0**: a Bevy 2D proof of concept ([`src/main.
 
 - [SIMULATION.md](SIMULATION.md) — Time model, config, headless vs visual, system order
 - [GENOME.md](GENOME.md) — Encoding, loci, mutations, morphology
-- [ENERGY_AND_ENVIRONMENT.md](ENERGY_AND_ENVIRONMENT.md) — Energy models, light, hazards, soup
+- [ENERGY_AND_ENVIRONMENT.md](ENERGY_AND_ENVIRONMENT.md) — Energy models, light, hazards, soup, seasons
 - [ENTITIES.md](ENTITIES.md) — Components and lifecycle
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Code layout and data flow
 - [ROADMAP.md](ROADMAP.md) — Phased implementation plan

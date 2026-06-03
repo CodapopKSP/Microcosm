@@ -120,7 +120,7 @@ app.add_systems(Update, (
     healing,
     reproduction,
     advance_age,
-    death_despawn,
+    death_and_despawn,
     performance_failsafe,
     metrics_sample,
 ).chain());
@@ -158,38 +158,39 @@ Built at end of tick (or before render) from queries; `Vec<EntitySnapshot>` in r
 
 ## Metrics (headless)
 
-Written every `snapshot_interval` ticks to `metrics_path` (JSON array or JSONL lines).
+Written every `snapshot_interval` ticks to `metrics_path` as **JSONL** (one JSON object per line). Full schema: [PHASE_3.md — JSONL schema](PHASE_3.md#jsonl-schema-frozen-for-phase-3).
 
-### Per-snapshot fields
+### Per-snapshot fields (summary)
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `tick` | u64 | Current tick |
-| `population` | usize | Living entities |
+| `population` | u32 | Living entities |
 | `births`, `deaths` | u32 | Since last snapshot |
-| `mean_energy`, `median_energy` | f32 | Population stats |
+| `deaths_energy_depleted`, `deaths_core_destroyed`, `deaths_repro_fatality`, `deaths_age_exceeded` | u32 | Death sub-counts (sum to `deaths`) |
+| `mean_energy`, `median_energy` | f32 | Population stats (4 decimal places in file) |
 | `mean_photo_strength` | f32 | From phenotypes |
 | `mean_max_age_ticks`, `min_max_age_ticks`, `max_max_age_ticks` | f32 | Decoded lifespan spread (Phase 3) |
-| `deaths_age_exceeded` | u32 | Old-age deaths since last snapshot (Phase 3) |
+| `color_bins`, `radius_bins` | object | Coarse diversity histograms |
 | `genotype_hash_histogram` | object | Optional coarse diversity proxy |
 
 ### Example JSONL line
 
 ```json
-{"tick":3600,"population":142,"births":8,"deaths":5,"mean_energy":24.5,"median_energy":21.0}
+{"tick":3600,"population":142,"births":8,"deaths":5,"deaths_energy_depleted":2,"deaths_core_destroyed":0,"deaths_repro_fatality":2,"deaths_age_exceeded":1,"mean_energy":24.5,"median_energy":21.0,"mean_photo_strength":0.42,"mean_max_age_ticks":41000.0,"min_max_age_ticks":2000.0,"max_max_age_ticks":80000.0,"color_bins":{"136,204,68":40},"radius_bins":{"12":142}}
 ```
 
-## CLI (target)
+## CLI (implemented — Phase 3)
 
 ```text
 evolution_sim [--config PATH] [--headless] [--seed U64]
 
 --config   Path to TOML (default: configs/default.toml)
---headless Run without window; use run.max_ticks
---seed     Override master_seed in config
+--headless Run without window; use run.max_ticks (must be > 0)
+--seed     Override master_seed in config after load
 ```
 
-Until implemented, `cargo run` continues to launch Phase 0 PoC.
+Visual: `cargo run -- --config configs/default.toml`. Headless: add `--headless`. Shared bootstrap: [`sim/app.rs`](../src/sim/app.rs) `build_sim_app` + `run_headless_bevy` (tests).
 
 ## Testing strategy (documentation only)
 
@@ -202,15 +203,14 @@ Until implemented, `cargo run` continues to launch Phase 0 PoC.
 
 ## Dependencies
 
-Current [`Cargo.toml`](../Cargo.toml): `bevy 0.15`, `rand 0.8`.
+Current [`Cargo.toml`](../Cargo.toml): `bevy 0.15`, `rand 0.8`, `serde`, `toml`.
 
-Planned additions for Phase 1+:
+Phase 3 additions:
 
 | Crate | Purpose |
 |-------|---------|
-| `serde`, `toml` | Config load |
-| `clap` | CLI |
-| optional `serde_json` | Metrics export |
+| `clap` | CLI (`--headless`, `--config`, `--seed`) |
+| `serde_json` | Metrics JSONL export |
 
 ## Further reading
 

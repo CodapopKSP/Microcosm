@@ -18,10 +18,10 @@ Use this list for PR tracking. Sub-phases below expand each item.
 - [x] **2F** — **Retire binary overlap blocking** as default (see [Crowding and overlap](#crowding-and-overlap-interim-vs-target))
 - [x] **2G** — Locomotion tradeoffs: verify `max_speed` / `move_cost` (already in Phase 1; acceptance only)
 - [x] **2H** — Optional visual debug: light sample or energy bar overlay
-- [ ] **2I** — Unit tests: light at corners, gain formula, shade vs bright net energy
-- [ ] **2J** — Headless acceptance: niche viability (high-photo bright, low-photo shade)
-- [ ] **2K** — Default `configs/default.toml` tuning; document migration from `flat_energy_grant_per_tick`
-- [ ] **2L** — Phase acceptance + update [ROADMAP.md](ROADMAP.md) row to **Done**
+- [x] **2I** — Unit tests: light at corners, gain formula, shade vs bright net energy
+- [x] **2J** — Headless acceptance: niche viability (high-photo bright, low-photo shade)
+- [x] **2K** — Default `configs/default.toml` tuning; document migration from `flat_energy_grant_per_tick`
+- [x] **2L** — Phase acceptance + update [ROADMAP.md](ROADMAP.md) row to **Done**
 
 ---
 
@@ -49,16 +49,17 @@ Use this list for PR tracking. Sub-phases below expand each item.
 
 ---
 
-## Current codebase (pre–Phase 2 completion)
+## Current codebase (Phase 2 complete)
 
 | Area | State |
 |------|--------|
-| Photosynthetic **gain** | Still `flat_energy_grant_per_tick` in [`metabolism.rs`](../src/sim/systems/metabolism.rs) |
-| `photo_strength` | Drives `photo_upkeep` only in gain formula; locus ready for Phase 2 multiplier |
-| **Overlap crowding** | **Impromptu:** any circle–circle overlap sets photosynthetic gain to **0** that tick for **both** entities (costs still apply) |
-| Locomotion | **Done in Phase 1:** `max_speed` locus, `locomotion_investment` → `move_cost`, moving metabolism in [`movement.rs`](../src/sim/systems/movement.rs) |
-| Light / environment resources | Not implemented in [`world.rs`](../src/sim/world.rs) |
-| Tick pipeline | `metabolism_and_gains` → `behavior_movement` → `reproduction` → `death` → `failsafe` ([`systems/mod.rs`](../src/sim/systems/mod.rs)) |
+| Photosynthetic **gain** | Model A in [`metabolism.rs`](../src/sim/systems/metabolism.rs): `photo_strength * light * solar_constant`; `legacy_flat` uses `flat_energy_grant_per_tick` for regression |
+| `LightField` | [`light.rs`](../src/sim/light.rs): `uniform`, `gradient_y`; sampled in [`sense_exposure`](../src/sim/systems/sense.rs) |
+| **Overlap crowding** | Off by default; gated by `crowding_blocks_photosynthesis` |
+| Locomotion | Phase 1: `max_speed`, `move_cost`, moving metabolism in [`movement.rs`](../src/sim/systems/movement.rs) |
+| Tick pipeline | `sense_exposure` → `metabolism_and_gains` → `behavior_movement` → `reproduction` → `death` → `failsafe` ([`systems/mod.rs`](../src/sim/systems/mod.rs)) |
+| Visual debug | Light gradient (**L**), agent selection + energy bar ([`visual/mod.rs`](../src/visual/mod.rs)) |
+| Acceptance | `cargo test` — unit tests (2I) + [`acceptance.rs`](../src/sim/acceptance.rs) (2J) |
 
 ---
 
@@ -345,6 +346,13 @@ With `gradient_y`, expect vertical clustering of high-photo lineages over many s
 | [SIMULATION.md](SIMULATION.md) | Mark `[environment]` keys as implemented |
 | [ENERGY_AND_ENVIRONMENT.md](ENERGY_AND_ENVIRONMENT.md) | Cross-link Phase 2; note overlap experiment flag if kept |
 
+### Acceptance (2K)
+
+- [x] `configs/default.toml` uses `energy_model = "local"`, `flat_energy_grant_per_tick = 0.0`
+- [x] README migration table and visual debug keys documented
+- [x] [SIMULATION.md](SIMULATION.md) `[environment]` table marks implemented keys
+- [x] [ENERGY_AND_ENVIRONMENT.md](ENERGY_AND_ENVIRONMENT.md) Phase 2 status and `crowding_blocks_photosynthesis` noted
+
 ---
 
 ## Code migration map (Phase 1 → Phase 2)
@@ -394,6 +402,8 @@ Phase 2 is **complete** when:
 4. Default config uses `energy_model = "local"` and position-based gain, not flat grant.
 5. Binary overlap photosynthesis blocking is **not** enabled in default config (optional flag documented if retained).
 6. Any intentional deviation from [ENERGY_AND_ENVIRONMENT.md](ENERGY_AND_ENVIRONMENT.md) is noted in that doc in the same PR.
+
+**Status:** Complete (2026). Verify with `cargo test`.
 
 ---
 

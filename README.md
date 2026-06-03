@@ -2,7 +2,7 @@
 
 Evolution Sim is a 2D evolution sandbox built on [Bevy](https://bevyengine.org/). Entities have DNA, metabolize energy, move, reproduce with mutation, and are shaped by an environment with light, hazards, and (later) vents and resource fields.
 
-The current codebase implements **Phase 1**: heritable genomes, energy metabolism, risky asexual reproduction, and config-driven tuning. Phase 0 collision-despawn is removed; agents die from energy depletion, core HP, or reproduction risk only.
+The current codebase implements **Phase 1** (genetics, metabolism, risky asexual reproduction), **Phase 2** (position-dependent photosynthesis, light field, spatial niches via `gradient_y`), and **Phase 3** (headless CLI, JSONL metrics, evolvable lifespan with `age_upkeep`). Phase 0 collision-despawn is removed; agents die from energy depletion, core HP, reproduction risk, or old age.
 
 ## Requirements
 
@@ -17,31 +17,64 @@ This PoC uses a slim Bevy feature set (no audio) so it builds without ALSA if yo
 
 ```bash
 cargo run
+# or explicitly:
+cargo run -- --config configs/default.toml
 ```
 
-Loads `configs/default.toml` from the project directory (override with an optional path: `cargo run -- configs/default.toml`).
+Loads `configs/default.toml` from the project directory unless `--config` points elsewhere.
 
 The first compile can take several minutes while Bevy builds. The window size, population count, and speeds come from the config file. Startup prints whether `master_seed` is set (see `[run]` in the TOML).
+
+**Debug overlays (visual mode):**
+
+- **L** — toggle light-field background gradient
+- **Click** an agent — light ring + energy bar vs `repro_threshold`
+- **Esc** — clear selection
 
 ### Config
 
 - Default: [`configs/default.toml`](configs/default.toml)
 - Invalid TOML or unsupported `genetics.genome_version` exits with a readable error before the window opens.
-- Comment out `master_seed` under `[run]` for nondeterministic RNG (used in later phases).
+- Comment out `master_seed` under `[run]` for nondeterministic RNG.
 
-### Future targets (planned)
+#### Energy model (Phase 2)
 
-Once the simulation core and CLI from the docs are implemented, the intention is:
+Default uses **Model A** local irradiance:
 
-```bash
-# Visual sim with chosen config
-cargo run -- --config configs/default.toml
-
-# Headless batch run (no window), metrics to file
-cargo run -- --headless --config configs/default.toml
+```toml
+[environment]
+energy_model = "local"
+solar_constant = 2.8
+light_mode = "gradient_y"
+gradient_min = 0.15
+gradient_max = 1.0
+gradient_bright_at = "top"
+crowding_blocks_photosynthesis = false
 ```
 
-See [SIMULATION.md](docs/SIMULATION.md) for the planned CLI and tick pipeline.
+Per-tick photosynthetic gain: `photo_strength * light(pos) * solar_constant`. World influx does **not** scale with population count.
+
+**Migrating from Phase 1 flat grant:**
+
+| Phase 1 | Phase 2 default |
+|---------|-----------------|
+| `flat_energy_grant_per_tick = 0.8` (testing) | `flat_energy_grant_per_tick = 0.0` (ignored under `local`) |
+| No `[environment]` | `solar_constant` + `light_mode` tune bright/shade viability |
+| — | `energy_model = "legacy_flat"` restores flat grant for old regression configs |
+
+Tune `solar_constant`, `gradient_min` / `gradient_max`, and `k_photo` together so ancestors thrive in mid–bright light and high-photo mutants pay for shade (see [PHASE_2.md](docs/PHASE_2.md)).
+
+### Headless batch run (Phase 3)
+
+```bash
+# No window; runs until [run].max_ticks, writes JSONL to [run].metrics_path
+cargo run -- --headless --config configs/default.toml
+
+# Override master_seed after TOML load (determinism / A-B tests)
+cargo run -- --headless --config configs/default.toml --seed 99
+```
+
+Requires `max_ticks > 0` and a set `master_seed` for reproducible metrics. See [SIMULATION.md](docs/SIMULATION.md) for the tick pipeline and metrics schema.
 
 ## Documentation
 
@@ -55,7 +88,20 @@ Design and planning docs live in `docs/`:
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Crate layout and data flow
 - [docs/ROADMAP.md](docs/ROADMAP.md) — Phased implementation plan
 - [docs/PHASE_1.md](docs/PHASE_1.md) — Phase 1 checklist and acceptance criteria
+- [docs/PHASE_2.md](docs/PHASE_2.md) — Phase 2 light field and Model A gain
 
-Run acceptance tests: `cargo test acceptance population_survives`.
+### Tests
+
+```bash
+cargo test
+```
+
+Phase acceptance highlights:
+
+```bash
+cargo test acceptance::
+cargo test sim::light::
+cargo test metabolism::
+```
 
 These documents describe where the project is going; later phases may get ahead of the current implementation.

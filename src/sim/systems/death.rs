@@ -6,30 +6,40 @@
 
 use bevy::prelude::*;
 
-use super::super::components::{DeathReason, Energy, Health, PendingDeath};
+use super::super::components::{Age, DeathReason, Energy, Health, PendingDeath, Phenotype};
+use super::super::metrics::MetricsPeriodCounters;
+use crate::genome::Phenotype as PhenotypeData;
 
-/// Metabolism / movement death check (repro fatality uses [`PendingDeath`]).
-pub fn death_reason_from_vitals(energy: &Energy, health: &Health) -> Option<DeathReason> {
-    if energy.internal_energy <= 0.0 {
-        return Some(DeathReason::EnergyDepleted);
-    }
-    if health.core_hp <= 0.0 {
-        return Some(DeathReason::CoreDestroyed);
-    }
+/// Old-age hard cap removed; aging costs metabolism instead ([GENOME.md](../../../docs/GENOME.md)).
+pub fn death_reason_from_age(_age: &Age, _phenotype: &PhenotypeData) -> Option<DeathReason> {
     None
+}
+
+/// Vitals death check (repro fatality uses [`PendingDeath`]).
+///
+/// Zero energy alone is not fatal; metabolic deficit drains `core_hp` until destroyed.
+pub fn death_reason_from_vitals(_energy: &Energy, health: &Health) -> Option<DeathReason> {
+    if health.core_hp <= 0.0 {
+        Some(DeathReason::CoreDestroyed)
+    } else {
+        None
+    }
 }
 
 /// Bevy system: despawn agents that died this tick.
 pub fn death_and_despawn(
     mut commands: Commands,
-    query: Query<(Entity, &Energy, &Health, Option<&PendingDeath>)>,
+    mut counters: ResMut<MetricsPeriodCounters>,
+    query: Query<(Entity, &Age, &Phenotype, &Energy, &Health, Option<&PendingDeath>)>,
 ) {
-    for (entity, energy, health, pending) in &query {
+    for (entity, age, phenotype, energy, health, pending) in &query {
         let reason = pending
             .map(|p| p.0)
+            .or_else(|| death_reason_from_age(age, &phenotype.0))
             .or_else(|| death_reason_from_vitals(energy, health));
 
-        if reason.is_some() {
+        if let Some(reason) = reason {
+            counters.record_death(reason);
             commands.entity(entity).despawn();
         }
     }
@@ -38,10 +48,11 @@ pub fn death_and_despawn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::components::{Energy, Health};
+    use crate::config::SimConfig;
+    use crate::sim::components::{Age, Energy, Health};
 
     #[test]
-    fn energy_depleted_triggers_death() {
+    fn zero_energy_with_hp_is_not_fatal() {
         let energy = Energy {
             internal_energy: 0.0,
         };
@@ -50,10 +61,7 @@ mod tests {
             core_max_hp: 100.0,
             part_hp: vec![],
         };
-        assert_eq!(
-            death_reason_from_vitals(&energy, &health),
-            Some(DeathReason::EnergyDepleted)
-        );
+        assert_eq!(death_reason_from_vitals(&energy, &health), None);
     }
 
     #[test]
@@ -97,7 +105,7 @@ mod tests {
     #[test]
     fn no_collision_or_tick_despawn_outside_death_system() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        for file in ["movement.rs", "metabolism.rs", "reproduction.rs"] {
+        for file in ["movement.rs", "metabolism.rs", "reproduction.rs", "interactions.rs"] {
             let path = root.join("src/sim/systems").join(file);
             let src = production_src_without_tests(path.to_str().unwrap());
             assert!(
@@ -108,7 +116,18 @@ mod tests {
     }
 
     #[test]
-    fn negative_energy_counts_as_depleted() {
+    fn age_no_longer_triggers_death() {
+        let config = SimConfig::load_default().unwrap();
+        let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
+        let phenotype = crate::genome::decode(&genome, &config).unwrap();
+        let old = Age {
+            ticks: 1_000_000,
+        };
+        assert_eq!(death_reason_from_age(&old, &phenotype), None);
+    }
+
+    #[test]
+    fn negative_energy_field_is_not_fatal_if_hp_positive() {
         let energy = Energy {
             internal_energy: -0.01,
         };
@@ -117,9 +136,6 @@ mod tests {
             core_max_hp: 100.0,
             part_hp: vec![],
         };
-        assert_eq!(
-            death_reason_from_vitals(&energy, &health),
-            Some(DeathReason::EnergyDepleted)
-        );
+        assert_eq!(death_reason_from_vitals(&energy, &health), None);
     }
 }

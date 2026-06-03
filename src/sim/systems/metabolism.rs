@@ -1,40 +1,73 @@
 //! Metabolism and photosynthetic gain (Phase 2D Model A + legacy flat grant).
 
 use bevy::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::config::{EconomyConfig, EnergyModel, EnvironmentConfig};
 use crate::genome::Phenotype as PhenotypeData;
 
-use super::super::components::{Agent, Energy, LightExposure, Phenotype};
+use super::super::components::{Agent, Age, Energy, Health, LightExposure, Phenotype};
 use super::super::world::SimConfigResource;
 
+/// Logarithmic age metabolism per tick ([GENOME.md](../../../docs/GENOME.md)).
+///
+/// Rises slowly at first (~negligible in the first minute at 60 Hz), reaching
+/// `age_metabolism_cap_per_sec` at `age_metabolism_cap_ticks`, scaled by the gene.
+pub fn age_metabolism_per_tick(
+    age_ticks: u32,
+    age_metabolism_scale: f32,
+    economy: &EconomyConfig,
+) -> f32 {
+    let cap_ticks = economy.age_metabolism_cap_ticks.max(1.0);
+    let ref_ticks = economy.age_metabolism_ref_ticks.max(1.0);
+    let cap_per_tick = economy.age_metabolism_cap_per_sec / 60.0;
+    let age = age_ticks as f32;
+    let num = (1.0 + age / ref_ticks).ln();
+    let den = (1.0 + cap_ticks / ref_ticks).ln();
+    if den <= 0.0 || cap_per_tick <= 0.0 {
+        return 0.0;
+    }
+    cap_per_tick * (num / den) * age_metabolism_scale.max(0.0)
+}
+
 /// Per-tick energy drain from idle metabolism and trait upkeeps (see [PHASE_1.md](../../docs/PHASE_1.md)).
-pub fn metabolism_tick_cost(phenotype: &PhenotypeData) -> f32 {
+pub fn metabolism_tick_cost(phenotype: &PhenotypeData, age_ticks: u32, economy: &EconomyConfig) -> f32 {
     phenotype.metabolism_idle
         + phenotype.photo_upkeep
         + phenotype.armor_upkeep
         + phenotype.chemo_upkeep
+        + age_metabolism_per_tick(age_ticks, phenotype.age_metabolism_scale, economy)
 }
 
 /// Photosynthetic gain for one tick.
 ///
-/// Model A (`energy_model = "local"`): `photo_strength * light * solar_constant`.
+/// Model A (`energy_model = "local"`):
+/// `photo_strength * photo_area_scale * light * solar_constant * photo_light_multiplier`.
 /// Legacy (`legacy_flat`): `flat_energy_grant_per_tick` (Phase 1 stand-in).
 pub fn photosynthetic_gain_per_tick(
     phenotype: &PhenotypeData,
     light_sample: f32,
     environment: &EnvironmentConfig,
     economy: &EconomyConfig,
-    blocked_by_overlap: bool,
+    photo_light_multiplier: f32,
 ) -> f32 {
-    if blocked_by_overlap {
-        return 0.0;
-    }
+    let light_mult = photo_light_multiplier.clamp(0.0, 1.0);
 
     match environment.energy_model {
-        EnergyModel::Local => phenotype.photo_strength * light_sample * environment.solar_constant,
-        EnergyModel::LegacyFlat => economy.flat_energy_grant_per_tick,
+        EnergyModel::Local => {
+            phenotype.photo_strength
+                * phenotype.photo_area_scale
+                * light_sample
+                * environment.solar_constant
+                * light_mult
+        }
+        EnergyModel::LegacyFlat => {
+            if light_mult <= 0.0 {
+                0.0
+            } else {
+                economy.flat_energy_grant_per_tick
+            }
+        }
         EnergyModel::Pool | EnergyModel::Spatial => 0.0,
     }
 }
@@ -42,37 +75,49 @@ pub fn photosynthetic_gain_per_tick(
 /// Net energy change for one metabolism tick (`photosynthetic gain - costs`).
 pub fn metabolism_tick_delta(
     phenotype: &PhenotypeData,
+    age_ticks: u32,
     light_sample: f32,
     environment: &EnvironmentConfig,
     economy: &EconomyConfig,
-    blocked_by_overlap: bool,
+    photo_light_multiplier: f32,
 ) -> f32 {
     photosynthetic_gain_per_tick(
         phenotype,
         light_sample,
         environment,
         economy,
-        blocked_by_overlap,
-    ) - metabolism_tick_cost(phenotype)
+        photo_light_multiplier,
+    ) - metabolism_tick_cost(phenotype, age_ticks, economy)
 }
 
-/// Apply one metabolism tick; clamps `internal_energy` to `>= 0`.
+/// Apply one metabolism tick.
+///
+/// Positive net gain adds to `internal_energy`. Negative net first drains energy; any
+/// remainder while energy is depleted applies to `core_hp` (agents do not die at 0 energy).
 pub fn apply_metabolism_tick(
     energy: &mut Energy,
+    health: &mut Health,
     phenotype: &PhenotypeData,
+    age_ticks: u32,
     light_sample: f32,
     environment: &EnvironmentConfig,
     economy: &EconomyConfig,
-    blocked_by_overlap: bool,
+    photo_light_multiplier: f32,
 ) {
     let delta = metabolism_tick_delta(
         phenotype,
+        age_ticks,
         light_sample,
         environment,
         economy,
-        blocked_by_overlap,
+        photo_light_multiplier,
     );
-    energy.internal_energy = (energy.internal_energy + delta).max(0.0);
+    energy.internal_energy += delta;
+    if energy.internal_energy < 0.0 {
+        let hp_deficit = -energy.internal_energy;
+        energy.internal_energy = 0.0;
+        health.apply_damage_to_core(hp_deficit);
+    }
 }
 
 /// True when two agent circles have any area overlap (touching at exactly `r1 + r2` is not overlap).
@@ -82,6 +127,117 @@ pub fn circles_overlap(pos_a: Vec2, radius_a: f32, pos_b: Vec2, radius_b: f32) -
         return false;
     }
     pos_a.distance_squared(pos_b) < r_sum * r_sum
+}
+
+/// Area of intersection between two circles (0 if separated).
+pub fn circle_intersection_area(r1: f32, r2: f32, center_dist: f32) -> f32 {
+    let r1 = r1.max(0.0);
+    let r2 = r2.max(0.0);
+    let d = center_dist.max(0.0);
+    if r1 <= 0.0 || r2 <= 0.0 {
+        return 0.0;
+    }
+    if d >= r1 + r2 {
+        return 0.0;
+    }
+    if d <= (r1 - r2).abs() {
+        let r_small = r1.min(r2);
+        return std::f32::consts::PI * r_small * r_small;
+    }
+
+    let d_sq = d * d;
+    let a1 = r1 * r1 * ((d_sq + r1 * r1 - r2 * r2) / (2.0 * d * r1)).acos();
+    let a2 = r2 * r2 * ((d_sq + r2 * r2 - r1 * r1) / (2.0 * d * r2)).acos();
+    let a3 = 0.5
+        * ((-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2))
+            .max(0.0)
+            .sqrt();
+    (a1 + a2 - a3).max(0.0)
+}
+
+/// Connected overlap cluster (including `seed`) via circle intersection.
+pub fn overlap_cluster_indices(agents: &[(Vec2, f32)], seed: usize) -> Vec<usize> {
+    let mut cluster = vec![seed];
+    let mut stack = vec![seed];
+    while let Some(i) = stack.pop() {
+        let (pos_i, r_i) = agents[i];
+        for j in 0..agents.len() {
+            if cluster.contains(&j) {
+                continue;
+            }
+            let (pos_j, r_j) = agents[j];
+            if circles_overlap(pos_i, r_i, pos_j, r_j) {
+                cluster.push(j);
+                stack.push(j);
+            }
+        }
+    }
+    cluster
+}
+
+/// Light retained on photosynthesis from overlap crowding ([ENERGY_AND_ENVIRONMENT.md]).
+///
+/// Uses the largest fraction of self-area overlapping a cluster mate. Shade =
+/// `overlap_shade_factor * max_fraction`, multiplied by `(n-1)/n` when three or more
+/// agents share the cluster (one sun per patch). Pairs (`n = 2`) use the full shade term.
+pub fn overlap_photo_light_multiplier(
+    agents: &[(Vec2, f32)],
+    agent_index: usize,
+    overlap_shade_factor: f32,
+) -> f32 {
+    let cluster = overlap_cluster_indices(agents, agent_index);
+    let n = cluster.len();
+    if n <= 1 {
+        return 1.0;
+    }
+
+    let (pos_i, r_i) = agents[agent_index];
+    let self_area = std::f32::consts::PI * r_i * r_i;
+    if self_area <= 0.0 {
+        return 1.0;
+    }
+
+    let mut max_frac = 0.0f32;
+    for &j in &cluster {
+        if j == agent_index {
+            continue;
+        }
+        let (pos_j, r_j) = agents[j];
+        let d = pos_i.distance(pos_j);
+        let area_ij = circle_intersection_area(r_i, r_j, d);
+        max_frac = max_frac.max((area_ij / self_area).clamp(0.0, 1.0));
+    }
+
+    let shade = if n == 2 {
+        overlap_shade_factor * max_frac
+    } else {
+        overlap_shade_factor * max_frac * (n - 1) as f32 / n as f32
+    };
+    (1.0 - shade).clamp(0.0, 1.0)
+}
+
+/// Per-agent light multiplier from graded overlap (parallel to `agents` slice).
+pub fn overlap_photo_light_multipliers(
+    agents: &[(Vec2, f32)],
+    overlap_shade_factor: f32,
+) -> Vec<f32> {
+    (0..agents.len())
+        .map(|i| overlap_photo_light_multiplier(agents, i, overlap_shade_factor))
+        .collect()
+}
+
+/// Per-entity light multiplier for Bevy agents `(Entity, pos, radius)`.
+pub fn overlap_photo_light_multipliers_for_entities(
+    agents: &[(Entity, Vec2, f32)],
+    overlap_shade_factor: f32,
+) -> HashMap<Entity, f32> {
+    let geom: Vec<_> = agents.iter().map(|(_, p, r)| (*p, *r)).collect();
+    let mults = overlap_photo_light_multipliers(&geom, overlap_shade_factor);
+    agents
+        .iter()
+        .zip(mults)
+        .map(|((entity, _, _), m)| (*entity, m))
+        .collect()
 }
 
 /// Entities that overlap at least one other agent this tick (both parties included).
@@ -104,11 +260,20 @@ pub fn entities_blocked_by_overlap(agents: &[(Entity, Vec2, f32)]) -> HashSet<En
 /// Bevy system: photosynthetic grant minus metabolism and upkeeps for every living agent.
 pub fn metabolism_and_gains(
     config: Res<SimConfigResource>,
-    mut query: Query<(Entity, &Transform, &Agent, &Phenotype, &LightExposure, &mut Energy)>,
+    mut query: Query<(
+        Entity,
+        &Transform,
+        &Agent,
+        &Phenotype,
+        &Age,
+        &LightExposure,
+        &mut Energy,
+        &mut Health,
+    )>,
 ) {
     let agents: Vec<_> = query
         .iter()
-        .map(|(entity, transform, agent, _, _, _)| {
+        .map(|(entity, transform, agent, _, _, _, _, _)| {
             (
                 entity,
                 transform.translation.truncate(),
@@ -119,22 +284,34 @@ pub fn metabolism_and_gains(
 
     let environment = &config.0.environment;
     let economy = &config.0.economy;
-    let crowding_blocks = environment.crowding_blocks_photosynthesis;
-    let blocked = if crowding_blocks {
-        entities_blocked_by_overlap(&agents)
+    let light_mults = if environment.overlap_shades_photosynthesis {
+        overlap_photo_light_multipliers_for_entities(&agents, environment.overlap_shade_factor)
+    } else if environment.crowding_blocks_photosynthesis {
+        let blocked = entities_blocked_by_overlap(&agents);
+        agents
+            .iter()
+            .map(|(entity, _, _)| {
+                (
+                    *entity,
+                    if blocked.contains(entity) { 0.0 } else { 1.0 },
+                )
+            })
+            .collect()
     } else {
-        HashSet::new()
+        HashMap::new()
     };
 
-    for (entity, _, _, phenotype, exposure, mut energy) in &mut query {
-        let blocked_by_overlap = crowding_blocks && blocked.contains(&entity);
+    for (entity, _, _, phenotype, age, exposure, mut energy, mut health) in &mut query {
+        let photo_light_multiplier = light_mults.get(&entity).copied().unwrap_or(1.0);
         apply_metabolism_tick(
             &mut energy,
+            &mut health,
             &phenotype.0,
+            age.ticks,
             exposure.0,
             environment,
             economy,
-            blocked_by_overlap,
+            photo_light_multiplier,
         );
     }
 }
@@ -145,7 +322,7 @@ mod tests {
     use bevy::prelude::Entity;
     use crate::config::{EnergyModel, SimConfig};
     use crate::genome::{decode, Genome};
-    use crate::sim::components::Energy;
+    use crate::sim::components::{Energy, Health};
 
     fn ancestor_phenotype(config: &SimConfig) -> PhenotypeData {
         let genome = Genome::ancestor_from_config(config).unwrap();
@@ -156,6 +333,14 @@ mod tests {
         let mut config = SimConfig::load_default().unwrap();
         config.environment.energy_model = EnergyModel::Local;
         config
+    }
+
+    fn full_health(config: &SimConfig) -> Health {
+        Health {
+            core_hp: config.economy.core_max_hp,
+            core_max_hp: config.economy.core_max_hp,
+            part_hp: vec![],
+        }
     }
 
     #[test]
@@ -174,14 +359,14 @@ mod tests {
         let economy = &config.economy;
         let light = 1.0;
 
-        let open = metabolism_tick_delta(&phenotype, light, environment, economy, false);
-        let crowded = metabolism_tick_delta(&phenotype, light, environment, economy, true);
+        let open = metabolism_tick_delta(&phenotype, 0, light, environment, economy, 1.0);
+        let crowded = metabolism_tick_delta(&phenotype, 0, light, environment, economy, 0.0);
         assert!(
             (open - crowded - economy.flat_energy_grant_per_tick).abs() < 1e-5,
             "blocked tick should differ only by the photosynthetic grant"
         );
         assert_eq!(
-            photosynthetic_gain_per_tick(&phenotype, light, environment, economy, true),
+            photosynthetic_gain_per_tick(&phenotype, light, environment, economy, 0.0),
             0.0
         );
     }
@@ -195,21 +380,56 @@ mod tests {
         let economy = &config.economy;
 
         let open_gain = photosynthetic_gain_per_tick(
-            &phenotype, light, environment, economy, false,
+            &phenotype, light, environment, economy, 1.0,
         );
         let blocked_gain = photosynthetic_gain_per_tick(
-            &phenotype, light, environment, economy, true,
+            &phenotype, light, environment, economy, 0.0,
         );
 
         assert!(open_gain > 0.0, "local gain should be positive in bright band");
         assert_eq!(blocked_gain, 0.0);
 
-        let open_delta = metabolism_tick_delta(&phenotype, light, environment, economy, false);
-        let crowded_delta = metabolism_tick_delta(&phenotype, light, environment, economy, true);
+        let open_delta = metabolism_tick_delta(&phenotype, 0, light, environment, economy, 1.0);
+        let crowded_delta = metabolism_tick_delta(&phenotype, 0, light, environment, economy, 0.0);
         assert!(
             (open_delta - crowded_delta - open_gain).abs() < 1e-5,
             "blocked tick should differ only by photosynthetic gain under local model"
         );
+    }
+
+    #[test]
+    fn overlap_photo_multiplier_pair_is_ninety_percent_at_twenty_percent_overlap() {
+        let r = 10.0;
+        // Centers ~14 apart → lens area ≈ 20% of each circle.
+        let agents = [(Vec2::ZERO, r), (Vec2::new(14.0, 0.0), r)];
+        let m0 = overlap_photo_light_multiplier(&agents, 0, 0.5);
+        let m1 = overlap_photo_light_multiplier(&agents, 1, 0.5);
+        assert!((m0 - 0.9).abs() < 0.05, "pair multiplier {m0}");
+        assert!((m1 - 0.9).abs() < 0.05, "pair multiplier {m1}");
+    }
+
+    #[test]
+    fn overlap_photo_multiplier_triple_uses_two_thirds_shade() {
+        let r = 10.0;
+        // Co-located cluster → each circle fully overlaps the others.
+        let agents = [
+            (Vec2::ZERO, r),
+            (Vec2::ZERO, r),
+            (Vec2::ZERO, r),
+        ];
+        let m = overlap_photo_light_multiplier(&agents, 0, 0.5);
+        // max_frac ≈ 1, shade = 0.5 * 2/3.
+        assert!((m - 2.0 / 3.0).abs() < 0.05, "triple multiplier {m}");
+    }
+
+    #[test]
+    fn photo_area_scale_is_one_at_reference_radius() {
+        let config = SimConfig::load_default().unwrap();
+        let dr = &config.genetics.decode_ranges;
+        let mut phenotype = ancestor_phenotype(&config);
+        phenotype.body_radius = dr.r_ref;
+        phenotype.photo_area_scale = (dr.r_ref / dr.r_ref).powi(2);
+        assert!((phenotype.photo_area_scale - 1.0).abs() < 1e-5);
     }
 
     #[test]
@@ -237,7 +457,7 @@ mod tests {
             1.0,
             &config.environment,
             &config.economy,
-            false,
+            1.0,
         );
         assert_eq!(gain, 0.0);
     }
@@ -252,7 +472,7 @@ mod tests {
             light,
             &config.environment,
             &config.economy,
-            false,
+            1.0,
         );
         config.environment.solar_constant *= 2.0;
         let doubled = photosynthetic_gain_per_tick(
@@ -260,31 +480,35 @@ mod tests {
             light,
             &config.environment,
             &config.economy,
-            false,
+            1.0,
         );
         assert!((doubled - base * 2.0).abs() < 1e-5);
     }
 
     #[test]
-    fn local_gain_independent_of_other_agents() {
+    fn photosynthetic_gain_scales_with_strength_and_light() {
         let config = local_config();
         let phenotype = ancestor_phenotype(&config);
-        let light = 0.6;
-        let gain_a = photosynthetic_gain_per_tick(
-            &phenotype,
-            light,
-            &config.environment,
-            &config.economy,
-            false,
+        let light = 0.5;
+        let environment = &config.environment;
+        let economy = &config.economy;
+
+        let base = photosynthetic_gain_per_tick(
+            &phenotype, light, environment, economy, 1.0,
         );
-        let gain_b = photosynthetic_gain_per_tick(
-            &phenotype,
-            light,
-            &config.environment,
-            &config.economy,
-            false,
+        assert!(base > 0.0);
+
+        let mut strong = phenotype.clone();
+        strong.photo_strength *= 2.0;
+        let gain_2x_strength = photosynthetic_gain_per_tick(
+            &strong, light, environment, economy, 1.0,
         );
-        assert_eq!(gain_a, gain_b);
+        assert!((gain_2x_strength - base * 2.0).abs() < 1e-5);
+
+        let gain_2x_light = photosynthetic_gain_per_tick(
+            &phenotype, light * 2.0, environment, economy, 1.0,
+        );
+        assert!((gain_2x_light - base * 2.0).abs() < 1e-5);
     }
 
     #[test]
@@ -292,14 +516,16 @@ mod tests {
         let config = local_config();
         let phenotype = ancestor_phenotype(&config);
         let light = 0.75;
-        let expected =
-            phenotype.photo_strength * light * config.environment.solar_constant;
+        let expected = phenotype.photo_strength
+            * phenotype.photo_area_scale
+            * light
+            * config.environment.solar_constant;
         let gain = photosynthetic_gain_per_tick(
             &phenotype,
             light,
             &config.environment,
             &config.economy,
-            false,
+            1.0,
         );
         assert!((gain - expected).abs() < 1e-5);
     }
@@ -314,21 +540,32 @@ mod tests {
         let mut energy = Energy {
             internal_energy: config.economy.spawn_energy,
         };
+        let mut health = full_health(&config);
         let start = energy.internal_energy;
 
-        for _ in 0..500 {
+        for _ in 0..5_000 {
             apply_metabolism_tick(
                 &mut energy,
+                &mut health,
                 &phenotype,
+                0,
                 config.environment.gradient_max,
                 &config.environment,
                 &config.economy,
-                false,
+                1.0,
             );
         }
 
-        assert!(energy.internal_energy < start);
-        assert_eq!(energy.internal_energy, 0.0);
+        assert!(
+            energy.internal_energy < 1.0,
+            "zero solar should deplete energy (start={start}, end={})",
+            energy.internal_energy
+        );
+        assert!(
+            health.core_hp < config.economy.core_max_hp,
+            "metabolic deficit should drain HP once energy is empty (hp={})",
+            health.core_hp
+        );
     }
 
     #[test]
@@ -342,21 +579,58 @@ mod tests {
         let mut energy = Energy {
             internal_energy: config.economy.spawn_energy,
         };
+        let mut health = full_health(&config);
         let start = energy.internal_energy;
 
-        for _ in 0..500 {
+        for _ in 0..5_000 {
             apply_metabolism_tick(
                 &mut energy,
+                &mut health,
                 &phenotype,
+                0,
                 1.0,
                 &config.environment,
                 &economy,
-                false,
+                1.0,
             );
         }
 
-        assert!(energy.internal_energy < start);
+        assert!(
+            energy.internal_energy < 1.0,
+            "zero legacy grant should deplete energy (start={start}, end={})",
+            energy.internal_energy
+        );
+        assert!(health.core_hp < config.economy.core_max_hp);
+    }
+
+    #[test]
+    fn metabolic_deficit_drains_hp_when_energy_empty() {
+        let config = local_config();
+        let phenotype = ancestor_phenotype(&config);
+        let mut energy = Energy {
+            internal_energy: 0.0,
+        };
+        let mut health = Health {
+            core_hp: 20.0,
+            core_max_hp: 100.0,
+            part_hp: vec![],
+        };
+        let cost = metabolism_tick_cost(&phenotype, 0, &config.economy);
+        assert!(cost > 0.0);
+
+        apply_metabolism_tick(
+            &mut energy,
+            &mut health,
+            &phenotype,
+            0,
+            0.0,
+            &config.environment,
+            &config.economy,
+            1.0,
+        );
+
         assert_eq!(energy.internal_energy, 0.0);
+        assert!(health.core_hp < 20.0);
     }
 
     #[test]
@@ -368,16 +642,19 @@ mod tests {
         let mut energy = Energy {
             internal_energy: config.economy.spawn_energy,
         };
+        let mut health = full_health(&config);
         let start = energy.internal_energy;
 
         for _ in 0..1000 {
             apply_metabolism_tick(
                 &mut energy,
+                &mut health,
                 &phenotype,
+                0,
                 bright,
                 &config.environment,
                 &config.economy,
-                false,
+                1.0,
             );
         }
 
@@ -389,7 +666,85 @@ mod tests {
     }
 
     #[test]
-    fn high_photo_shade_band_net_negative_over_ticks() {
+    fn local_gain_independent_of_population_count() {
+        use bevy::app::App;
+        use crate::sim::components::{LifeBundle, LightExposure, Velocity};
+        use crate::sim::world::SimConfigResource;
+
+        let config = local_config();
+        let bright = config.environment.gradient_max;
+        let genome = Genome::ancestor_from_config(&config).unwrap();
+        let phenotype = decode(&genome, &config).unwrap();
+        let start_energy = 50.0;
+
+        let mut solo = App::new();
+        solo.insert_resource(SimConfigResource(config.clone()));
+        let life = LifeBundle::from_parts_with_energy(
+            genome.clone_genome(),
+            phenotype.clone(),
+            &config,
+            1,
+            None,
+            0,
+            start_energy,
+        );
+        solo.world_mut().spawn((
+            life,
+            Velocity(Vec2::ZERO),
+            LightExposure(bright),
+            Transform::from_translation(Vec2::new(0.0, 600.0).extend(0.0)),
+        ));
+        solo.add_systems(Update, metabolism_and_gains);
+        solo.update();
+        let solo_end = solo
+            .world_mut()
+            .query::<&Energy>()
+            .single(solo.world())
+            .internal_energy;
+
+        let config_crowd = config.clone();
+        let mut crowd = App::new();
+        crowd.insert_resource(SimConfigResource(config_crowd));
+        for (i, x) in [-250.0, 0.0, 250.0].into_iter().enumerate() {
+            let life = LifeBundle::from_parts_with_energy(
+                genome.clone_genome(),
+                phenotype.clone(),
+                &config,
+                i as u64 + 1,
+                None,
+                0,
+                start_energy,
+            );
+            crowd.world_mut().spawn((
+                life,
+                Velocity(Vec2::ZERO),
+                LightExposure(bright),
+                Transform::from_translation(Vec2::new(x, 600.0).extend(0.0)),
+            ));
+        }
+        crowd.add_systems(Update, metabolism_and_gains);
+        crowd.update();
+
+        let mut crowd_ends: Vec<f32> = crowd
+            .world_mut()
+            .query::<&Energy>()
+            .iter(crowd.world())
+            .map(|e| e.internal_energy)
+            .collect();
+        crowd_ends.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        assert!(
+            crowd_ends.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-5),
+            "agents at same light should share metabolism outcome: {crowd_ends:?}"
+        );
+        assert!(
+            (solo_end - crowd_ends[1]).abs() < 1e-5,
+            "solo agent delta should match crowded agent at same light (solo={solo_end}, crowd={crowd_ends:?})"
+        );
+    }
+
+    #[test]
+    fn shade_net_negative_for_high_photo() {
         let config = local_config();
         let mut phenotype = ancestor_phenotype(&config);
         phenotype.photo_strength = config.genetics.decode_ranges.photo_max;
@@ -400,16 +755,19 @@ mod tests {
         let mut energy = Energy {
             internal_energy: config.economy.spawn_energy,
         };
+        let mut health = full_health(&config);
         let start = energy.internal_energy;
 
         for _ in 0..500 {
             apply_metabolism_tick(
                 &mut energy,
+                &mut health,
                 &phenotype,
+                0,
                 shade,
                 &config.environment,
                 &config.economy,
-                false,
+                1.0,
             );
         }
 
@@ -428,21 +786,24 @@ mod tests {
         let mut energy = Energy {
             internal_energy: config.economy.spawn_energy,
         };
+        let mut health = full_health(&config);
 
-        for _ in 0..1000 {
+        for _ in 0..2500 {
             apply_metabolism_tick(
                 &mut energy,
+                &mut health,
                 &phenotype,
+                0,
                 config.environment.gradient_max,
                 &config.environment,
                 &config.economy,
-                false,
+                1.0,
             );
         }
 
         assert!(
             energy.internal_energy > phenotype.repro_threshold,
-            "energy {} should exceed repro threshold {} after 1000 ticks in bright band",
+            "energy {} should exceed repro threshold {} after 2500 ticks in bright band",
             energy.internal_energy,
             phenotype.repro_threshold
         );
@@ -452,7 +813,7 @@ mod tests {
     fn tick_cost_includes_upkeeps() {
         let config = SimConfig::load_default().unwrap();
         let phenotype = ancestor_phenotype(&config);
-        let cost = metabolism_tick_cost(&phenotype);
+        let cost = metabolism_tick_cost(&phenotype, 0, &config.economy);
         assert!(cost >= phenotype.metabolism_idle);
         assert!(cost > 0.0);
     }

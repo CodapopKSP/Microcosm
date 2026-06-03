@@ -49,16 +49,27 @@ Structured **TOML** files in `configs/` (e.g. `configs/default.toml`). Suggested
 
 Natural population limits come from energy, metabolism, and environment—not from `max_entities`.
 
-### `[environment]`
+### `[environment]` (Phase 2 — implemented)
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `energy_model` | string | `local`, `pool`, or `spatial` — see [ENERGY_AND_ENVIRONMENT.md](ENERGY_AND_ENVIRONMENT.md) |
-| `solar_constant` | f32 | Per-entity irradiance scale (model A) |
-| `solar_influx`, `solar_cap` | f32 | Pool recharge and cap (model B) |
-| `light_mode` | string | `uniform`, `gradient_y`, or `map` |
-| `vents` | array | Position, radius, flux (Phase 5+) |
-| `hazards` | array | Zones with damage rate (Phase 4+) |
+| Key | Type | Status | Description |
+|-----|------|--------|-------------|
+| `energy_model` | string | **implemented** | `local` (default, Model A), `legacy_flat` (Phase 1 flat grant regression). `pool` / `spatial` error at load |
+| `solar_constant` | f32 | **implemented** | Per-entity irradiance scale when `energy_model = "local"` |
+| `light_mode` | string | **implemented** | `uniform` or `gradient_y` ([`LightField`](../src/sim/light.rs)) |
+| `gradient_axis` | string | **implemented** | `y` only (reserved for future axes) |
+| `gradient_min`, `gradient_max` | f32 | **implemented** | Light multiplier range for `gradient_y` |
+| `gradient_bright_at` | string | **implemented** | `top` or `bottom` — which world edge is brightest |
+| `crowding_blocks_photosynthesis` | bool | **implemented** | Default `false`. If `true`, binary circle overlap zeros photosynthetic gain that tick (experiment only; see [PHASE_2.md](PHASE_2.md)) |
+| `solar_influx`, `solar_cap` | f32 | Phase 6 | Pool recharge and cap (model B) |
+| `light_mode = "map"` | — | Phase 5+ | Image / procedural grid |
+| `vents` | array | Phase 5+ | Position, radius, flux |
+| `hazards` | array | Phase 4+ | Zones with damage rate |
+| `seasons_enabled` | bool | Phase 9 | Default `false`; cyclic environment modulation |
+| `seasons` | array | Phase 9 | Named keyframes: `duration_ticks`, optional overrides (`solar_constant`, `gradient_max`, scales) — [PHASE_9.md](PHASE_9.md) |
+
+**Phase 1 migration:** `[economy].flat_energy_grant_per_tick` is unused when `energy_model = "local"`. Use `legacy_flat` or keep a non-zero flat grant for old configs. See [README.md](../README.md) and [PHASE_2.md](PHASE_2.md).
+
+**Per-tick gain (local):** `photo_strength * light(pos) * solar_constant` minus metabolism and trait upkeeps ([`metabolism_and_gains`](../src/sim/systems/metabolism.rs), after [`sense_exposure`](../src/sim/systems/sense.rs)).
 
 ### `[genetics]`
 
@@ -70,6 +81,17 @@ Natural population limits come from energy, metabolism, and environment—not fr
 | `mutations_per_offspring` | u32 | Expected mutation passes on reproduce |
 | `delta_max` | u8 | Max byte delta for point noise |
 
+### `[genetics.decode_ranges]` (lifespan — Phase 3)
+
+| Key | Type | Status | Description |
+|-----|------|--------|-------------|
+| `age_min_ticks` | f32 | **implemented** | Shortest decoded lifespan (`lerp_u16` min) |
+| `age_max_ticks` | f32 | **implemented** | Longest decoded lifespan |
+| `age_ref_ticks` | f32 | **implemented** | Normalization for `age_upkeep` |
+| `k_age` | f32 | **implemented** | Per-tick longevity cost scale |
+
+See [PHASE_3.md](PHASE_3.md) and [GENOME.md](GENOME.md). Other decode keys (`body_radius_min`, `photo_max`, …) are Phase 1+.
+
 ### `[economy]`
 
 Baseline values used when decoding or as config floors; many are overridden or scaled by genes.
@@ -77,6 +99,7 @@ Baseline values used when decoding or as config floors; many are overridden or s
 | Key | Type | Description |
 |-----|------|-------------|
 | `metabolism_floor` | f32 | Minimum idle drain |
+| `flat_energy_grant_per_tick` | f32 | Used only when `environment.energy_model = "legacy_flat"`; default `0.0` under `local` |
 | `repro_safety_margin` | f32 | Fraction of `repro_threshold` below which repro risk rises |
 | `p_death_on_repro_base` | f32 | Base reproduction fatality chance at low energy |
 | `repair_energy_per_hp` | f32 | Base cost before `repair_efficiency` |
@@ -92,10 +115,12 @@ Baseline values used when decoding or as config floors; many are overridden or s
 
 ## Runtime modes
 
-| Mode | CLI (target) | Behavior |
-|------|----------------|----------|
-| **Visual** | `cargo run -- --config configs/default.toml` | `SimCore` advances; Bevy syncs read-only snapshot each frame (or every *k* ticks) |
-| **Headless** | `cargo run -- --headless --config configs/default.toml` | Runs `max_ticks`, writes metrics, exits without window |
+| Mode | CLI | Behavior |
+|------|-----|----------|
+| **Visual** | `cargo run -- --config configs/default.toml` | Bevy window; shared sim tick chain each frame |
+| **Headless** | `cargo run -- --headless --config configs/default.toml` | No window; runs until `run.max_ticks`, truncates and writes `run.metrics_path` JSONL |
+
+Optional `--seed U64` overrides `run.master_seed` after TOML load. Default config path: `configs/default.toml`.
 
 ### Sync contract (visual)
 
@@ -107,17 +132,17 @@ Baseline values used when decoding or as config floors; many are overridden or s
 
 Implement systems in this order (see [ARCHITECTURE.md](ARCHITECTURE.md)):
 
-1. **Environment tick** — Solar pool recharge (model B), compound regeneration placeholder, vent flux update
-2. **Sense / exposure** — Sample light, vent proximity, hazard overlap, soup concentration at each entity position
-3. **Metabolism & gains** — Photosynthesis / chemosynthesis uptake, then subtract `photo_upkeep`, trait upkeeps, base metabolism
+1. **Environment tick** — **Phase 6+:** pool/soup regen; **Phase 9:** advance season clock and apply effective overrides ([PHASE_9.md](PHASE_9.md))
+2. **Sense / exposure** — **Implemented:** sample `LightField` at each agent position → `LightExposure` (vents/hazards/soup later)
+3. **Metabolism & gains** — **Implemented:** Model A photosynthetic gain minus `photo_upkeep`, trait upkeeps, idle metabolism
 4. **Behavior / movement** — Apply velocity intent; deduct movement energy from `move_cost` and moving metabolism
 5. **Interactions** — Collision damage, hazard damage, feeding placeholder (later)
 6. **Healing** — Spend energy to repair core and body parts per policy
 7. **Reproduction** — Cooldown check, threshold, pay `repro_cost`, roll repro risk, spawn child with mutations and endowment
-8. **Advance age** — `Age.ticks += 1` per living agent (Phase 3)
-9. **Death & despawn** — `internal_energy <= 0`, `core_hp <= 0`, `age_ticks >= max_age_ticks` (Phase 3), repro fatality
+8. **Advance age** — **Implemented:** `Age.ticks += 1` per living agent
+9. **Death & despawn** — **Implemented:** energy, core HP, `age_ticks >= max_age_ticks`, repro fatality
 10. **Performance failsafe** — If `population > max_entities`, apply emergency policy and log warning
-11. **Metrics sample** — If `tick % snapshot_interval == 0`, record aggregates (include lifespan stats / `age_exceeded` deaths in Phase 3)
+11. **Metrics sample** — **Implemented (headless):** if `tick > 0` and `tick % snapshot_interval == 0`, append JSONL (see [PHASE_3.md](PHASE_3.md#jsonl-schema-frozen-for-phase-3))
 
 ```mermaid
 flowchart TD
@@ -128,7 +153,8 @@ flowchart TD
   V --> I[Interactions]
   I --> H[Healing]
   H --> R[Reproduction]
-  R --> D[Death]
+  R --> A[AdvanceAge]
+  A --> D[Death]
   D --> F[Failsafe]
   F --> G[Metrics]
   G --> T2[TickEnd]

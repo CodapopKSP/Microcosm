@@ -1,4 +1,8 @@
-//! Headless tick loop for Phase 1 acceptance tests (no Bevy window).
+//! Fast headless tick loop for acceptance tests (no Bevy window).
+//!
+//! This is a **test-only shortcut** that mirrors metabolism → reproduction → age → death
+//! without the full ECS pipeline. CLI and metrics determinism tests use [`run_headless_bevy`]
+//! in [`app`](super::app) instead.
 
 #![cfg(test)]
 
@@ -9,7 +13,10 @@ use crate::sim::spawn::{
     build_offspring_spawn_params, build_spawn_params, place_near_parent, randomize_placement,
     try_prepare_spawn,
 };
-use crate::sim::{apply_metabolism_tick, attempt_reproduction, ReproAttemptResult};
+use crate::sim::{
+    apply_failsafe, apply_metabolism_tick, attempt_reproduction,
+    overlap_photo_light_multipliers, ReproAttemptResult,
+};
 use crate::sim::light::LightField;
 use crate::sim::world::{NextEntityId, SimRng, WorldBounds};
 
@@ -21,6 +28,8 @@ pub struct HeadlessRunSummary {
     pub repro_fatalities: u32,
     pub stillborns: u32,
     pub child_genome_fold: u64,
+    /// Peak living count observed during the run.
+    pub peak_alive: usize,
     /// Quantized RGB of survivors (for diversity checks).
     pub survivor_color_keys: Vec<(u8, u8, u8)>,
 }
@@ -31,9 +40,11 @@ struct SimAgent {
     genome: Genome,
     phenotype: crate::genome::Phenotype,
     energy: f32,
+    core_hp: f32,
     position: bevy::prelude::Vec2,
     repro_cooldown: u32,
     pending_fatal: bool,
+    age_ticks: u32,
 }
 
 fn fold_genome_bytes(g: &Genome) -> u64 {
@@ -80,9 +91,11 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
             genome,
             phenotype,
             energy: config.economy.spawn_energy,
+            core_hp: config.economy.core_max_hp,
             position: params.position,
             repro_cooldown: 0,
             pending_fatal: false,
+            age_ticks: 0,
         });
     }
 
@@ -92,24 +105,45 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
         repro_fatalities: 0,
         stillborns: 0,
         child_genome_fold: 0,
+        peak_alive: agents.len(),
         survivor_color_keys: Vec::new(),
     };
+    let mut spawn_blocked = false;
 
     for tick in 0..ticks {
-        for agent in &mut agents {
+        let overlap_geom: Vec<_> = agents
+            .iter()
+            .map(|a| (a.position, a.phenotype.body_radius))
+            .collect();
+        let photo_light_mults = if config.environment.overlap_shades_photosynthesis {
+            overlap_photo_light_multipliers(&overlap_geom, config.environment.overlap_shade_factor)
+        } else {
+            vec![1.0; agents.len()]
+        };
+
+        for (idx, agent) in agents.iter_mut().enumerate() {
             let light = light_field.sample(agent.position);
             let mut energy = Energy {
                 internal_energy: agent.energy,
             };
+            let mut health = crate::sim::components::Health {
+                core_hp: agent.core_hp,
+                core_max_hp: config.economy.core_max_hp,
+                part_hp: vec![],
+            };
+            let photo_light_multiplier = photo_light_mults.get(idx).copied().unwrap_or(1.0);
             apply_metabolism_tick(
                 &mut energy,
+                &mut health,
                 &agent.phenotype,
+                agent.age_ticks,
                 light,
                 &config.environment,
                 &config.economy,
-                false,
+                photo_light_multiplier,
             );
             agent.energy = energy.internal_energy;
+            agent.core_hp = health.core_hp;
         }
 
         agents.sort_by_key(|a| a.id);
@@ -121,6 +155,9 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
             }
             if agent.repro_cooldown > 0 {
                 agent.repro_cooldown -= 1;
+                continue;
+            }
+            if spawn_blocked {
                 continue;
             }
             if agent.energy < agent.phenotype.repro_threshold {
@@ -136,9 +173,15 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
             let mut energy = Energy {
                 internal_energy: agent.energy,
             };
+            let mut health = crate::sim::components::Health {
+                core_hp: agent.core_hp,
+                core_max_hp: config.economy.core_max_hp,
+                part_hp: vec![],
+            };
 
             match attempt_reproduction(
                 &mut energy,
+                &mut health,
                 &agent.phenotype,
                 &agent.genome,
                 config,
@@ -157,6 +200,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                 ReproAttemptResult::Child {
                     genome: child_genome,
                     phenotype: child_phenotype,
+                    child_start_hp,
                 } => {
                     let child_id = next_id.next();
                     agent.repro_cooldown = agent.phenotype.repro_cooldown_ticks;
@@ -170,7 +214,8 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                         child_id,
                         Some(agent.id),
                         agent.generation.saturating_add(1),
-                        agent.phenotype.offspring_endowment,
+                        0.0,
+                        child_start_hp,
                     );
                     place_near_parent(
                         &mut child_params,
@@ -186,17 +231,32 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                         genome: child_genome,
                         phenotype: child_phenotype,
                         energy: child_params.life.energy.internal_energy,
+                        core_hp: child_params.life.health.core_hp,
                         position: child_params.position,
                         repro_cooldown: 0,
                         pending_fatal: false,
+                        age_ticks: 0,
                     });
                 }
             }
             agent.energy = energy.internal_energy;
+            agent.core_hp = health.core_hp;
         }
 
-        agents.retain(|a| !a.pending_fatal && a.energy > 0.0);
+        for agent in &mut agents {
+            agent.age_ticks = agent.age_ticks.saturating_add(1);
+        }
+
+        agents.retain(|a| !a.pending_fatal && a.core_hp > 0.0);
         agents.extend(new_children);
+
+        summary.peak_alive = summary.peak_alive.max(agents.len());
+        let _ = apply_failsafe(
+            agents.len(),
+            config.performance.max_entities,
+            config.performance.failsafe_policy,
+            &mut spawn_blocked,
+        );
     }
 
     summary.alive = agents.len();

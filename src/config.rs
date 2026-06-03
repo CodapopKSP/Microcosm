@@ -125,6 +125,24 @@ pub struct DecodeRanges {
     pub k_drag: f32,
     pub r_ref: f32,
     pub k_move_meta: f32,
+    /// Gene locus scales logarithmic age metabolism (`age_metabolism_scale_min`..`max`).
+    pub age_metabolism_scale_min: f32,
+    pub age_metabolism_scale_max: f32,
+    /// Armor mitigation constant: `h / (h + k_mitigate)` (Phase 4B).
+    pub k_mitigate: f32,
+}
+
+/// HP repair ordering when energy is available ([PHASE_4.md](../docs/PHASE_4.md) §4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairPolicy {
+    CoreFirst,
+    Cheapest,
+    Symmetric,
+}
+
+fn default_repair_policy() -> RepairPolicy {
+    RepairPolicy::CoreFirst
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -135,7 +153,40 @@ pub struct EconomyConfig {
     pub core_max_hp: f32,
     pub repro_safety_margin: f32,
     pub p_death_on_repro_base: f32,
+    /// Fraction of `core_max_hp` applied when a repro damage roll succeeds.
+    pub p_damage_on_repro_base: f32,
+    pub repro_damage_fraction_of_max_hp: f32,
     pub repair_energy_per_hp: f32,
+    /// Log-age metabolism reaches this rate (energy/s) at `age_metabolism_cap_ticks` (60 Hz).
+    pub age_metabolism_cap_per_sec: f32,
+    pub age_metabolism_cap_ticks: f32,
+    pub age_metabolism_ref_ticks: f32,
+    #[serde(default = "default_repair_policy")]
+    pub repair_policy: RepairPolicy,
+    /// Collision damage scale: `raw = collision_damage_scale * relative_speed` (Phase 4B).
+    pub collision_damage_scale: f32,
+    /// Movement energy (J/s) at reference body size when `speed_ratio = move_energy_half_speed_ratio`.
+    #[serde(default = "default_move_energy_per_sec_at_half_speed")]
+    pub move_energy_per_sec_at_half_speed: f32,
+    /// Speed ratio anchor for `move_energy_per_sec_at_half_speed` (default 0.5 = half max speed).
+    #[serde(default = "default_move_energy_half_speed_ratio")]
+    pub move_energy_half_speed_ratio: f32,
+}
+
+fn default_move_energy_per_sec_at_half_speed() -> f32 {
+    1.0
+}
+
+fn default_move_energy_half_speed_ratio() -> f32 {
+    0.5
+}
+
+/// Axis-aligned circular hazard zone ([PHASE_4.md](../docs/PHASE_4.md) §4.1).
+#[derive(Debug, Clone, Deserialize)]
+pub struct HazardZone {
+    pub center: [f32; 2],
+    pub radius: f32,
+    pub damage_per_tick: f32,
 }
 
 /// World energy and light ([PHASE_2.md](../docs/PHASE_2.md) sub-phase 2A).
@@ -151,6 +202,23 @@ pub struct EnvironmentConfig {
     pub gradient_bright_at: GradientBrightAt,
     #[serde(default)]
     pub crowding_blocks_photosynthesis: bool,
+    /// Grade photosynthesis by overlap area and cluster size (one sun per patch).
+    #[serde(default = "default_overlap_shades_photosynthesis")]
+    pub overlap_shades_photosynthesis: bool,
+    /// Fraction of self-area overlap treated as lost light before cluster split.
+    #[serde(default = "default_overlap_shade_factor")]
+    pub overlap_shade_factor: f32,
+    /// Circular hazard bands; empty ⇒ no zone damage (Phase 4A).
+    #[serde(default)]
+    pub hazards: Vec<HazardZone>,
+}
+
+fn default_overlap_shades_photosynthesis() -> bool {
+    true
+}
+
+fn default_overlap_shade_factor() -> f32 {
+    0.5
 }
 
 fn default_gradient_axis() -> GradientAxis {
@@ -163,7 +231,7 @@ fn default_gradient_axis() -> GradientAxis {
 pub enum EnergyModel {
     /// `photo_strength * light(pos) * solar_constant` (Phase 2+).
     Local,
-    /// Phase 1 flat grant per tick (until Model A gain is wired).
+    /// Phase 1 flat grant per tick (`economy.flat_energy_grant_per_tick`).
     LegacyFlat,
     /// Global solar pool — not implemented until Phase 6.
     Pool,
@@ -227,6 +295,32 @@ impl EnvironmentConfig {
             return Err(ConfigError::Validation(
                 "environment.gradient_max must be >= gradient_min".into(),
             ));
+        }
+
+        if !self.overlap_shade_factor.is_finite()
+            || !(0.0..=1.0).contains(&self.overlap_shade_factor)
+        {
+            return Err(ConfigError::Validation(
+                "environment.overlap_shade_factor must be in [0, 1]".into(),
+            ));
+        }
+
+        for (i, zone) in self.hazards.iter().enumerate() {
+            if !zone.center[0].is_finite() || !zone.center[1].is_finite() {
+                return Err(ConfigError::Validation(format!(
+                    "environment.hazards[{i}].center must be finite"
+                )));
+            }
+            if !zone.radius.is_finite() || zone.radius <= 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "environment.hazards[{i}].radius must be positive and finite"
+                )));
+            }
+            if !zone.damage_per_tick.is_finite() || zone.damage_per_tick < 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "environment.hazards[{i}].damage_per_tick must be finite and >= 0"
+                )));
+            }
         }
 
         Ok(())
@@ -383,6 +477,85 @@ impl SimConfig {
             ));
         }
 
+        if dr.age_metabolism_scale_max <= dr.age_metabolism_scale_min {
+            return Err(ConfigError::Validation(
+                "genetics.decode_ranges.age_metabolism_scale_max must exceed age_metabolism_scale_min"
+                    .into(),
+            ));
+        }
+
+        if self.economy.age_metabolism_cap_ticks <= 0.0
+            || !self.economy.age_metabolism_cap_ticks.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "economy.age_metabolism_cap_ticks must be positive and finite".into(),
+            ));
+        }
+
+        if self.economy.age_metabolism_ref_ticks <= 0.0
+            || !self.economy.age_metabolism_ref_ticks.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "economy.age_metabolism_ref_ticks must be positive and finite".into(),
+            ));
+        }
+
+        if self.economy.age_metabolism_cap_per_sec < 0.0
+            || !self.economy.age_metabolism_cap_per_sec.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "economy.age_metabolism_cap_per_sec must be non-negative and finite".into(),
+            ));
+        }
+
+        if self.economy.p_damage_on_repro_base < 0.0
+            || self.economy.p_damage_on_repro_base > 1.0
+            || !self.economy.p_damage_on_repro_base.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "economy.p_damage_on_repro_base must be in [0, 1]".into(),
+            ));
+        }
+
+        if self.economy.repro_damage_fraction_of_max_hp < 0.0
+            || !self.economy.repro_damage_fraction_of_max_hp.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "economy.repro_damage_fraction_of_max_hp must be non-negative and finite".into(),
+            ));
+        }
+
+        if dr.k_mitigate < 0.0 || !dr.k_mitigate.is_finite() {
+            return Err(ConfigError::Validation(
+                "genetics.decode_ranges.k_mitigate must be non-negative and finite".into(),
+            ));
+        }
+
+        if self.economy.collision_damage_scale < 0.0
+            || !self.economy.collision_damage_scale.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "economy.collision_damage_scale must be non-negative and finite".into(),
+            ));
+        }
+
+        if self.economy.move_energy_per_sec_at_half_speed < 0.0
+            || !self.economy.move_energy_per_sec_at_half_speed.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "economy.move_energy_per_sec_at_half_speed must be non-negative and finite".into(),
+            ));
+        }
+
+        if self.economy.move_energy_half_speed_ratio <= 0.0
+            || self.economy.move_energy_half_speed_ratio > 1.0
+            || !self.economy.move_energy_half_speed_ratio.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "economy.move_energy_half_speed_ratio must be in (0, 1]".into(),
+            ));
+        }
+
         self.environment.validate()?;
 
         Ok(())
@@ -437,12 +610,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hazards_default_empty_when_key_missing() {
+        let toml = r#"
+            energy_model = "local"
+            solar_constant = 1.0
+            light_mode = "uniform"
+            gradient_min = 0.0
+            gradient_max = 1.0
+            gradient_bright_at = "top"
+        "#;
+        let env: EnvironmentConfig = toml::from_str(toml).unwrap();
+        assert!(env.hazards.is_empty());
+    }
+
+    #[test]
     fn crowding_flag_off_by_default() {
         let config = SimConfig::load_default().expect("default.toml should load");
         assert!(
             !config.environment.crowding_blocks_photosynthesis,
             "binary overlap blocking must be off in default config (Phase 2 canonical)"
         );
+    }
+
+    #[test]
+    fn repair_policy_defaults_to_core_first() {
+        let toml = r#"
+            metabolism_floor = 0.1
+            spawn_energy = 50.0
+            flat_energy_grant_per_tick = 0.0
+            core_max_hp = 100.0
+            repro_safety_margin = 0.25
+            p_death_on_repro_base = 0.15
+            p_damage_on_repro_base = 0.2
+            repro_damage_fraction_of_max_hp = 0.1
+            repair_energy_per_hp = 1.0
+            collision_damage_scale = 0.15
+            age_metabolism_cap_per_sec = 1.0
+            age_metabolism_cap_ticks = 18000.0
+            age_metabolism_ref_ticks = 3600.0
+        "#;
+        let economy: EconomyConfig = toml::from_str(toml).unwrap();
+        assert_eq!(economy.repair_policy, RepairPolicy::CoreFirst);
     }
 
     #[test]
@@ -454,6 +662,7 @@ mod tests {
         assert!(config.is_seeded());
         assert_eq!(config.environment.energy_model, EnergyModel::Local);
         assert_eq!(config.economy.flat_energy_grant_per_tick, 0.0);
+        assert_eq!(config.economy.repair_policy, RepairPolicy::CoreFirst);
         assert_eq!(config.environment.light_mode, LightMode::GradientY);
         assert!(!config.environment.crowding_blocks_photosynthesis);
     }

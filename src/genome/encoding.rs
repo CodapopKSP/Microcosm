@@ -27,7 +27,7 @@ pub mod core {
     pub const REPAIR_EFFICIENCY: usize = 20;
     pub const CHEMO_POTENTIAL: usize = 22;
     pub const MAX_SPEED: usize = 24;
-    pub const RESERVED: usize = 26;
+    pub const MAX_AGE: usize = 26;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,9 +253,8 @@ impl Genome {
         self.read_u16_be_at_core(core::MAX_SPEED)
     }
 
-    pub fn reserved_bytes(&self) -> Result<&[u8], GenomeError> {
-        let start = self.absolute_core_index(core::RESERVED)?;
-        Ok(&self.bytes[start..start + 2])
+    pub fn max_age_raw(&self) -> Result<u16, GenomeError> {
+        self.read_u16_be_at_core(core::MAX_AGE)
     }
 }
 
@@ -283,20 +282,20 @@ mod tests {
         assert_eq!(g.color_r().unwrap(), 0x88);
         assert_eq!(g.color_g().unwrap(), 0xCC);
         assert_eq!(g.color_b().unwrap(), 0x44);
-        assert_eq!(g.body_radius_raw().unwrap(), 128);
-        assert_eq!(g.photo_strength_raw().unwrap(), 0x4000);
+        assert_eq!(g.body_radius_raw().unwrap(), 109);
+        assert_eq!(g.photo_strength_raw().unwrap(), 0xFFFF);
         assert_eq!(g.metabolism_base_raw().unwrap(), 0x3000);
         assert_eq!(g.locomotion_investment_raw().unwrap(), 0x2800);
-        assert_eq!(g.repro_threshold_raw().unwrap(), 0x8000);
+        assert_eq!(g.repro_threshold_raw().unwrap(), 0xFFFF);
         assert_eq!(g.repro_cost_raw().unwrap(), 0x4000);
-        assert_eq!(g.offspring_endowment_raw().unwrap(), 0x3000);
-        assert_eq!(g.repro_cooldown_raw().unwrap(), 0x80);
+        assert_eq!(g.offspring_endowment_raw().unwrap(), 0xFFFF);
+        assert_eq!(g.repro_cooldown_raw().unwrap(), 8);
         assert_eq!(g.repro_risk_factor_raw().unwrap(), 0x80);
         assert_eq!(g.skin_hardness_raw().unwrap(), 0);
         assert_eq!(g.repair_efficiency_raw().unwrap(), 0x8000);
         assert_eq!(g.chemo_potential_raw().unwrap(), 0);
         assert_eq!(g.max_speed_raw().unwrap(), 0);
-        assert_eq!(g.reserved_bytes().unwrap(), &[0, 0]);
+        assert_eq!(g.max_age_raw().unwrap(), 0x8000);
     }
 
     #[test]

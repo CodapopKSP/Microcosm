@@ -79,6 +79,10 @@ const CORE_LOCI: &[CoreLocus] = &[
         offset: core::MAX_SPEED,
         len: 2,
     },
+    CoreLocus {
+        offset: core::MAX_AGE,
+        len: 2,
+    },
 ];
 
 /// Step one hex nibble in `byte` by +1 or −1 (clamped to 0..=15 per nibble).
@@ -319,6 +323,32 @@ mod tests {
     }
 
     #[test]
+    fn mutate_offspring_can_change_max_age_raw() {
+        let config = SimConfig::load_default().unwrap();
+        let parent = Genome::ancestor_from_config(&config).unwrap();
+        let parent_raw = parent.max_age_raw().unwrap();
+        let mut genetics = config.genetics.clone();
+        genetics.mutations_per_offspring = 12;
+        genetics.p_bit_flip = 0.0;
+        genetics.p_point = 1.0;
+        genetics.p_resample = 0.0;
+
+        let mut rng = StdRng::seed_from_u64(4242);
+        let mut saw_different = false;
+        for _ in 0..64 {
+            let child = mutate_offspring(&parent, &genetics, &mut rng);
+            if child.max_age_raw().unwrap() != parent_raw {
+                saw_different = true;
+                break;
+            }
+        }
+        assert!(
+            saw_different,
+            "offspring max_age_raw should differ from parent after repeated point mutations"
+        );
+    }
+
+    #[test]
     fn many_passes_can_change_genome() {
         let config = SimConfig::load_default().unwrap();
         let parent = Genome::ancestor_from_config(&config).unwrap();
@@ -358,6 +388,12 @@ mod tests {
     #[test]
     fn max_speed_locus_pick_probability_is_seven_point_five_percent() {
         assert_eq!(MAX_SPEED_LOCUS_PROB, 0.075);
+    }
+
+    #[test]
+    fn skin_hardness_and_repair_efficiency_are_core_loci() {
+        assert!(CORE_LOCI.iter().any(|l| l.offset == core::SKIN_HARDNESS));
+        assert!(CORE_LOCI.iter().any(|l| l.offset == core::REPAIR_EFFICIENCY));
     }
 
     #[test]

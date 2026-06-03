@@ -1,25 +1,15 @@
-use bevy::prelude::*;
-use evolution_sim::config::{self, SimConfig};
+use clap::Parser;
+use evolution_sim::cli::Cli;
+use evolution_sim::config::SimConfig;
 use evolution_sim::genome::{decode, Genome};
-use evolution_sim::sim::{
-    advance_sim_tick, behavior_movement, death_and_despawn, metabolism_and_gains,
-    performance_failsafe, reproduction, sense_exposure, spawn_initial_population, AgentColorMaterialPlugin,
-    FailsafeWarnLatch, NextEntityId, LightField, SimConfigResource, SimRng, SimTick, SpawnBlocked,
-    WorldBounds,
-};
-use evolution_sim::visual::VisualDebugPlugin;
-
-/// Validated ancestor template for spawning (Phase 1E).
-#[derive(Resource, Clone)]
-struct AncestorGenome(Genome);
+use evolution_sim::sim::{build_sim_app, SimRunMode};
+use std::path::Path;
 
 fn main() {
-    let config_path = std::env::args()
-        .nth(1)
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(config::default_config_path);
+    let cli = Cli::parse();
+    let config_path = cli.config_path();
 
-    let sim_config = SimConfig::load_from_path(&config_path).unwrap_or_else(|err| {
+    let sim_config = cli.load_config().unwrap_or_else(|err| {
         eprintln!("{err}");
         std::process::exit(1);
     });
@@ -34,6 +24,27 @@ fn main() {
         std::process::exit(1);
     });
 
+    log_config_loaded(&config_path, &sim_config, &ancestor, &ancestor_phenotype);
+
+    let mode = if cli.headless {
+        eprintln!(
+            "headless: running {} ticks (no window)",
+            sim_config.run.max_ticks
+        );
+        SimRunMode::Headless
+    } else {
+        SimRunMode::Visual
+    };
+
+    build_sim_app(sim_config, ancestor, mode).run();
+}
+
+fn log_config_loaded(
+    config_path: &Path,
+    sim_config: &SimConfig,
+    ancestor: &Genome,
+    ancestor_phenotype: &evolution_sim::genome::Phenotype,
+) {
     if sim_config.is_seeded() {
         eprintln!(
             "loaded {} (seeded, master_seed={})",
@@ -50,89 +61,23 @@ fn main() {
         ancestor_phenotype.body_radius,
         ancestor_phenotype.photo_strength,
     );
-
-    let (world_w, world_h) = (sim_config.world.width, sim_config.world.height);
-    let world_bounds = WorldBounds::from_world_size(world_w, world_h);
-    let light_field = LightField::from_environment(&sim_config.environment, &world_bounds);
-
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Evolution Sim".into(),
-                resolution: (world_w, world_h).into(),
-                ..default()
-            }),
-            ..default()
-        }))
-        .insert_resource(SimConfigResource(sim_config.clone()))
-        .insert_resource(AncestorGenome(ancestor))
-        .insert_resource(world_bounds)
-        .insert_resource(light_field)
-        .insert_resource(SimTick::default())
-        .insert_resource(NextEntityId::new(1))
-        .insert_resource(SimRng::from_config(&sim_config))
-        .insert_resource(SpawnBlocked(false))
-        .init_resource::<FailsafeWarnLatch>()
-        .add_plugins((AgentColorMaterialPlugin, VisualDebugPlugin))
-        .add_systems(Startup, setup)
-        .add_systems(
-            Update,
-            (
-                advance_sim_tick,
-                sense_exposure,
-                metabolism_and_gains,
-                behavior_movement,
-                reproduction,
-                death_and_despawn,
-                performance_failsafe,
-            )
-                .chain(),
-        )
-        .run();
-}
-
-fn setup(
-    mut commands: Commands,
-    config: Res<SimConfigResource>,
-    ancestor: Res<AncestorGenome>,
-    mut next_id: ResMut<NextEntityId>,
-    mut sim_rng: ResMut<SimRng>,
-    bounds: Res<WorldBounds>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<evolution_sim::sim::AgentColorMaterial>>,
-) {
-    commands.spawn(Camera2d);
-
-    let stats = spawn_initial_population(
-        &mut commands,
-        &mut meshes,
-        &mut materials,
-        &config.0,
-        &ancestor.0,
-        &bounds,
-        &mut next_id,
-        &mut sim_rng,
-    );
-
-    eprintln!(
-        "spawned {} agents (stillborn {}); debug: L=light gradient, click=select agent, Esc=clear",
-        stats.spawned, stats.stillborn
-    );
 }
 
 #[cfg(test)]
 mod tests {
     use bevy::app::App;
     use bevy::prelude::Transform;
-        use evolution_sim::sim::{
-            try_build_spawn, Agent, Cooldowns, Energy, Genome, Health, LightExposure, Lineage,
-            Phenotype, Velocity,
-        };
+    use evolution_sim::config::SimConfig;
+    use evolution_sim::genome::Genome;
+    use evolution_sim::sim::{
+        try_build_spawn, Agent, Cooldowns, Energy, Genome as GenomeComponent, Health,
+        LightExposure, Lineage, Phenotype, Velocity,
+    };
 
     #[test]
     fn spawned_agents_have_full_lifecycle_components() {
-        let config = evolution_sim::config::SimConfig::load_default().unwrap();
-        let genome = evolution_sim::genome::Genome::ancestor_from_config(&config).unwrap();
+        let config = SimConfig::load_default().unwrap();
+        let genome = Genome::ancestor_from_config(&config).unwrap();
         let params = try_build_spawn(genome, &config, 1, None, 0).unwrap();
 
         let mut app = App::new();
@@ -144,7 +89,7 @@ mod tests {
         ));
 
         let mut query = app.world_mut().query::<(
-            &Genome,
+            &GenomeComponent,
             &Phenotype,
             &Energy,
             &Health,

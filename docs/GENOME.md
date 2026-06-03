@@ -44,10 +44,13 @@ Avoid naked “efficiency” genes that monotonically improve fitness when maxim
 Reproduction always carries inherent risk (config + genes):
 
 ```
-energy_margin = internal_energy / repro_threshold
-risk_mult = repro_risk_factor_decoded  // 0..1
+energy_margin = internal_energy / repro_threshold   // after vitality transfer
+risk_mult = repro_risk_factor_decoded               // 0..1
 p_death = p_death_on_repro_base * risk_mult * max(0, 1 - energy_margin / repro_safety_margin)
+p_damage = p_damage_on_repro_base * risk_mult        // separate roll; may chip core HP
 ```
+
+Reproduction also pays **vitality transfer** (see below); low post-transfer energy increases `p_death`.
 
 Short `repro_cooldown` is not automatically optimal: frequent reproduction at low `energy_margin` increases exposure to `p_death`, failed spawns, and hazard windows while `repro_cost` is sunk.
 
@@ -69,29 +72,29 @@ Byte offsets are relative to **start of core segment** (byte 0 = first byte afte
 |--------|-------|---|-----|------------------|
 | 0–2 | `color_r`, `color_g`, `color_b` | 1 each | Neutral | `channel / 255.0` → render color; no fitness v1 |
 | 3 | `body_radius` | 1 | Tradeoff | `radius = r_min + (raw/255) * (r_max - r_min)`; metabolism scale `(radius/r_ref)²` |
-| 4–5 | `photo_strength` | 2 | Tradeoff | `u16 → [0, photo_max]`; uptake multiplier; `photo_upkeep = k_photo * photo_strength` |
+| 4–5 | `photo_strength` | 2 | Tradeoff | `u16 → [0, photo_max]`; uptake multiplier; gain also × `(body_radius/r_ref)²`; `photo_upkeep = k_photo * photo_strength` |
 | 6–7 | `metabolism_base` | 2 | Tradeoff | `u16 → [meta_min, meta_max]` idle drain per tick |
-| 8–9 | `locomotion_investment` | 2 | Tradeoff | `u16 → [0, loco_max]`; drives `move_cost` (not top speed) |
+| 8–9 | `locomotion_investment` | 2 | Tradeoff | `u16 → [0, loco_max]`; drives body-scaled `max_speed` |
 | 10–11 | `repro_threshold` | 2 | Neutral/Risk | `u16 → [e_min, e_max]` energy required to attempt repro |
-| 12–13 | `repro_cost` | 2 | Cost | Energy removed from parent on reproduce |
-| 14–15 | `offspring_endowment` | 2 | Tradeoff | Energy transferred to child; high values starve parent |
+| 12–13 | `repro_cost` | 2 | Legacy | Reserved in v1 layout; **not spent** — use `offspring_endowment` as transfer size |
+| 14–15 | `offspring_endowment` | 2 | Tradeoff | Child starting **core HP** from converted parent energy (capped by this gene); child spawns at **0 energy** |
 | 16 | `repro_cooldown` | 1 | Neutral | `ticks = cd_min + (raw/255) * (cd_max - cd_min)` |
 | 17 | `repro_risk_factor` | 1 | Risk | `raw/255` scales `p_death_on_repro` |
 | 18–19 | `skin_hardness` | 2 | Cost | Damage reduction; `armor_upkeep = k_armor * hardness`; `move_penalty = k_move * hardness` |
 | 20–21 | `repair_efficiency` | 2 | Tradeoff | Energy per HP repaired: `cost = base / efficiency` |
 | 22–23 | `chemo_potential` | 2 | Threshold | Active only if `raw/65535 > cliff` AND near vent; `chemo_upkeep` always if raw > 0 |
-| 24–25 | `max_speed` | 2 | Tradeoff | `u16 → [speed_min, speed_max]` sim units/sec; mutates independently of locomotion cost |
-| 26–27 | `max_age` | 2 | Tradeoff | **Phase 3:** `u16 → [age_min_ticks, age_max_ticks]`; `age_upkeep = k_age * (max_age_ticks / age_ref_ticks)` per tick ([PHASE_3.md](PHASE_3.md)) |
+| 24–25 | `max_speed` | 2 | Tradeoff | `u16 → [speed_min, speed_max]` multiplier on body-derived max speed |
+| 26–27 | `age_metabolism_scale` | 2 | Tradeoff | `u16 → [age_metabolism_scale_min, age_metabolism_scale_max]`; scales logarithmic age metabolism (replaces old-age cap) |
 
 ### Derived traits (not stored in DNA)
 
 | Trait | Formula (conceptual) |
 |-------|----------------------|
-| `max_speed` | `lerp(max_speed_raw) - move_penalty(hardness, appendages)` |
-| `move_cost` | `m_base + k_m * locomotion_investment + k_drag * body_radius + appendage_drag` |
-| `metabolism_moving` | `metabolism_base * (1 + k_move_meta * |velocity| / max_speed)` |
-| `max_age_ticks` | `lerp_u16(max_age_raw, age_min_ticks, age_max_ticks)` (Phase 3) |
-| `age_upkeep` | `k_age * (max_age_ticks / age_ref_ticks)` per tick (Phase 3) |
+| `max_speed` | `(v_base + k_v * locomotion) * (body_radius / r_ref) * lerp(max_speed_raw) - move_penalty` |
+| `move_cost` | Cached half-speed movement tick: `move_energy_per_sec_at_half_speed * (body_radius/r_ref)² / 60` |
+| `metabolism_moving` | `metabolism_idle * (1 + k_move_meta * speed_ratio)` (movement energy is separate) |
+| `age_metabolism_scale` | Gene multiplier on log-age metabolism (see below) |
+| `age_metabolism_per_tick` | `cap_per_tick * ln(1 + age/ref) / ln(1 + cap_ticks/ref) * scale` ([`economy`](../configs/default.toml)) |
 
 Decode helper:
 
@@ -110,16 +113,48 @@ Mid-range bytes for viability (hex of core payload after header):
 | Locus | Suggested raw | Rationale |
 |-------|---------------|-----------|
 | color | `0x88, 0xCC, 0x44` | Greenish, visible |
-| body_radius | `128` | Medium |
-| photo_strength | `0x4000` | Moderate uptake + upkeep |
+| body_radius | `109` | `r_ref` (12) — 100% photo/movement size scale |
+| photo_strength | `0xFFFF` | ~3.0 uptake (`photo_max = 3`) |
 | metabolism_base | `0x3000` | Moderate |
 | locomotion_investment | `0x2800` | Moderate speed/cost |
-| repro_* | mid per config | Can reproduce without instant death risk |
-| max_speed | `0x0000` | Immobile at worldgen; offspring can mutate faster |
-| skin_hardness | `0` | Phase 4+ |
+| repro_threshold | `0xFFFF` | 100 energy to attempt repro (`e_max = 100`) |
+| offspring_endowment | `0xFFFF` | Child starts at 100 core HP (from 100 energy paid at repro) |
+| repro_cost | `0x4000` | Legacy locus (unused in v1 payment) |
+| max_speed | `0x0000` | Speed multiplier at `speed_min` on body-derived cap |
+| age_metabolism_scale | `0x8000` | Mid scale on log-age penalty |
+| skin_hardness | `0` | No armor at worldgen; can evolve |
 | chemo_potential | `0` | Inactive until vents |
+| repro_risk_factor | `0x80` | ~50% of config death/damage rates |
 
-Exact byte pattern lives in `configs/default.toml` under `[genetics.ancestor_hex]` when implemented.
+Exact byte pattern: `configs/default.toml` → `[genetics.ancestor_hex]`.
+
+## Age metabolism (replaces max-age death)
+
+**Starvation:** `internal_energy == 0` is not fatal. Each tick still runs metabolism; any net deficit after energy is exhausted is applied to `core_hp`. Death is `CoreDestroyed` when HP reaches zero (photosynthesis can still refill energy from empty).
+
+There is **no** hard despawn at a decoded lifespan. Instead, each tick adds a logarithmic penalty (60 Hz assumed):
+
+```text
+cap_per_tick = age_metabolism_cap_per_sec / 60
+age_metabolism = cap_per_tick
+  * ln(1 + age_ticks / age_metabolism_ref_ticks)
+  / ln(1 + age_metabolism_cap_ticks / age_metabolism_ref_ticks)
+  * age_metabolism_scale
+```
+
+Default tuning: negligible at ~1 minute (`age_ticks ≈ 3600`), reaching **+1 energy/s** at ~5 minutes (`age_metabolism_cap_ticks = 18000`). Agents eventually starve from compounding costs unless they reproduce or stay in bright bands.
+
+## Energy → HP reproduction
+
+When `internal_energy >= repro_threshold` and cooldown is zero:
+
+1. Parent pays **`repro_threshold` energy** (parent **core HP unchanged**).
+2. Roll `p_death`, then `p_damage` (may reduce parent HP).
+3. On success, child spawns with `internal_energy = 0` and `core_hp = min(offspring_endowment, repro_threshold, core_max_hp)`.
+
+Example (ancestor): threshold 100, endowment 100, parent energy 100 → parent ends at 0 energy / 100 HP; child has 0 energy / 100 HP.
+
+`repro_cost` bytes remain in the genome for layout compatibility but are **not** deducted in v1.
 
 ## Morphology: appendages & sensors (Phase 5–7)
 
