@@ -99,8 +99,11 @@ pub fn interactions(
             pos: transform.translation.truncate(),
             radius: agent.radius,
             velocity: **velocity,
-            max_speed: phenotype.0.max_speed,
-            mitigation: phenotype.0.damage_mitigation,
+            max_speed: phenotype.max_speed(),
+            mitigation: phenotype
+                .v1()
+                .map(|p| p.damage_mitigation)
+                .unwrap_or(0.0),
             hazard_raw: hazard.damage_raw,
         })
         .collect();
@@ -119,12 +122,15 @@ mod tests {
     use super::*;
     use crate::config::SimConfig;
     use crate::genome::{decode, Genome};
-    use crate::sim::components::{HazardExposure, LifeBundle, LightExposure, VentExposure, Velocity};
+    use crate::sim::components::{
+        HazardExposure, LifeBundle, LightExposure, MineralExposure, VentExposure, Velocity,
+    };
     use crate::sim::hazards::HazardField;
+    use crate::sim::minerals::MineralField;
     use crate::sim::vents::VentField;
     use crate::sim::light::LightField;
     use crate::sim::systems::sense_exposure;
-    use crate::sim::world::WorldBounds;
+    use crate::sim::world::{SimConfigResource, WorldBounds};
 
     fn snapshot(
         entity: Entity,
@@ -202,7 +208,7 @@ mod tests {
 
     #[test]
     fn overlapping_agents_lose_hp_without_despawn() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let light = LightField::from_environment(&config.environment, &bounds);
         let hazards = HazardField::from_environment(&config.environment);
@@ -221,7 +227,12 @@ mod tests {
         app.insert_resource(SimConfigResource(config.clone()));
         app.insert_resource(light);
         app.insert_resource(hazards);
-        app.insert_resource(vents);
+        app.insert_resource(vents.clone());
+        app.insert_resource(MineralField::from_vent_field(
+            &vents,
+            &config.environment.feeding,
+            config.environment.minerals_enabled,
+        ));
 
         let life_a = LifeBundle::from_parts(fast_genome.clone_genome(), phenotype.clone(), &config, 1, None, 0);
         let life_b = LifeBundle::from_parts(fast_genome, phenotype, &config, 2, None, 0);
@@ -232,6 +243,7 @@ mod tests {
             LightExposure(0.0),
             HazardExposure::default(),
             VentExposure::default(),
+            MineralExposure::default(),
             Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
         ));
         app.world_mut().spawn((
@@ -240,6 +252,7 @@ mod tests {
             LightExposure(0.0),
             HazardExposure::default(),
             VentExposure::default(),
+            MineralExposure::default(),
             Transform::from_translation(Vec3::new(20.0, 0.0, 0.0)),
         ));
 

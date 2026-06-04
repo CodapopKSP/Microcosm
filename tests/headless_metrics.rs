@@ -54,6 +54,12 @@ fn assert_valid_jsonl_lines(lines: &[String]) {
             "mean_core_hp_frac",
             "repair_energy_spent",
             "mean_greenness",
+            "genome_version",
+            "mean_max_energy",
+            "mean_max_health",
+            "behavior_wander",
+            "behavior_pursue",
+            "behavior_avoid",
         ] {
             assert!(v.get(key).is_some(), "missing {key} in {line}");
         }
@@ -79,7 +85,8 @@ fn headless_writes_valid_jsonl() {
     let path = std::env::temp_dir().join("evolution_sim_phase3c_metrics.jsonl");
     let _ = std::fs::remove_file(&path);
     let config = headless_metrics_config(42, &path);
-    let ancestor = Genome::ancestor_from_config(&config).expect("ancestor");
+    let ancestor =
+        evolution_sim::genome::ancestor_any_from_config(&config).expect("ancestor");
     run_headless_bevy(config, ancestor);
     assert_valid_jsonl_lines(&read_jsonl(&path));
 }

@@ -2,7 +2,9 @@
 
 Evolution Sim is a 2D evolution sandbox built on [Bevy](https://bevyengine.org/). Entities have DNA, metabolize energy, move, reproduce with mutation, and are shaped by an environment with light, hazards, and (later) vents and resource fields.
 
-The current codebase implements **Phases 1–4**: genetics and lifecycle, local photosynthesis and light gradients, headless JSONL metrics, hazard zones and collision damage, armor/repair tradeoffs, and a greenness-linked photosynthesis niche. Collision overlap applies damage (no instant despawn); agents die when `core_hp` reaches zero, reproduction risk kills, or metabolic deficit drains HP.
+The default configuration uses **genome v2 (EVO2)** per [docs/Genome_Definition.md](docs/Genome_Definition.md): dual vitality caps, photo triad, heading-based movement, sensor rays, pursue/avoid behavior, feeding (minerals/corpses/soup), and v2 reproduction endowment. Legacy **v1 (EVO1)** remains available via [`configs/v1_regression.toml`](configs/v1_regression.toml) for regression tests.
+
+Phases 1–5 features (hazards, vents, metrics, headless runs) are wired for both encodings where applicable.
 
 ## Requirements
 
@@ -33,7 +35,9 @@ The first compile can take several minutes while Bevy builds. The window size, p
 
 ### Config
 
-- Default: [`configs/default.toml`](configs/default.toml)
+- Default (v2): [`configs/default.toml`](configs/default.toml)
+- v1 regression: [`configs/v1_regression.toml`](configs/v1_regression.toml)
+- v2 template / labs: [`configs/genome_v2.example.toml`](configs/genome_v2.example.toml), [`configs/mineral_vent_v2.toml`](configs/mineral_vent_v2.toml)
 - Invalid TOML or unsupported `genetics.genome_version` exits with a readable error before the window opens.
 - Comment out `master_seed` under `[run]` for nondeterministic RNG.
 

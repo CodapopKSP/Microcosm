@@ -1,5 +1,7 @@
 # Genome
 
+> **Legacy (implementation v1):** The repo still uses this `EVO1` layout. The **canonical target design** for genetics and related simulation behavior is [Genome_Definition.md](Genome_Definition.md). Implementation plan: [GENOME_V2_ARCHITECTURE_ROADMAP.md](GENOME_V2_ARCHITECTURE_ROADMAP.md).
+
 This document defines DNA encoding (version 1), trait design philosophy, core loci layout, phenotype decoding formulas, morphology and sensors, mutation operators, and initial population guidelines.
 
 ## Encoding (GenomeVersion = 1)

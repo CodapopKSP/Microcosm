@@ -30,7 +30,15 @@ Append-only records: `Birth`, `Death`, `Reproduction`, `MutationSummary` with ti
 
 ## Configuration (`SimConfig`)
 
-Structured **TOML** files in `configs/` (e.g. `configs/default.toml`). Suggested top-level sections:
+Structured **TOML** files in `configs/` (e.g. `configs/default.toml`).
+
+**v2 rules** ([Genome_Definition.md](Genome_Definition.md), [CONFIG.md](CONFIG.md)):
+
+- **Genome bytes** — only heritable per-agent variation (chromosomes + pursue/avoid slots).
+- **Everything else** — global config, identical for all organisms in a run (age metabolism, repro risk, cooldown, spawn energy, hazard placement, and **all constants used to decode** genome bytes into phenotypes).
+- Example v2 template: [`configs/genome_v2.example.toml`](../configs/genome_v2.example.toml).
+
+Suggested top-level sections:
 
 ### `[world]`
 
@@ -76,7 +84,7 @@ Natural population limits come from energy, metabolism, and environment—not fr
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `genome_version` | u8 | Must match encoder (currently `1`) |
+| `genome_version` | u8 | `2` default (EVO2); `1` for legacy ([`configs/v1_regression.toml`](../configs/v1_regression.toml)) |
 | `core_length` | usize | Fixed core byte length |
 | `p_bit_flip`, `p_point`, `p_resample`, `p_dup`, `p_del` | f32 | Mutation probabilities |
 | `mutations_per_offspring` | u32 | Expected mutation passes on reproduce |
@@ -134,17 +142,20 @@ Optional `--seed U64` overrides `run.master_seed` after TOML load. Default confi
 
 Implement systems in this order (see [ARCHITECTURE.md](ARCHITECTURE.md)):
 
-1. **Environment tick** — **Phase 6+:** pool/soup regen; **Phase 9:** advance season clock and apply effective overrides ([PHASE_9.md](PHASE_9.md))
-2. **Sense / exposure** — **Implemented:** `LightField` → `LightExposure`; `HazardField` → `HazardExposure` (vents/soup later)
-3. **Metabolism & gains** — **Implemented:** Model A gain (× greenness photo mult) minus upkeeps, green metabolism tax, idle metabolism
-4. **Behavior / movement** — **Implemented:** velocity, movement energy, `move_penalty` from hardness
-5. **Interactions** — **Implemented:** zone hazard + symmetric collision damage → `core_hp` ([`interactions`](../src/sim/systems/interactions.rs))
-6. **Healing** — **Implemented:** energy-funded repair per `repair_policy` ([`healing`](../src/sim/systems/healing.rs))
-7. **Reproduction** — Cooldown check, threshold, pay `repro_cost`, roll repro risk, spawn child with mutations and endowment
-8. **Advance age** — **Implemented:** `Age.ticks += 1` per living agent
-9. **Death & despawn** — **Implemented:** energy, core HP, `age_ticks >= max_age_ticks`, repro fatality
-10. **Performance failsafe** — If `population > max_entities`, apply emergency policy and log warning
-11. **Metrics sample** — **Implemented (headless):** JSONL per [PHASE_3.md](PHASE_3.md#jsonl-schema-frozen-for-phase-3) + [Phase 4 extensions](PHASE_3.md#phase-4-extensions-jsonl)
+1. **Environment tick** — **Implemented:** soup regen, corpse TTL ([`environment_tick`](../src/sim/systems/environment_tick.rs)); Phase 9 seasons later
+2. **Sense / exposure** — **Implemented:** light, hazards, vents (v1 chemo only), `MineralExposure` ([`sense_exposure`](../src/sim/systems/sense.rs))
+3. **Sense rays** (v2) — **Implemented:** 8-direction cones, pursue/avoid signatures → `SensePerception` ([`sense_rays`](../src/sim/systems/sense_rays.rs))
+4. **Behavior** (v2) — **Implemented:** avoid > pursue > wander → `BehaviorState` ([`behavior_v2`](../src/sim/systems/behavior_v2.rs))
+5. **Feeding** (v2) — **Implemented:** minerals, corpses, soup ([`feeding_v2`](../src/sim/systems/feeding_v2.rs))
+6. **Metabolism & gains** — v1 Model A; v2 photo triad + sensor upkeep ([`metabolism_v2`](../src/sim/systems/metabolism_v2.rs))
+7. **Behavior / movement** — v1 random velocity; v2 heading + pursue / avoid flee ([`movement_v2`](../src/sim/systems/movement_v2.rs))
+8. **Interactions** — zone hazard + collision → `core_hp` ([`interactions`](../src/sim/systems/interactions.rs))
+9. **Healing** — v1 repair policy; v2 `healing_rate` gene ([`healing_v2`](../src/sim/systems/healing_v2.rs))
+10. **Reproduction** — v1 absolute threshold; v2 % max energy + combined endowment ([`reproduction_v2`](../src/sim/systems/reproduction_v2.rs))
+11. **Advance age** — `Age.ticks += 1` (global age metabolism; no `max_age` gene in v2)
+12. **Death & despawn** — core HP ≤ 0, repro fatality; v2 corpses optional
+13. **Performance failsafe** — `population > max_entities`
+14. **Metrics sample** — JSONL includes `genome_version`, v2 caps, behavior counts ([`metrics`](../src/sim/metrics.rs))
 
 ```mermaid
 flowchart TD

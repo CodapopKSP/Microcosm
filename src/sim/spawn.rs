@@ -5,9 +5,16 @@ use rand::Rng;
 
 use crate::config::{SimConfig, WorldConfig};
 use super::agent_material::AgentColorMaterial;
-use crate::genome::{decode, Genome as GenomeData, Phenotype as PhenotypeData};
+use crate::genome::{
+    decode, decode_phenotype, AnyGenome, AnyPhenotype,
+    Genome as GenomeData, Phenotype as PhenotypeData,
+};
 
-use super::components::{HazardExposure, LifeBundle, LightExposure, VentExposure, Velocity};
+use super::behavior::BehaviorState;
+use super::components::{
+    HazardExposure, Heading, LifeBundle, LightExposure, MineralExposure, VentExposure, Velocity,
+};
+use super::perception::SensePerception;
 use super::world::{NextEntityId, SimRng, WorldBounds};
 
 /// Agent mesh Z (draw order comes from [`AgentColorMaterial::depth_bias`](super::agent_material::AgentColorMaterial)).
@@ -26,12 +33,22 @@ pub struct SpawnParams {
     pub life: LifeBundle,
     pub position: Vec2,
     pub velocity: Vec2,
+    pub heading: Heading,
     pub color: Color,
     pub body_radius: f32,
 }
 
 /// Validate genome and decode phenotype; returns `None` on stillborn.
 pub fn try_prepare_spawn(
+    genome: AnyGenome,
+    config: &SimConfig,
+) -> Option<(AnyGenome, AnyPhenotype)> {
+    let phenotype = decode_phenotype(&genome, config).ok()?;
+    Some((genome, phenotype))
+}
+
+/// Validate v1 genome and decode phenotype; returns `None` on stillborn.
+pub fn try_prepare_spawn_v1(
     genome: GenomeData,
     config: &SimConfig,
 ) -> Option<(GenomeData, PhenotypeData)> {
@@ -45,13 +62,14 @@ pub fn try_prepare_spawn(
 
 /// Build spawn params after validation (caller assigns lineage id).
 pub fn build_spawn_params(
-    genome: GenomeData,
-    phenotype: PhenotypeData,
+    genome: AnyGenome,
+    phenotype: AnyPhenotype,
     config: &SimConfig,
     id: u64,
     parent_id: Option<u64>,
     generation: u32,
 ) -> SpawnParams {
+    let (initial_hp, _) = vitality_spawn_pools(&phenotype, config);
     build_offspring_spawn_params(
         genome,
         phenotype,
@@ -60,14 +78,14 @@ pub fn build_spawn_params(
         parent_id,
         generation,
         config.economy.spawn_energy,
-        config.economy.core_max_hp,
+        initial_hp,
     )
 }
 
 /// Build spawn params for a child with explicit starting energy (offspring endowment).
 pub fn build_offspring_spawn_params(
-    genome: GenomeData,
-    phenotype: PhenotypeData,
+    genome: AnyGenome,
+    phenotype: AnyPhenotype,
     config: &SimConfig,
     id: u64,
     parent_id: Option<u64>,
@@ -76,9 +94,15 @@ pub fn build_offspring_spawn_params(
     initial_core_hp: f32,
 ) -> SpawnParams {
     let color = phenotype_to_color(&phenotype);
-    let body_radius = phenotype.body_radius;
-    // Newborn vitality is a full pool at endowment — not the adult species cap (see GENOME.md).
-    let life = LifeBundle::from_parts_with_vitals(
+    let body_radius = phenotype.body_radius();
+    let (initial_hp, initial_max_hp) = match &phenotype {
+        AnyPhenotype::V2(p) => (
+            initial_core_hp.min(p.max_health.max(0.0)),
+            p.max_health.max(0.0),
+        ),
+        AnyPhenotype::V1(_) => (initial_core_hp, initial_core_hp),
+    };
+    let life = LifeBundle::from_any_parts_with_vitals(
         genome,
         phenotype,
         config,
@@ -86,14 +110,15 @@ pub fn build_offspring_spawn_params(
         parent_id,
         generation,
         initial_energy,
-        initial_core_hp,
-        initial_core_hp,
+        initial_hp,
+        initial_max_hp,
     );
 
     SpawnParams {
         life,
         position: Vec2::ZERO,
         velocity: Vec2::ZERO,
+        heading: Heading(0.0),
         color,
         body_radius,
     }
@@ -101,7 +126,7 @@ pub fn build_offspring_spawn_params(
 
 /// Validate, decode, and build a full spawn package; `None` if stillborn.
 pub fn try_build_spawn(
-    genome: GenomeData,
+    genome: AnyGenome,
     config: &SimConfig,
     id: u64,
     parent_id: Option<u64>,
@@ -118,8 +143,13 @@ pub fn try_build_spawn(
     ))
 }
 
-pub fn phenotype_to_color(phenotype: &PhenotypeData) -> Color {
-    Color::srgb(phenotype.color[0], phenotype.color[1], phenotype.color[2])
+pub fn phenotype_to_color(phenotype: &AnyPhenotype) -> Color {
+    let c = phenotype.color();
+    Color::srgb(c[0], c[1], c[2])
+}
+
+fn vitality_spawn_pools(phenotype: &AnyPhenotype, config: &SimConfig) -> (f32, f32) {
+    crate::sim::components::vitality_spawn_pools_for(phenotype, config)
 }
 
 /// Random position inside world bounds (`stream_spawn` RNG).
@@ -140,11 +170,12 @@ pub fn randomize_placement(
     randomize_position(params, rng, bounds);
     let angle = rng.gen_range(0.0..std::f32::consts::TAU);
     let speed = random_initial_speed(
-        params.life.phenotype.0.max_speed,
+        params.life.phenotype.max_speed(),
         world.min_speed,
         rng,
     );
     params.velocity = Vec2::from_angle(angle) * speed;
+    params.heading = Heading::from_angle(angle);
 }
 
 /// Place child near parent (uses `stream_spawn` RNG semantics via caller-provided rng).
@@ -167,8 +198,9 @@ pub fn place_near_parent(
     pos.y = pos.y.clamp(min_y, max_y);
     params.position = pos;
 
-    let speed = random_initial_speed(params.life.phenotype.0.max_speed, 5.0, rng);
+    let speed = random_initial_speed(params.life.phenotype.max_speed(), 5.0, rng);
     params.velocity = Vec2::from_angle(angle) * speed;
+    params.heading = Heading::from_angle(angle);
 }
 
 /// Spawn velocity magnitude from decoded [`Phenotype::max_speed`](crate::genome::Phenotype::max_speed).
@@ -198,19 +230,49 @@ pub fn spawn_agent_entity(
     materials: &mut Assets<AgentColorMaterial>,
     params: SpawnParams,
 ) -> Entity {
-    let lineage_id = params.life.lineage.id;
-    commands
-        .spawn((
-            params.life,
-            Velocity(params.velocity),
-            LightExposure(0.0),
-            HazardExposure::default(),
-            VentExposure::default(),
-            Mesh2d(meshes.add(Circle::new(params.body_radius))),
-            MeshMaterial2d(materials.add(AgentColorMaterial::new(params.color, lineage_id))),
-            Transform::from_translation(params.position.extend(AGENT_MESH_Z)),
-        ))
-        .id()
+    let SpawnParams {
+        life,
+        position,
+        velocity,
+        heading,
+        color,
+        body_radius,
+    } = params;
+    let lineage_id = life.lineage.id;
+    let armor_stroke = life.phenotype.v2().map(|p| p.armor_stroke);
+    let mut entity_cmd = commands.spawn((
+        life,
+        heading,
+        SensePerception::default(),
+        BehaviorState::default(),
+        Velocity(velocity),
+        LightExposure(0.0),
+        HazardExposure::default(),
+        VentExposure::default(),
+        MineralExposure::default(),
+        Mesh2d(meshes.add(Circle::new(body_radius))),
+        MeshMaterial2d(materials.add(AgentColorMaterial::new(color, lineage_id))),
+        Transform::from_translation(position.extend(AGENT_MESH_Z)),
+    ));
+
+    if let Some(stroke) = armor_stroke {
+        if stroke > 0.05 {
+            let ring_radius = body_radius + stroke * 0.5;
+            entity_cmd.with_children(|parent| {
+                parent.spawn((
+                    crate::visual::ArmorOutline,
+                    Mesh2d(meshes.add(Circle::new(ring_radius))),
+                    MeshMaterial2d(materials.add(AgentColorMaterial::new(
+                        Color::srgba(0.15, 0.15, 0.18, 0.85),
+                        lineage_id.wrapping_add(1),
+                    ))),
+                    Transform::from_xyz(0.0, 0.0, -0.05),
+                ));
+            });
+        }
+    }
+
+    entity_cmd.id()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,7 +287,7 @@ pub fn spawn_initial_population(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<AgentColorMaterial>,
     config: &SimConfig,
-    ancestor: &GenomeData,
+    ancestor: &AnyGenome,
     bounds: &WorldBounds,
     next_id: &mut NextEntityId,
     sim_rng: &mut SimRng,
@@ -259,16 +321,20 @@ pub fn spawn_initial_population(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::genome::Genome;
+    use crate::genome::{AnyGenome, Genome};
+
+    fn v1(genome: Genome) -> AnyGenome {
+        AnyGenome::V1(genome)
+    }
 
     #[test]
     fn invalid_genome_is_stillborn() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let mut genome = Genome::ancestor_from_config(&config).unwrap();
         genome.bytes[0] = b'X';
-        assert!(try_prepare_spawn(genome, &config).is_none());
+        assert!(try_prepare_spawn(v1(genome), &config).is_none());
         assert!(try_build_spawn(
-            Genome::ancestor_from_config(&config).unwrap(),
+            v1(Genome::ancestor_from_config(&config).unwrap()),
             &config,
             1,
             None,
@@ -278,43 +344,44 @@ mod tests {
 
         let mut bad = Genome::ancestor_from_config(&config).unwrap();
         bad.bytes[0] = b'X';
-        assert!(try_build_spawn(bad, &config, 1, None, 0).is_none());
+        assert!(try_build_spawn(v1(bad), &config, 1, None, 0).is_none());
     }
 
     #[test]
     fn spawn_uses_phenotype_color_and_radius() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let genome = Genome::ancestor_from_config(&config).unwrap();
-        let (_, phenotype) = try_prepare_spawn(genome, &config).unwrap();
+        let (_, phenotype) = try_prepare_spawn(v1(genome), &config).unwrap();
         let params = build_spawn_params(
-            Genome::ancestor_from_config(&config).unwrap(),
+            v1(Genome::ancestor_from_config(&config).unwrap()),
             phenotype.clone(),
             &config,
             1,
             None,
             0,
         );
-        assert_eq!(params.body_radius, phenotype.body_radius);
-        assert_eq!(params.life.agent.radius, phenotype.body_radius);
+        assert_eq!(params.body_radius, phenotype.body_radius());
+        assert_eq!(params.life.agent.radius, phenotype.body_radius());
         let c = params.color.to_srgba();
-        assert!((c.red - phenotype.color[0]).abs() < 1e-5);
+        let color = phenotype.color();
+        assert!((c.red - color[0]).abs() < 1e-5);
     }
 
     #[test]
     fn stillborn_skips_id_assignment_in_prepare_path() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let mut bad = Genome::ancestor_from_config(&config).unwrap();
         bad.bytes[0] = b'X';
-        assert!(try_prepare_spawn(bad, &config).is_none());
+        assert!(try_prepare_spawn(v1(bad), &config).is_none());
     }
 
     #[test]
     fn offspring_spawn_has_empty_part_hp() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let genome = Genome::ancestor_from_config(&config).unwrap();
-        let (_, phenotype) = try_prepare_spawn(genome.clone(), &config).unwrap();
+        let (_, phenotype) = try_prepare_spawn(v1(genome.clone()), &config).unwrap();
         let params = build_offspring_spawn_params(
-            genome,
+            v1(genome),
             phenotype,
             &config,
             2,
@@ -328,10 +395,10 @@ mod tests {
 
     #[test]
     fn initial_population_prepare_succeeds_for_ancestor() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let ancestor = Genome::ancestor_from_config(&config).unwrap();
         for _ in 0..config.world.initial_population {
-            assert!(try_prepare_spawn(ancestor.clone_genome(), &config).is_some());
+            assert!(try_prepare_spawn(v1(ancestor.clone_genome()), &config).is_some());
         }
     }
 }

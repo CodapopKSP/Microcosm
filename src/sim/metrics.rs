@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::genome::Genome as GenomeData;
 
+use super::behavior::{BehaviorMode, BehaviorState};
 use super::components::{Agent, DeathReason, Energy, Genome, Health, Phenotype};
 use super::world::SimConfigResource;
 
@@ -143,6 +144,14 @@ pub struct MetricsLine {
     pub repair_energy_spent: f32,
     #[serde(serialize_with = "serialize_rounded_f32")]
     pub mean_greenness: f32,
+    pub genome_version: u8,
+    #[serde(serialize_with = "serialize_rounded_f32")]
+    pub mean_max_energy: f32,
+    #[serde(serialize_with = "serialize_rounded_f32")]
+    pub mean_max_health: f32,
+    pub behavior_wander: u32,
+    pub behavior_pursue: u32,
+    pub behavior_avoid: u32,
 }
 
 pub fn round_metric(x: f32) -> f64 {
@@ -162,6 +171,14 @@ where
 }
 
 fn fold_genome_key(genome: &GenomeData) -> String {
+    let fold = genome
+        .bytes
+        .iter()
+        .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(u64::from(b)));
+    format!("{fold:016x}")
+}
+
+fn fold_genome_key_v2(genome: &crate::genome::GenomeV2) -> String {
     let fold = genome
         .bytes
         .iter()
@@ -196,6 +213,7 @@ fn median_sorted(values: &mut [f32]) -> f32 {
 pub fn build_metrics_line(
     tick: u64,
     counters: &MetricsPeriodCounters,
+    genome_version: u8,
     energies: &[f32],
     photo_strengths: &[f32],
     age_metabolism_scales: &[f32],
@@ -206,6 +224,11 @@ pub fn build_metrics_line(
     core_hp_fracs: &[f32],
     repair_energy_spent: f32,
     greennesses: &[f32],
+    max_energies: &[f32],
+    max_healths: &[f32],
+    behavior_wander: u32,
+    behavior_pursue: u32,
+    behavior_avoid: u32,
 ) -> MetricsLine {
     let population = energies.len() as u32;
     let mean_energy = if population == 0 {
@@ -273,6 +296,17 @@ pub fn build_metrics_line(
         *genotype_hash_histogram.entry(key.clone()).or_insert(0) += 1;
     }
 
+    let mean_max_energy = if max_energies.is_empty() {
+        0.0
+    } else {
+        max_energies.iter().sum::<f32>() / max_energies.len() as f32
+    };
+    let mean_max_health = if max_healths.is_empty() {
+        0.0
+    } else {
+        max_healths.iter().sum::<f32>() / max_healths.len() as f32
+    };
+
     MetricsLine {
         tick,
         population,
@@ -295,6 +329,12 @@ pub fn build_metrics_line(
         mean_core_hp_frac,
         repair_energy_spent,
         mean_greenness,
+        genome_version,
+        mean_max_energy,
+        mean_max_health,
+        behavior_wander,
+        behavior_pursue,
+        behavior_avoid,
     }
 }
 
@@ -305,7 +345,14 @@ pub fn metrics_sample(
     mut counters: ResMut<MetricsPeriodCounters>,
     mut repair_stats: ResMut<RepairStats>,
     mut writer: ResMut<MetricsWriter>,
-    query: Query<(&Energy, &Phenotype, &Genome, &Agent, &Health)>,
+    query: Query<(
+        &Energy,
+        &Phenotype,
+        &Genome,
+        &Agent,
+        &Health,
+        Option<&BehaviorState>,
+    )>,
 ) {
     if !writer.enabled {
         return;
@@ -325,28 +372,59 @@ pub fn metrics_sample(
     let mut skin_hardnesses = Vec::new();
     let mut core_hp_fracs = Vec::new();
     let mut greennesses = Vec::new();
+    let mut max_energies = Vec::new();
+    let mut max_healths = Vec::new();
+    let mut behavior_wander = 0_u32;
+    let mut behavior_pursue = 0_u32;
+    let mut behavior_avoid = 0_u32;
+    let genome_version = config.0.genetics.genome_version;
 
-    for (energy, phenotype, genome, agent, health) in &query {
+    for (energy, phenotype, genome, agent, health, behavior) in &query {
         energies.push(energy.internal_energy);
-        photo_strengths.push(phenotype.0.photo_strength);
-        age_metabolism_scales.push(phenotype.0.age_metabolism_scale);
-        color_keys.push(color_bin_key(phenotype.0.color));
+        max_energies.push(energy.max_internal_energy);
         radii.push(agent.radius);
-        genotype_keys.push(fold_genome_key(&genome.0));
-        skin_hardnesses.push(phenotype.0.skin_hardness);
         let frac = if health.core_max_hp > 0.0 {
             health.core_hp / health.core_max_hp
         } else {
             0.0
         };
         core_hp_fracs.push(frac);
-        greennesses.push(phenotype.0.greenness);
+        max_healths.push(health.core_max_hp);
+
+        if let Some(b) = behavior {
+            match b.mode {
+                BehaviorMode::Wander => behavior_wander += 1,
+                BehaviorMode::Pursue => behavior_pursue += 1,
+                BehaviorMode::Avoid => behavior_avoid += 1,
+            }
+        }
+
+        match (&phenotype.0, &genome.0) {
+            (crate::genome::AnyPhenotype::V1(p), crate::genome::AnyGenome::V1(g)) => {
+                photo_strengths.push(p.photo_strength);
+                age_metabolism_scales.push(p.age_metabolism_scale);
+                color_keys.push(color_bin_key(p.color));
+                genotype_keys.push(fold_genome_key(g));
+                skin_hardnesses.push(p.skin_hardness);
+                greennesses.push(p.greenness);
+            }
+            (crate::genome::AnyPhenotype::V2(p), crate::genome::AnyGenome::V2(g)) => {
+                photo_strengths.push(p.photo_effective);
+                age_metabolism_scales.push(0.0);
+                color_keys.push(color_bin_key(p.color));
+                genotype_keys.push(fold_genome_key_v2(g));
+                skin_hardnesses.push(p.armor_stroke);
+                greennesses.push(p.color[1]);
+            }
+            _ => {}
+        }
     }
 
     let repair_spent = repair_stats.energy_spent_this_period;
     let line = build_metrics_line(
         tick.tick,
         &counters,
+        genome_version,
         &energies,
         &photo_strengths,
         &age_metabolism_scales,
@@ -357,6 +435,11 @@ pub fn metrics_sample(
         &core_hp_fracs,
         repair_spent,
         &greennesses,
+        &max_energies,
+        &max_healths,
+        behavior_wander,
+        behavior_pursue,
+        behavior_avoid,
     );
 
     if let Err(err) = writer.write_line(&line) {
@@ -383,8 +466,24 @@ mod tests {
         counters.record_death(DeathReason::ReproFatality);
         counters.record_death(DeathReason::AgeExceeded);
         let line = build_metrics_line(
-            60, &counters, &[1.0], &[0.5], &[3000.0], &[], &[12.0], &[], &[0.2], &[0.9], 1.5,
+            60,
+            &counters,
+            1,
+            &[1.0],
+            &[0.5],
+            &[3000.0],
+            &[],
+            &[12.0],
+            &[],
+            &[0.2],
+            &[0.9],
+            1.5,
             &[0.6],
+            &[100.0],
+            &[50.0],
+            1,
+            0,
+            0,
         );
         assert_eq!(line.deaths, 3);
         assert_eq!(
@@ -402,6 +501,7 @@ mod tests {
         let line = build_metrics_line(
             60,
             &counters,
+            2,
             &[10.0, 20.0],
             &[0.4, 0.5],
             &[2000.0, 4000.0],
@@ -412,6 +512,11 @@ mod tests {
             &[1.0, 0.8],
             0.0,
             &[0.5, 0.7],
+            &[100.0, 120.0],
+            &[80.0, 90.0],
+            2,
+            0,
+            0,
         );
         let json = serde_json::to_string(&line).unwrap();
         for key in [
@@ -435,6 +540,12 @@ mod tests {
             "mean_core_hp_frac",
             "repair_energy_spent",
             "mean_greenness",
+            "genome_version",
+            "mean_max_energy",
+            "mean_max_health",
+            "behavior_wander",
+            "behavior_pursue",
+            "behavior_avoid",
         ] {
             assert!(json.contains(key), "missing {key} in {json}");
         }
@@ -447,6 +558,7 @@ mod tests {
         let line = build_metrics_line(
             60,
             &counters,
+            1,
             &[10.0],
             &[0.5],
             &[3000.0],
@@ -457,6 +569,11 @@ mod tests {
             &[0.75],
             2.5,
             &[0.8],
+            &[50.0],
+            &[40.0],
+            0,
+            0,
+            0,
         );
         assert_eq!(round_metric(line.mean_skin_hardness), 0.25);
         assert_eq!(round_metric(line.mean_core_hp_frac), 0.75);

@@ -63,7 +63,7 @@ mod tests {
     use crate::config::SimConfig;
 
     fn light_field_with_mode(light_mode: LightMode) -> LightField {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let mut env = config.environment.clone();
         env.light_mode = light_mode;
@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn uniform_is_constant_everywhere() {
         let field = light_field_with_mode(LightMode::Uniform);
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let expected = config.environment.gradient_max;
         let corners = [
             Vec2::new(-450.0, -350.0),
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn light_gradient_top_brighter_than_bottom() {
         let field = light_field_with_mode(LightMode::GradientY);
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let top = Vec2::new(0.0, bounds.half_y);
         let bottom = Vec2::new(0.0, -bounds.half_y);
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn light_gradient_y_corners_match_vertical_extremes() {
         let field = light_field_with_mode(LightMode::GradientY);
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let hx = bounds.half_x;
         let hy = bounds.half_y;
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn gradient_y_brighter_at_bottom_when_configured() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let mut env = config.environment.clone();
         env.light_mode = LightMode::GradientY;
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn gradient_y_is_linear_midpoint() {
         let field = light_field_with_mode(LightMode::GradientY);
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let mid = field.sample(Vec2::ZERO);
         let expected =
             (config.environment.gradient_min + config.environment.gradient_max) / 2.0;
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn sample_clamps_y_outside_bounds() {
         let field = light_field_with_mode(LightMode::GradientY);
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let above = Vec2::new(0.0, bounds.half_y * 2.0);
         let top = Vec2::new(0.0, bounds.half_y);

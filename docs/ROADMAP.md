@@ -2,7 +2,9 @@
 
 Phased implementation plan from the current proof of concept through sexual reproduction. Each phase lists scope, acceptance criteria, and explicit **out of scope** items to prevent creep.
 
-**Current state:** Phase 4 complete ([`src/main.rs`](../src/main.rs), [PHASE_1.md](PHASE_1.md), [PHASE_2.md](PHASE_2.md), [PHASE_3.md](PHASE_3.md), [PHASE_4.md](PHASE_4.md)). Phase 5 plan: [PHASE_5.md](PHASE_5.md).
+**Current state:** Phase 4 complete; **G8 cutover** — default config is EVO2 ([`configs/default.toml`](../configs/default.toml)). v1 regression: [`configs/v1_regression.toml`](../configs/v1_regression.toml). Track: [GENOME_V2_ARCHITECTURE_ROADMAP.md](GENOME_V2_ARCHITECTURE_ROADMAP.md).
+
+**Canonical redesign:** [Genome_Definition.md](Genome_Definition.md) supersedes v1 genetics. Phase 5 v1 sensor-byte plans are deferred; v2 uses sensors bytes 20–21 in the fixed core.
 
 ## Overview
 

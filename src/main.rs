@@ -1,7 +1,9 @@
 use clap::Parser;
 use evolution_sim::cli::Cli;
 use evolution_sim::config::SimConfig;
-use evolution_sim::genome::{decode, Genome};
+use evolution_sim::genome::{
+    ancestor_any_from_config, decode_phenotype, AnyGenome, AnyPhenotype,
+};
 use evolution_sim::sim::{build_sim_app, SimRunMode};
 use std::path::Path;
 
@@ -14,12 +16,12 @@ fn main() {
         std::process::exit(1);
     });
 
-    let ancestor = Genome::ancestor_from_config(&sim_config).unwrap_or_else(|err| {
+    let ancestor = ancestor_any_from_config(&sim_config).unwrap_or_else(|err| {
         eprintln!("invalid ancestor genome in config: {err}");
         std::process::exit(1);
     });
 
-    let ancestor_phenotype = decode(&ancestor, &sim_config).unwrap_or_else(|err| {
+    let ancestor_phenotype = decode_phenotype(&ancestor, &sim_config).unwrap_or_else(|err| {
         eprintln!("failed to decode ancestor phenotype: {err}");
         std::process::exit(1);
     });
@@ -42,8 +44,8 @@ fn main() {
 fn log_config_loaded(
     config_path: &Path,
     sim_config: &SimConfig,
-    ancestor: &Genome,
-    ancestor_phenotype: &evolution_sim::genome::Phenotype,
+    ancestor: &AnyGenome,
+    ancestor_phenotype: &AnyPhenotype,
 ) {
     if sim_config.is_seeded() {
         eprintln!(
@@ -54,12 +56,27 @@ fn log_config_loaded(
     } else {
         eprintln!("loaded {} (nondeterministic)", config_path.display());
     }
+    let (bytes_len, version, radius, photo) = match (ancestor, ancestor_phenotype) {
+        (AnyGenome::V1(g), AnyPhenotype::V1(p)) => (
+            g.bytes.len(),
+            g.version,
+            p.body_radius,
+            p.photo_strength,
+        ),
+        (AnyGenome::V2(g), AnyPhenotype::V2(p)) => (
+            g.bytes.len(),
+            g.version,
+            p.body_radius,
+            p.photo_effective,
+        ),
+        _ => {
+            eprintln!("ancestor genome/phenotype version mismatch");
+            return;
+        }
+    };
     eprintln!(
         "ancestor ok ({} bytes, v{}, radius {:.1}, photo {:.2})",
-        ancestor.bytes.len(),
-        ancestor.version,
-        ancestor_phenotype.body_radius,
-        ancestor_phenotype.photo_strength,
+        bytes_len, version, radius, photo
     );
 }
 
@@ -68,7 +85,7 @@ mod tests {
     use bevy::app::App;
     use bevy::prelude::Transform;
     use evolution_sim::config::SimConfig;
-    use evolution_sim::genome::Genome;
+    use evolution_sim::genome::{ancestor_any_from_config, AnyGenome};
     use evolution_sim::sim::{
         try_build_spawn, Agent, Cooldowns, Energy, Genome as GenomeComponent, Health,
         LightExposure, Lineage, Phenotype, Velocity,
@@ -77,7 +94,7 @@ mod tests {
     #[test]
     fn spawned_agents_have_full_lifecycle_components() {
         let config = SimConfig::load_default().unwrap();
-        let genome = Genome::ancestor_from_config(&config).unwrap();
+        let genome = ancestor_any_from_config(&config).unwrap();
         let params = try_build_spawn(genome, &config, 1, None, 0).unwrap();
 
         let mut app = App::new();
@@ -104,9 +121,12 @@ mod tests {
         let (_, pheno, energy, health, lineage, cooldowns, agent, exposure) =
             query.single(app.world());
         assert_eq!(exposure.0, 0.0);
-        assert_eq!(agent.radius, pheno.0.body_radius);
+        assert_eq!(agent.radius, pheno.body_radius());
         assert_eq!(energy.internal_energy, config.economy.spawn_energy);
-        assert_eq!(health.core_hp, pheno.0.core_max_hp);
+        assert_eq!(
+            health.core_hp,
+            pheno.v1().map(|p| p.core_max_hp).unwrap_or(health.core_max_hp)
+        );
         assert!(health.part_hp.is_empty());
         assert_eq!(lineage.generation, 0);
         assert_eq!(cooldowns.repro_ticks_remaining, 0);

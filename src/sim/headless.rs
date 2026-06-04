@@ -7,7 +7,7 @@
 #![cfg(test)]
 
 use crate::config::SimConfig;
-use crate::genome::Genome;
+use crate::genome::{AnyGenome, AnyPhenotype, Genome};
 use crate::sim::components::Energy;
 use crate::sim::spawn::{
     build_offspring_spawn_params, build_spawn_params, place_near_parent, randomize_placement,
@@ -78,11 +78,20 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
 
     for _ in 0..config.world.initial_population {
         let genome = ancestor.clone_genome();
-        let Some((genome, phenotype)) = try_prepare_spawn(genome, config) else {
+        let Some((AnyGenome::V1(genome), AnyPhenotype::V1(phenotype))) =
+            try_prepare_spawn(AnyGenome::V1(genome.clone()), config)
+        else {
             continue;
         };
         let id = next_id.next();
-        let mut params = build_spawn_params(genome.clone(), phenotype.clone(), config, id, None, 0);
+        let mut params = build_spawn_params(
+            AnyGenome::V1(genome.clone()),
+            AnyPhenotype::V1(phenotype.clone()),
+            config,
+            id,
+            None,
+            0,
+        );
         randomize_placement(&mut params, spawn_rng, &bounds, &config.world);
 
         agents.push(SimAgent {
@@ -123,9 +132,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
 
         for (idx, agent) in agents.iter_mut().enumerate() {
             let light = light_field.sample(agent.position);
-            let mut energy = Energy {
-                internal_energy: agent.energy,
-            };
+            let mut energy = Energy::new_v1(agent.energy);
             let mut health = crate::sim::components::Health {
                 core_hp: agent.core_hp,
                 core_max_hp: config.economy.core_max_hp,
@@ -143,7 +150,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                 vent_flux,
                 &config.environment,
                 &config.economy,
-                &config.genetics.decode_ranges,
+                config.genetics.decode_ranges_ref(),
                 photo_light_multiplier,
             );
             agent.energy = energy.internal_energy;
@@ -174,9 +181,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
             let mut repro_rng = sim_rng.stream_repro_risk(agent.id, tick);
             let mut mutation_rng =
                 sim_rng.stream_mutation(agent.id, agent.generation.saturating_add(1));
-            let mut energy = Energy {
-                internal_energy: agent.energy,
-            };
+            let mut energy = Energy::new_v1(agent.energy);
             let mut health = crate::sim::components::Health {
                 core_hp: agent.core_hp,
                 core_max_hp: config.economy.core_max_hp,
@@ -204,21 +209,29 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                 ReproAttemptResult::Child {
                     genome: child_genome,
                     phenotype: child_phenotype,
+                    child_start_energy,
                     child_start_hp,
                 } => {
+                    let (AnyGenome::V1(child_genome), AnyPhenotype::V1(child_phenotype)) =
+                        (child_genome, child_phenotype)
+                    else {
+                        agent.repro_cooldown = config.economy.repro_cooldown_ticks;
+                        summary.stillborns += 1;
+                        continue;
+                    };
                     let child_id = next_id.next();
                     agent.repro_cooldown = config.economy.repro_cooldown_ticks;
                     summary.births += 1;
                     summary.child_genome_fold ^= fold_genome_bytes(&child_genome);
 
                     let mut child_params = build_offspring_spawn_params(
-                        child_genome.clone(),
-                        child_phenotype.clone(),
+                        AnyGenome::V1(child_genome.clone()),
+                        AnyPhenotype::V1(child_phenotype.clone()),
                         config,
                         child_id,
                         Some(agent.id),
                         agent.generation.saturating_add(1),
-                        0.0,
+                        child_start_energy,
                         child_start_hp,
                     );
                     place_near_parent(

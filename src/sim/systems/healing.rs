@@ -14,10 +14,10 @@ use super::super::world::SimConfigResource;
 
 /// One repairable HP slot (core or appendage index).
 #[derive(Debug, Clone, Copy)]
-struct RepairSlot {
-    part_index: Option<usize>,
-    current: f32,
-    max: f32,
+pub(crate) struct RepairSlot {
+    pub part_index: Option<usize>,
+    pub current: f32,
+    pub max: f32,
 }
 
 /// Energy cost to restore `hp_repaired` HP at the fixed config exchange rate.
@@ -37,7 +37,7 @@ fn part_max_hp(core_max_hp: f32) -> f32 {
     core_max_hp
 }
 
-fn collect_damaged_slots(health: &Health) -> Vec<RepairSlot> {
+pub(crate) fn collect_damaged_slots(health: &Health) -> Vec<RepairSlot> {
     let mut slots = Vec::new();
     if health.core_hp < health.core_max_hp {
         slots.push(RepairSlot {
@@ -59,7 +59,11 @@ fn collect_damaged_slots(health: &Health) -> Vec<RepairSlot> {
     slots
 }
 
-fn pick_slot_index(slots: &[RepairSlot], policy: RepairPolicy, symmetric_cursor: usize) -> usize {
+pub(crate) fn pick_slot_index(
+    slots: &[RepairSlot],
+    policy: RepairPolicy,
+    symmetric_cursor: usize,
+) -> usize {
     match policy {
         RepairPolicy::CoreFirst => slots
             .iter()
@@ -79,7 +83,7 @@ fn pick_slot_index(slots: &[RepairSlot], policy: RepairPolicy, symmetric_cursor:
     }
 }
 
-fn apply_hp_to_slot(health: &mut Health, part_index: Option<usize>, hp: f32) {
+pub(crate) fn apply_hp_to_slot(health: &mut Health, part_index: Option<usize>, hp: f32) {
     match part_index {
         None => health.core_hp = (health.core_hp + hp).min(health.core_max_hp),
         Some(i) => {
@@ -162,11 +166,14 @@ pub fn healing(
     let policy = economy.repair_policy;
 
     for (entity, phenotype, mut health, mut energy) in &mut query {
+        let Some(phenotype_v1) = phenotype.v1() else {
+            continue;
+        };
         let cursor = entity.to_bits() as usize;
         let spent = apply_repair_tick(
             &mut health,
             &mut energy,
-            &phenotype.0,
+            phenotype_v1,
             policy,
             economy,
             cursor,
@@ -188,7 +195,7 @@ mod tests {
     }
 
     fn phenotype_with_repair_rate(raw: u16) -> (SimConfig, PhenotypeData) {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
         set_u16_locus(&mut bytes, core::REPAIR_RATE, raw);
         let genome = Genome::from_bytes(
@@ -215,9 +222,7 @@ mod tests {
             core_max_hp: 100.0,
             part_hp: vec![],
         };
-        let mut energy = Energy {
-            internal_energy: 50.0,
-        };
+        let mut energy = Energy::new_v1(50.0);
         let start_energy = energy.internal_energy;
         let spent = apply_repair_tick(
             &mut health,
@@ -247,9 +252,7 @@ mod tests {
             part_hp: vec![],
         };
         let mut health_fast = health_slow.clone();
-        let mut energy_slow = Energy {
-            internal_energy: 100.0,
-        };
+        let mut energy_slow = Energy::new_v1(100.0);
         let mut energy_fast = energy_slow.clone();
 
         let spent_slow = apply_repair_tick(
@@ -290,7 +293,7 @@ mod tests {
 
     #[test]
     fn core_first_repairs_core_before_parts() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let genome = Genome::ancestor_from_config(&config).unwrap();
         let phenotype = decode(&genome, &config).unwrap();
         let mut health = Health {
@@ -298,9 +301,7 @@ mod tests {
             core_max_hp: 100.0,
             part_hp: vec![40.0],
         };
-        let mut energy = Energy {
-            internal_energy: 5.0,
-        };
+        let mut energy = Energy::new_v1(5.0);
         apply_repair_tick(
             &mut health,
             &mut energy,
@@ -323,9 +324,7 @@ mod tests {
             core_max_hp: 100.0,
             part_hp: vec![],
         };
-        let mut energy = Energy {
-            internal_energy: 100.0,
-        };
+        let mut energy = Energy::new_v1(100.0);
         let spent = apply_repair_tick(
             &mut health,
             &mut energy,

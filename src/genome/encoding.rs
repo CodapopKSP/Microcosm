@@ -51,6 +51,9 @@ pub enum GenomeError {
     LengthMismatch { expected: usize, actual: usize },
     CoreSegmentTooShort { need: usize, have: usize },
     LocusOutOfBounds { offset: usize, width: usize },
+    InvalidAndArity { arity: u8 },
+    SlotPayloadOverflow { need: usize, have: usize },
+    SlotCountExceedsConfig { pursue: u8, avoid: u8 },
     Config(String),
 }
 
@@ -75,6 +78,17 @@ impl fmt::Display for GenomeError {
             GenomeError::LocusOutOfBounds { offset, width } => write!(
                 f,
                 "locus at core offset {offset} with width {width} is out of bounds"
+            ),
+            GenomeError::InvalidAndArity { arity } => {
+                write!(f, "AND signature arity {arity} is out of range (1..=4)")
+            }
+            GenomeError::SlotPayloadOverflow { need, have } => write!(
+                f,
+                "pursue/avoid slot payload needs {need} bytes but genome has {have}"
+            ),
+            GenomeError::SlotCountExceedsConfig { pursue, avoid } => write!(
+                f,
+                "pursue/avoid slot counts ({pursue}, {avoid}) exceed config limits"
             ),
             GenomeError::Config(msg) => write!(f, "genome config error: {msg}"),
         }
@@ -278,12 +292,12 @@ mod tests {
     use crate::config::SimConfig;
 
     fn default_ancestor() -> Genome {
-        Genome::ancestor_from_config(&SimConfig::load_default().unwrap()).unwrap()
+        Genome::ancestor_from_config(&SimConfig::load_v1_regression().unwrap()).unwrap()
     }
 
     #[test]
     fn ancestor_from_default_config_is_valid() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let genome = Genome::ancestor_from_config(&config).unwrap();
         assert!(genome.is_valid(config.genetics.genome_version, config.genetics.core_length));
         assert_eq!(&genome.bytes[0..4], MAGIC);
@@ -314,7 +328,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_magic() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
         bytes[0] = b'X';
         let err = Genome::from_bytes(bytes, config.genetics.genome_version, config.genetics.core_length)
@@ -324,7 +338,7 @@ mod tests {
 
     #[test]
     fn rejects_length_mismatch() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bytes = vec![0u8; 16];
         let err = Genome::from_bytes(bytes, config.genetics.genome_version, config.genetics.core_length)
             .unwrap_err();
@@ -333,7 +347,7 @@ mod tests {
 
     #[test]
     fn rejects_version_mismatch_on_validate() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let mut genome = default_ancestor();
         genome.version = 99;
         let err = genome
@@ -350,7 +364,7 @@ mod tests {
 
     #[test]
     fn u16_accessor_is_big_endian() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
         let core = HEADER_LEN + core::PHOTO_STRENGTH;
         bytes[core] = 0x12;

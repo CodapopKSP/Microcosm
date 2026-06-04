@@ -14,14 +14,19 @@ use std::collections::{HashMap, HashSet};
 
 use crate::sim::{
     run_sim_tick_schedule, Agent, Energy, HazardField, Health, LightExposure, LightField,
-    Phenotype, SimConfigResource, SimSpeed, WorldBounds,
+    Phenotype, SensePerception, SimConfigResource, SimSpeed, WorldBounds,
 };
+
+/// Child mesh behind the agent fill showing decoded armor stroke width (genome v2).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct ArmorOutline;
 
 /// Keyboard-driven debug overlay state (visual mode only).
 #[derive(Resource)]
 pub struct DebugVisualState {
     pub show_light_gradient: bool,
     pub show_hazard_overlay: bool,
+    pub show_sensor_rays: bool,
     pub selected: Option<Entity>,
 }
 
@@ -30,6 +35,7 @@ impl Default for DebugVisualState {
         Self {
             show_light_gradient: true,
             show_hazard_overlay: true,
+            show_sensor_rays: true,
             selected: None,
         }
     }
@@ -67,6 +73,18 @@ struct HealthBarAssets {
 #[derive(Resource, Default)]
 struct ActiveHealthBars(HashMap<Entity, (Entity, Entity)>);
 
+#[derive(Component)]
+struct SensorRayOverlay;
+
+#[derive(Resource, Default)]
+struct ActiveSensorRays(HashMap<Entity, Vec<Entity>>);
+
+#[derive(Resource)]
+struct SensorRayAssets {
+    unit_rect: Handle<Mesh>,
+    material: Handle<ColorMaterial>,
+}
+
 /// Registers Phase 2H debug overlay systems.
 pub struct VisualDebugPlugin;
 
@@ -74,12 +92,14 @@ impl Plugin for VisualDebugPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DebugVisualState>()
             .init_resource::<ActiveHealthBars>()
+            .init_resource::<ActiveSensorRays>()
             .add_systems(
                 Startup,
                 (
                     spawn_light_gradient,
                     spawn_hazard_overlays,
                     init_health_bar_assets,
+                    init_sensor_ray_assets,
                     spawn_selection_overlays,
                 ),
             )
@@ -91,6 +111,7 @@ impl Plugin for VisualDebugPlugin {
                     sync_light_gradient_visibility,
                     sync_hazard_overlay_visibility,
                     update_damaged_health_bars,
+                    update_sensor_ray_overlays,
                     update_selection_overlay,
                 )
                     .after(run_sim_tick_schedule),
@@ -116,6 +137,8 @@ const ENERGY_BAR_HEIGHT: f32 = 6.0;
 const ENERGY_BAR_GAP: f32 = 8.0;
 const HP_BAR_HEIGHT: f32 = 4.0;
 const HP_BAR_GAP: f32 = 5.0;
+const SENSOR_RAY_THICKNESS: f32 = 2.0;
+const SENSOR_RAY_Z: f32 = 4.0;
 const OVERLAY_Z: f32 = 5.0;
 const GRADIENT_Z: f32 = -10.0;
 const HAZARD_Z: f32 = -9.0;
@@ -132,6 +155,17 @@ pub fn hp_fraction(health: &Health) -> f32 {
 /// True when agent should show an HP bar (`core_hp` strictly below max).
 pub fn shows_hp_bar(health: &Health) -> bool {
     health.core_max_hp > 0.0 && health.core_hp < health.core_max_hp
+}
+
+fn init_sensor_ray_assets(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    commands.insert_resource(SensorRayAssets {
+        unit_rect: meshes.add(Rectangle::new(1.0, 1.0)),
+        material: materials.add(ColorMaterial::from(Color::srgba(0.35, 0.9, 1.0, 0.65))),
+    });
 }
 
 fn init_health_bar_assets(
@@ -242,6 +276,9 @@ fn debug_keyboard_input(
     }
     if keyboard.just_pressed(KeyCode::KeyH) {
         state.show_hazard_overlay = !state.show_hazard_overlay;
+    }
+    if keyboard.just_pressed(KeyCode::KeyS) {
+        state.show_sensor_rays = !state.show_sensor_rays;
     }
     if keyboard.just_pressed(KeyCode::ArrowUp) {
         let mult = sim_speed.step_up();
@@ -417,6 +454,78 @@ fn update_damaged_health_bars(
     }
 }
 
+fn update_sensor_ray_overlays(
+    mut commands: Commands,
+    state: Res<DebugVisualState>,
+    assets: Res<SensorRayAssets>,
+    mut active: ResMut<ActiveSensorRays>,
+    agents: Query<(Entity, &SensePerception)>,
+    mut ray_q: Query<&mut Transform, With<SensorRayOverlay>>,
+) {
+    let show = state.show_sensor_rays && state.selected.is_some();
+    let selected = state.selected;
+
+    if !show {
+        active.0.retain(|_, lines| {
+            for e in lines.drain(..) {
+                commands.entity(e).despawn();
+            }
+            false
+        });
+        return;
+    }
+
+    let selected = selected.unwrap();
+    let Ok((_, perception)) = agents.get(selected) else {
+        if let Some(lines) = active.0.remove(&selected) {
+            for e in lines {
+                commands.entity(e).despawn();
+            }
+        }
+        return;
+    };
+
+    active.0.retain(|agent, lines| {
+        if *agent == selected {
+            return true;
+        }
+        for e in lines.drain(..) {
+            commands.entity(e).despawn();
+        }
+        false
+    });
+
+    let lines = active.0.entry(selected).or_default();
+    while lines.len() > perception.rays.len() {
+        let e = lines.pop().unwrap();
+        commands.entity(e).despawn();
+    }
+    while lines.len() < perception.rays.len() {
+        let e = commands
+            .spawn((
+                SensorRayOverlay,
+                Mesh2d(assets.unit_rect.clone()),
+                MeshMaterial2d(assets.material.clone()),
+                Transform::default(),
+                Visibility::Visible,
+            ))
+            .id();
+        lines.push(e);
+    }
+
+    for (i, ray) in perception.rays.iter().enumerate() {
+        let delta = ray.endpoint - ray.origin;
+        let len = delta.length().max(1e-3);
+        let mid = (ray.origin + ray.endpoint) * 0.5;
+        let angle = delta.y.atan2(delta.x);
+        if let Ok(mut tf) = ray_q.get_mut(lines[i]) {
+            tf.translation = mid.extend(SENSOR_RAY_Z);
+            tf.rotation = Quat::from_rotation_z(angle);
+            tf.scale = Vec3::new(len, SENSOR_RAY_THICKNESS, 1.0);
+        }
+    }
+}
+
 type RingOverlayQuery<'w, 's> = Query<
     'w,
     's,
@@ -532,7 +641,7 @@ fn update_selection_overlay(
 
     let bar_width = agent.radius * 2.0;
     let bar_y = pos.y + agent.radius + ENERGY_BAR_GAP;
-    let threshold = phenotype.0.repro_threshold.max(1e-3);
+    let threshold = phenotype.repro_threshold_energy().max(1e-3);
     let ratio = (energy.internal_energy / threshold).clamp(0.0, 1.0);
     let fill_width = bar_width * ratio;
 
@@ -565,7 +674,7 @@ mod tests {
 
     #[test]
     fn display_color_increases_with_light_sample() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let min = config.environment.gradient_min;
         let max = config.environment.gradient_max;
         let dark = light_sample_to_display_color(min, min, max);
@@ -597,7 +706,7 @@ mod tests {
 
     #[test]
     fn default_config_has_hazard_zones_for_overlay() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let field = crate::sim::HazardField::from_environment(&config.environment);
         assert!(
             !field.zones().is_empty(),
@@ -607,7 +716,7 @@ mod tests {
 
     #[test]
     fn gradient_bands_cover_world_height() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let field = LightField::from_environment(&config.environment, &bounds);
         let height = bounds.half_y * 2.0;

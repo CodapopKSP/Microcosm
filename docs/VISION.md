@@ -10,7 +10,7 @@ This document defines what the Evolution Simulator is trying to achieve, what it
 
 3. **Seeded randomness (optional, recommended)** — Mutations and stochastic events remain random, but an optional `master_seed` makes the *sequence* of random draws replayable. This supports debugging (“why did this lineage die?”) and fair A/B comparison of two configs. It is **not** required for the simulation to function.
 
-4. **Diversity by design** — Traits use tradeoffs, ongoing costs, thresholds, and risky reproduction so lineages spread across niches instead of converging on a single “max efficiency” genotype. See [GENOME.md](GENOME.md) for the trait taxonomy.
+4. **Diversity by design** — Traits use tradeoffs, ongoing costs, thresholds, and risky reproduction so lineages spread across niches instead of converging on a single “max efficiency” genotype. **Canonical trait model:** [Genome_Definition.md](Genome_Definition.md) (v2 target). **Current code:** [GENOME.md](GENOME.md) (v1).
 
 5. **Dual runtime** — `SimCore` runs headless (batch ticks, metrics export). Bevy provides an optional visual observer that reads simulation snapshots and does not own sim state. See [SIMULATION.md](SIMULATION.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
 

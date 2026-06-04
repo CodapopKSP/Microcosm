@@ -125,7 +125,7 @@ pub fn apply_movement_tick(
     true
 }
 
-/// Bevy system: movement after metabolism (see [SIMULATION.md](../../docs/SIMULATION.md)).
+/// Bevy system: v1 movement after metabolism (see [SIMULATION.md](../../docs/SIMULATION.md)).
 pub fn behavior_movement(
     time: Res<Time>,
     tick: Res<SimTick>,
@@ -146,15 +146,18 @@ pub fn behavior_movement(
     let sim_tick = tick.tick;
 
     for (mut transform, mut velocity, phenotype, mut energy, agent, lineage) in &mut query {
+        let Some(phenotype_v1) = phenotype.v1() else {
+            continue;
+        };
         let mut rng = sim_rng.stream_movement(lineage.id, sim_tick);
         let attempt_move =
-            wants_to_move_this_tick(phenotype.0.desire_to_move, rng.gen::<f32>());
+            wants_to_move_this_tick(phenotype_v1.desire_to_move, rng.gen::<f32>());
         let mut pos = transform.translation.truncate();
         apply_movement_tick(
             &mut pos,
             &mut **velocity,
             &mut energy,
-            &phenotype.0,
+            phenotype_v1,
             agent.radius,
             &bounds,
             boundary,
@@ -175,7 +178,7 @@ mod tests {
     use crate::sim::world::WorldBounds;
 
     fn config() -> SimConfig {
-        SimConfig::load_default().unwrap()
+        SimConfig::load_v1_regression().unwrap()
     }
 
     fn set_u16_locus(bytes: &mut [u8], core_offset: usize, raw: u16) {
@@ -237,9 +240,7 @@ mod tests {
         );
         let distance = vel.length() * dt;
 
-        let mut energy = Energy {
-            internal_energy: 10_000.0,
-        };
+        let mut energy = Energy::new_v1(10_000.0);
         let mut pos = Vec2::ZERO;
         let bounds = WorldBounds::from_world_size(500.0, 500.0);
         let start = energy.internal_energy;
@@ -285,9 +286,7 @@ mod tests {
         let mut pos = Vec2::ZERO;
         let mut vel = Vec2::new(phenotype.max_speed, 0.0);
         let start_energy = 1000.0;
-        let mut energy = Energy {
-            internal_energy: start_energy,
-        };
+        let mut energy = Energy::new_v1(start_energy);
         apply_movement_tick(
             &mut pos,
             &mut vel,
@@ -320,9 +319,7 @@ mod tests {
         let mut vel = clamp_velocity_to_max_speed(Vec2::new(50.0, 0.0), phenotype.max_speed);
         let dt = 0.1;
         let cost = movement_energy_cost(&phenotype, vel.length() * dt);
-        let mut energy = Energy {
-            internal_energy: cost - 0.01,
-        };
+        let mut energy = Energy::new_v1(cost - 0.01);
 
         let moved = apply_movement_tick(
             &mut pos,

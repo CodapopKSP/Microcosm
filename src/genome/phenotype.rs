@@ -226,7 +226,7 @@ pub fn green_tradeoff_holds_at_light_ref(
 pub fn decode(genome: &Genome, config: &SimConfig) -> Result<Phenotype, DecodeError> {
     genome.validate(config.genetics.genome_version, config.genetics.core_length)?;
 
-    let dr = &config.genetics.decode_ranges;
+    let dr = config.genetics.decode_ranges_ref();
     let economy = &config.economy;
 
     let color = [
@@ -345,7 +345,7 @@ mod tests {
     use crate::genome::encoding::{self, Genome};
 
     fn default_config() -> SimConfig {
-        SimConfig::load_default().unwrap()
+        SimConfig::load_v1_regression().unwrap()
     }
 
     fn default_genome() -> Genome {
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn max_speed_scales_with_locomotion_and_movement_pace() {
         let config = default_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = config.genetics.decode_ranges_ref();
         let p = decode_default();
         let expected_base = ((dr.v_base + dr.k_v * p.locomotion_investment)
             * (p.body_radius / dr.r_ref)
@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn ancestor_phenotype_within_expected_bounds() {
         let config = default_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = config.genetics.decode_ranges_ref();
         let p = decode_default();
 
         assert!((p.color[0] - 136.0 / 255.0).abs() < 0.01);
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn extreme_u16_alleles_respect_config_max() {
         let config = default_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = config.genetics.decode_ranges_ref();
 
         let photo = decode(
             &genome_with_u16_locus(encoding::core::PHOTO_STRENGTH, 0xFFFF),
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn repro_threshold_decodes_above_100_at_max_allele() {
         let config = default_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = config.genetics.decode_ranges_ref();
         let p = decode(
             &genome_with_u16_locus(encoding::core::REPRO_THRESHOLD, 0xFFFF),
             &config,
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn offspring_endowment_decodes_above_100_at_max_allele() {
         let config = default_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = config.genetics.decode_ranges_ref();
         let p = decode(
             &genome_with_u16_locus(encoding::core::OFFSPRING_ENDOWMENT, 0xFFFF),
             &config,
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn mitigation_increases_with_hardness() {
         let config = default_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = config.genetics.decode_ranges_ref();
         let soft = decode_default();
         assert_eq!(soft.damage_mitigation, 0.0);
         assert_eq!(
@@ -641,7 +641,7 @@ mod tests {
     #[test]
     fn age_metabolism_scale_locus_decodes_in_range() {
         let config = default_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = config.genetics.decode_ranges_ref();
 
         let min_p = decode(
             &genome_with_u16_locus(encoding::core::MAX_AGE, 0x0000),
@@ -693,7 +693,7 @@ mod tests {
     #[test]
     fn repair_rate_decodes_in_config_range() {
         let config = default_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = config.genetics.decode_ranges_ref();
         let p = decode_default();
         assert!((p.repair_rate - 1.0).abs() < 0.02);
 
@@ -715,7 +715,7 @@ mod tests {
     #[test]
     fn chemo_sensitivity_zero_below_cliff() {
         let config = default_config();
-        let cliff = config.genetics.decode_ranges.chemo_cliff;
+        let cliff = config.genetics.decode_ranges_ref().chemo_cliff;
         let g = genome_with_u16_locus(encoding::core::CHEMO_POTENTIAL, 0x5709);
         let p = decode(&g, &config).unwrap();
         assert!(!p.is_chemo_above_cliff(cliff));
@@ -726,7 +726,7 @@ mod tests {
     #[test]
     fn chemo_sensitivity_positive_above_cliff() {
         let config = default_config();
-        let cliff = config.genetics.decode_ranges.chemo_cliff;
+        let cliff = config.genetics.decode_ranges_ref().chemo_cliff;
         let g = genome_with_u16_locus(encoding::core::CHEMO_POTENTIAL, 0x8CCC);
         let p = decode(&g, &config).unwrap();
         assert!(p.is_chemo_above_cliff(cliff));

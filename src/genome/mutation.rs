@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn color_locus_nibble_step_is_small() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let mut parent = Genome::ancestor_from_config(&config).unwrap();
         let idx = HEADER_LEN + core::COLOR_G;
         parent.bytes[idx] = 0xCC;
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn mutation_changes_child_genome() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let parent = Genome::ancestor_from_config(&config).unwrap();
         let mut rng = rand::rngs::StdRng::seed_from_u64(99);
         let mut genetics = config.genetics.clone();
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn mutate_offspring_can_change_max_age_raw() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let parent = Genome::ancestor_from_config(&config).unwrap();
         let parent_raw = parent.max_age_raw().unwrap();
         let mut genetics = config.genetics.clone();
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn many_passes_can_change_genome() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let parent = Genome::ancestor_from_config(&config).unwrap();
         let mut rng = rand::rngs::StdRng::seed_from_u64(7);
         let child = mutate_offspring(&parent, &config.genetics, &mut rng);
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn nibble_step_on_max_speed_locus_changes_phenotype() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let parent = Genome::ancestor_from_config(&config).unwrap();
         let before = crate::genome::decode(&parent, &config).unwrap();
 
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn default_config_uses_frequent_small_steps() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let g = &config.genetics;
         assert!(g.mutations_per_offspring >= 4);
         assert!(g.p_point > g.p_bit_flip);

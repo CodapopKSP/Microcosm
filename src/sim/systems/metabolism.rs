@@ -4,7 +4,9 @@ use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use crate::config::{DecodeRanges, EconomyConfig, EnergyModel, EnvironmentConfig};
-use crate::genome::{chemo_gain_per_tick, Phenotype as PhenotypeData};
+use crate::genome::{chemo_gain_per_tick, AnyPhenotype, Phenotype as PhenotypeData};
+
+use super::metabolism_v2::apply_metabolism_tick_v2;
 
 use super::super::components::{Agent, Age, Energy, Health, LightExposure, Phenotype, VentExposure};
 use super::super::world::SimConfigResource;
@@ -298,7 +300,6 @@ pub fn metabolism_and_gains(
 
     let environment = &config.0.environment;
     let economy = &config.0.economy;
-    let decode_ranges = &config.0.genetics.decode_ranges;
     let light_mults = if environment.overlap_shades_photosynthesis {
         overlap_photo_light_multipliers_for_entities(&agents, environment.overlap_shade_factor)
     } else if environment.crowding_blocks_photosynthesis {
@@ -318,18 +319,31 @@ pub fn metabolism_and_gains(
 
     for (entity, _, _, phenotype, age, exposure, vent_exp, mut energy, mut health) in &mut query {
         let photo_light_multiplier = light_mults.get(&entity).copied().unwrap_or(1.0);
-        apply_metabolism_tick(
-            &mut energy,
-            &mut health,
-            &phenotype.0,
-            age.ticks,
-            exposure.0,
-            vent_exp.vent_flux,
-            environment,
-            economy,
-            decode_ranges,
-            photo_light_multiplier,
-        );
+        match &phenotype.0 {
+            AnyPhenotype::V1(p) => apply_metabolism_tick(
+                &mut energy,
+                &mut health,
+                p,
+                age.ticks,
+                exposure.0,
+                vent_exp.vent_flux,
+                environment,
+                economy,
+                config.0.genetics.decode_ranges_ref(),
+                photo_light_multiplier,
+            ),
+            AnyPhenotype::V2(p) => apply_metabolism_tick_v2(
+                &mut energy,
+                &mut health,
+                p,
+                age.ticks,
+                exposure.0,
+                environment,
+                economy,
+                &config.0,
+                photo_light_multiplier,
+            ),
+        }
     }
 }
 
@@ -347,7 +361,7 @@ mod tests {
     }
 
     fn local_config() -> SimConfig {
-        let mut config = SimConfig::load_default().unwrap();
+        let mut config = SimConfig::load_v1_regression().unwrap();
         config.environment.energy_model = EnergyModel::Local;
         config
     }
@@ -368,7 +382,7 @@ mod tests {
 
     #[test]
     fn overlap_blocks_photosynthetic_gain_only_legacy_flat() {
-        let mut config = SimConfig::load_default().unwrap();
+        let mut config = SimConfig::load_v1_regression().unwrap();
         config.environment.energy_model = EnergyModel::LegacyFlat;
         config.economy.flat_energy_grant_per_tick = 0.8;
         let phenotype = ancestor_phenotype(&config);
@@ -376,7 +390,7 @@ mod tests {
         let economy = &config.economy;
         let light = 1.0;
 
-        let dr = &config.genetics.decode_ranges;
+        let dr = &config.genetics.decode_ranges_ref();
         let open = metabolism_tick_delta(&phenotype, 0, light, 0.0, environment, economy, dr, 1.0);
         let crowded = metabolism_tick_delta(&phenotype, 0, light, 0.0, environment, economy, dr, 0.0);
         assert!(
@@ -407,7 +421,7 @@ mod tests {
         assert!(open_gain > 0.0, "local gain should be positive in bright band");
         assert_eq!(blocked_gain, 0.0);
 
-        let dr = &config.genetics.decode_ranges;
+        let dr = &config.genetics.decode_ranges_ref();
         let open_delta = metabolism_tick_delta(&phenotype, 0, light, 0.0, environment, economy, dr, 1.0);
         let crowded_delta = metabolism_tick_delta(&phenotype, 0, light, 0.0, environment, economy, dr, 0.0);
         assert!(
@@ -443,8 +457,8 @@ mod tests {
 
     #[test]
     fn photo_area_scale_is_one_at_reference_radius() {
-        let config = SimConfig::load_default().unwrap();
-        let dr = &config.genetics.decode_ranges;
+        let config = SimConfig::load_v1_regression().unwrap();
+        let dr = &config.genetics.decode_ranges_ref();
         let mut phenotype = ancestor_phenotype(&config);
         phenotype.body_radius = dr.r_ref;
         phenotype.photo_area_scale = (dr.r_ref / dr.r_ref).powi(2);
@@ -557,9 +571,7 @@ mod tests {
         config.economy.flat_energy_grant_per_tick = 0.0;
         let phenotype = ancestor_phenotype(&config);
 
-        let mut energy = Energy {
-            internal_energy: config.economy.spawn_energy,
-        };
+        let mut energy = Energy::new_v1(config.economy.spawn_energy);
         let mut health = full_health(&config);
         let start = energy.internal_energy;
 
@@ -573,7 +585,7 @@ mod tests {
                 0.0,
                 &config.environment,
                 &config.economy,
-                &config.genetics.decode_ranges,
+                &config.genetics.decode_ranges_ref(),
                 1.0,
             );
         }
@@ -592,15 +604,13 @@ mod tests {
 
     #[test]
     fn zero_legacy_grant_depletes_energy_over_ticks() {
-        let mut config = SimConfig::load_default().unwrap();
+        let mut config = SimConfig::load_v1_regression().unwrap();
         config.environment.energy_model = EnergyModel::LegacyFlat;
         let phenotype = ancestor_phenotype(&config);
         let mut economy = config.economy.clone();
         economy.flat_energy_grant_per_tick = 0.0;
 
-        let mut energy = Energy {
-            internal_energy: config.economy.spawn_energy,
-        };
+        let mut energy = Energy::new_v1(config.economy.spawn_energy);
         let mut health = full_health(&config);
         let start = energy.internal_energy;
 
@@ -614,7 +624,7 @@ mod tests {
                 0.0,
                 &config.environment,
                 &economy,
-                &config.genetics.decode_ranges,
+                &config.genetics.decode_ranges_ref(),
                 1.0,
             );
         }
@@ -631,9 +641,7 @@ mod tests {
     fn metabolic_deficit_drains_hp_when_energy_empty() {
         let config = local_config();
         let phenotype = ancestor_phenotype(&config);
-        let mut energy = Energy {
-            internal_energy: 0.0,
-        };
+        let mut energy = Energy::new_v1(0.0);
         let mut health = Health {
             core_hp: 20.0,
             core_max_hp: 100.0,
@@ -651,7 +659,7 @@ mod tests {
             0.0,
             &config.environment,
             &config.economy,
-            &config.genetics.decode_ranges,
+            &config.genetics.decode_ranges_ref(),
             1.0,
         );
 
@@ -665,9 +673,7 @@ mod tests {
         let phenotype = ancestor_phenotype(&config);
         let bright = config.environment.gradient_max;
 
-        let mut energy = Energy {
-            internal_energy: config.economy.spawn_energy,
-        };
+        let mut energy = Energy::new_v1(config.economy.spawn_energy);
         let mut health = full_health(&config);
         let start = energy.internal_energy;
 
@@ -681,7 +687,7 @@ mod tests {
                 0.0,
                 &config.environment,
                 &config.economy,
-                &config.genetics.decode_ranges,
+                &config.genetics.decode_ranges_ref(),
                 1.0,
             );
         }
@@ -777,14 +783,12 @@ mod tests {
     fn shade_net_negative_for_high_photo() {
         let config = local_config();
         let mut phenotype = ancestor_phenotype(&config);
-        phenotype.photo_strength = config.genetics.decode_ranges.photo_max;
+        phenotype.photo_strength = config.genetics.decode_ranges_ref().photo_max;
         phenotype.photo_upkeep =
-            config.genetics.decode_ranges.k_photo * phenotype.photo_strength;
+            config.genetics.decode_ranges_ref().k_photo * phenotype.photo_strength;
         let shade = config.environment.gradient_min;
 
-        let mut energy = Energy {
-            internal_energy: config.economy.spawn_energy,
-        };
+        let mut energy = Energy::new_v1(config.economy.spawn_energy);
         let mut health = full_health(&config);
         let start = energy.internal_energy;
 
@@ -798,7 +802,7 @@ mod tests {
                 0.0,
                 &config.environment,
                 &config.economy,
-                &config.genetics.decode_ranges,
+                &config.genetics.decode_ranges_ref(),
                 1.0,
             );
         }
@@ -815,9 +819,7 @@ mod tests {
         let config = local_config();
         let phenotype = ancestor_phenotype(&config);
 
-        let mut energy = Energy {
-            internal_energy: config.economy.spawn_energy,
-        };
+        let mut energy = Energy::new_v1(config.economy.spawn_energy);
         let mut health = full_health(&config);
 
         for _ in 0..2500 {
@@ -830,7 +832,7 @@ mod tests {
                 0.0,
                 &config.environment,
                 &config.economy,
-                &config.genetics.decode_ranges,
+                &config.genetics.decode_ranges_ref(),
                 1.0,
             );
         }
@@ -849,7 +851,7 @@ mod tests {
         use crate::genome::chemo_gain_per_tick;
 
         let config = local_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = &config.genetics.decode_ranges_ref();
         let genome = Genome::from_bytes(
             {
                 let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
@@ -903,7 +905,7 @@ mod tests {
         use crate::genome::core;
 
         let config = local_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = &config.genetics.decode_ranges_ref();
         let genome = Genome::from_bytes(
             {
                 let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
@@ -930,7 +932,7 @@ mod tests {
         use crate::genome::chemo_gain_per_tick;
 
         let config = local_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = &config.genetics.decode_ranges_ref();
         let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
         let i = crate::genome::HEADER_LEN + crate::genome::core::CHEMO_POTENTIAL;
         bytes[i] = 0x8C;
@@ -954,7 +956,7 @@ mod tests {
         use crate::genome::core;
 
         let config = local_config();
-        let dr = &config.genetics.decode_ranges;
+        let dr = &config.genetics.decode_ranges_ref();
         let vent_flux = 0.15;
         let genome = Genome::from_bytes(
             {
@@ -972,9 +974,7 @@ mod tests {
         )
         .unwrap();
         let phenotype = decode(&genome, &config).unwrap();
-        let mut energy = Energy {
-            internal_energy: config.economy.spawn_energy,
-        };
+        let mut energy = Energy::new_v1(config.economy.spawn_energy);
         let mut health = full_health(&config);
         let start = energy.internal_energy;
 
@@ -993,9 +993,7 @@ mod tests {
             );
         }
 
-        let mut control = Energy {
-            internal_energy: config.economy.spawn_energy,
-        };
+        let mut control = Energy::new_v1(config.economy.spawn_energy);
         let mut control_health = full_health(&config);
         for _ in 0..500 {
             apply_metabolism_tick(
@@ -1022,7 +1020,7 @@ mod tests {
 
     #[test]
     fn tick_cost_includes_upkeeps() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let phenotype = ancestor_phenotype(&config);
         let cost = metabolism_tick_cost(&phenotype, 0, &config.economy);
         assert!(cost >= phenotype.metabolism_idle);

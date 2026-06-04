@@ -8,17 +8,20 @@ use bevy::render::view::screenshot::CapturedScreenshots;
 use bevy::window::ExitCondition;
 
 use crate::config::SimConfig;
-use crate::genome::Genome;
+use crate::genome::AnyGenome;
 use crate::visual::VisualDebugPlugin;
 
 use super::agent_material::AgentColorMaterialPlugin;
 use super::hazards::HazardField;
 use super::light::LightField;
+use super::minerals::MineralField;
+use super::soup::SoupField;
 use super::vents::VentField;
 use super::spawn::{spawn_initial_population, InitialPopulationStats};
 use super::metrics::{MetricsPeriodCounters, MetricsWriter, RepairStats};
 use super::systems::{
-    advance_age, behavior_movement, death_and_despawn, exit_headless_when_done, healing,
+    advance_age, behavior_movement, behavior_movement_v2, behavior_v2, death_and_despawn,
+    environment_tick, exit_headless_when_done, feeding_v2, healing, healing_v2, sense_rays,
     interactions, metabolism_and_gains, metrics_sample, performance_failsafe, reproduction,
     sense_exposure,
     FailsafeWarnLatch,
@@ -41,10 +44,10 @@ pub enum SimRunMode {
 
 /// Validated ancestor template for spawning (Phase 1E).
 #[derive(Resource, Clone)]
-pub struct AncestorGenome(pub Genome);
+pub struct AncestorGenome(pub AnyGenome);
 
 /// Build a Bevy app with shared sim resources, startup spawn, and tick systems.
-pub fn build_sim_app(sim_config: SimConfig, ancestor: Genome, mode: SimRunMode) -> App {
+pub fn build_sim_app(sim_config: SimConfig, ancestor: AnyGenome, mode: SimRunMode) -> App {
     let mut app = App::new();
 
     match mode {
@@ -82,12 +85,15 @@ pub fn build_sim_app(sim_config: SimConfig, ancestor: Genome, mode: SimRunMode) 
 }
 
 /// Insert simulation resources (shared by visual and headless apps).
-pub fn insert_sim_resources(app: &mut App, sim_config: SimConfig, ancestor: Genome, metrics_enabled: bool) {
+pub fn insert_sim_resources(app: &mut App, sim_config: SimConfig, ancestor: AnyGenome, metrics_enabled: bool) {
     let metrics_path = sim_config.run.metrics_path.clone();
     let world_bounds = WorldBounds::from_world_size(sim_config.world.width, sim_config.world.height);
     let light_field = LightField::from_environment(&sim_config.environment, &world_bounds);
     let hazard_field = HazardField::from_environment(&sim_config.environment);
     let vent_field = VentField::from_environment(&sim_config.environment);
+    let mineral_field =
+        MineralField::from_vent_field(&vent_field, &sim_config.environment.feeding, sim_config.environment.minerals_enabled);
+    let soup_field = SoupField::from_feeding(&sim_config.environment.feeding);
     let sim_rng = SimRng::from_config(&sim_config);
 
     app.insert_resource(SimConfigResource(sim_config))
@@ -96,6 +102,8 @@ pub fn insert_sim_resources(app: &mut App, sim_config: SimConfig, ancestor: Geno
         .insert_resource(light_field)
         .insert_resource(hazard_field)
         .insert_resource(vent_field)
+        .insert_resource(mineral_field)
+        .insert_resource(soup_field)
         .insert_resource(SimTick::default())
         .insert_resource(NextEntityId::new(1))
         .insert_resource(sim_rng)
@@ -119,11 +127,17 @@ pub fn add_sim_systems(app: &mut App) {
         SimTickSchedule,
         (
             advance_sim_tick,
+            environment_tick,
             sense_exposure,
+            sense_rays,
+            behavior_v2,
+            feeding_v2,
             metabolism_and_gains,
             behavior_movement,
+            behavior_movement_v2,
             interactions,
             healing,
+            healing_v2,
             reproduction,
             advance_age,
             death_and_despawn,
@@ -168,7 +182,7 @@ fn startup_visual(
         &mut materials,
     ));
     eprintln!(
-        "debug: L=light, H=hazards, ↑↓=speed (1x–16x), click=select agent, Esc=clear"
+        "debug: L=light, H=hazards, S=sensor rays, ↑↓=speed (1x–16x), click=select, Esc=clear"
     );
 }
 
@@ -238,7 +252,7 @@ fn log_spawn(stats: InitialPopulationStats) {
 }
 
 /// Run a headless Bevy sim until `exit_headless_when_done` fires (Phase 3E acceptance).
-pub fn run_headless_bevy(config: SimConfig, ancestor: Genome) {
+pub fn run_headless_bevy(config: SimConfig, ancestor: AnyGenome) {
     build_sim_app(config, ancestor, SimRunMode::Headless).run();
 }
 
@@ -249,7 +263,7 @@ mod tests {
     #[test]
     fn insert_sim_resources_registers_core_state() {
         let config = SimConfig::load_default().unwrap();
-        let ancestor = Genome::ancestor_from_config(&config).unwrap();
+        let ancestor = crate::genome::ancestor_any_from_config(&config).unwrap();
         let mut app = App::new();
         insert_sim_resources(&mut app, config, ancestor, false);
 
@@ -260,5 +274,7 @@ mod tests {
         assert!(app.world().contains_resource::<LightField>());
         assert!(app.world().contains_resource::<HazardField>());
         assert!(app.world().contains_resource::<VentField>());
+        assert!(app.world().contains_resource::<MineralField>());
+        assert!(app.world().contains_resource::<SoupField>());
     }
 }

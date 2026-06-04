@@ -2,28 +2,39 @@
 
 use bevy::prelude::*;
 
-use super::super::components::{Agent, HazardExposure, LightExposure, VentExposure};
+use super::super::components::{Agent, HazardExposure, LightExposure, MineralExposure, VentExposure};
 use super::super::hazards::HazardField;
 use super::super::light::LightField;
+use super::super::minerals::MineralField;
 use super::super::vents::VentField;
+use super::super::world::SimConfigResource;
 
-/// Sample light, hazard, and vent fields at each agent's position for this tick.
+/// Sample light, hazard, vent, and mineral fields at each agent's position for this tick.
 pub fn sense_exposure(
+    config: Res<SimConfigResource>,
     light: Res<LightField>,
     hazards: Res<HazardField>,
     vents: Res<VentField>,
+    minerals: Res<MineralField>,
     mut query: Query<(
         &Transform,
         &mut LightExposure,
         &mut HazardExposure,
         &mut VentExposure,
+        &mut MineralExposure,
     ), With<Agent>>,
 ) {
-    for (transform, mut light_exp, mut hazard_exp, mut vent_exp) in &mut query {
+    let v1_chemo = config.0.genetics.genome_version == 1;
+    for (transform, mut light_exp, mut hazard_exp, mut vent_exp, mut mineral_exp) in &mut query {
         let pos = transform.translation.truncate();
         light_exp.0 = light.sample(pos);
         hazard_exp.damage_raw = hazards.damage_at(pos);
-        vent_exp.vent_flux = vents.flux_at(pos);
+        vent_exp.vent_flux = if v1_chemo {
+            vents.flux_at(pos)
+        } else {
+            0.0
+        };
+        mineral_exp.concentration = minerals.concentration_at(pos);
     }
 }
 
@@ -32,31 +43,41 @@ mod tests {
     use super::*;
     use crate::config::{HazardZone, SimConfig};
     use crate::config::VentZone;
-    use crate::sim::components::{HazardExposure, LifeBundle, VentExposure, Velocity};
+    use crate::sim::components::{HazardExposure, LifeBundle, MineralExposure, VentExposure, Velocity};
     use crate::sim::hazards::HazardField;
+    use crate::sim::minerals::MineralField;
     use crate::sim::vents::VentField;
-    use crate::sim::world::WorldBounds;
+    use crate::sim::world::{SimConfigResource, WorldBounds};
+
+    fn insert_exposure_resources(app: &mut App, config: &SimConfig) {
+        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+        let vents = VentField::from_environment(&config.environment);
+        app.insert_resource(SimConfigResource(config.clone()));
+        app.insert_resource(LightField::from_environment(&config.environment, &bounds));
+        app.insert_resource(HazardField::from_environment(&config.environment));
+        app.insert_resource(vents.clone());
+        app.insert_resource(MineralField::from_vent_field(
+            &vents,
+            &config.environment.feeding,
+            config.environment.minerals_enabled,
+        ));
+    }
 
     fn test_app_with_agent_at(position: Vec2) -> App {
-        let config = SimConfig::load_default().unwrap();
-        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
-        let light = LightField::from_environment(&config.environment, &bounds);
-        let hazards = HazardField::from_environment(&config.environment);
-        let vents = VentField::from_environment(&config.environment);
+        let config = SimConfig::load_v1_regression().unwrap();
         let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
         let phenotype = crate::genome::decode(&genome, &config).unwrap();
         let life = LifeBundle::from_parts(genome, phenotype, &config, 1, None, 0);
 
         let mut app = App::new();
-        app.insert_resource(light);
-        app.insert_resource(hazards);
-        app.insert_resource(vents);
+        insert_exposure_resources(&mut app, &config);
         app.world_mut().spawn((
             life,
             Velocity(Vec2::ZERO),
             LightExposure(0.0),
             HazardExposure::default(),
             VentExposure::default(),
+            MineralExposure::default(),
             Transform::from_translation(position.extend(0.0)),
         ));
         app.add_systems(Update, sense_exposure);
@@ -65,7 +86,7 @@ mod tests {
 
     #[test]
     fn samples_light_at_agent_position() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let light = LightField::from_environment(&config.environment, &bounds);
         let top = Vec2::new(0.0, bounds.half_y);
@@ -100,7 +121,7 @@ mod tests {
 
     #[test]
     fn hazard_damage_inside_zone() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let mut env = config.environment.clone();
         env.hazards = vec![HazardZone {
@@ -108,14 +129,11 @@ mod tests {
             radius: 180.0,
             damage_per_tick: 2.5,
         }];
-        let light = LightField::from_environment(&env, &bounds);
-        let hazards = HazardField::from_environment(&env);
-        let vents = VentField::from_environment(&env);
+        let mut cfg = config.clone();
+        cfg.environment = env;
 
         let mut app = App::new();
-        app.insert_resource(light);
-        app.insert_resource(hazards);
-        app.insert_resource(vents);
+        insert_exposure_resources(&mut app, &cfg);
         let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
         let phenotype = crate::genome::decode(&genome, &config).unwrap();
         let life = LifeBundle::from_parts(genome, phenotype, &config, 1, None, 0);
@@ -125,6 +143,7 @@ mod tests {
             LightExposure(0.0),
             HazardExposure::default(),
             VentExposure::default(),
+            MineralExposure::default(),
             Transform::from_translation(Vec3::new(0.0, -400.0, 0.0)),
         ));
         app.add_systems(Update, sense_exposure);
@@ -138,22 +157,18 @@ mod tests {
 
     #[test]
     fn hazard_damage_outside_zone_is_zero() {
-        let config = SimConfig::load_default().unwrap();
-        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+        let config = SimConfig::load_v1_regression().unwrap();
         let mut env = config.environment.clone();
         env.hazards = vec![HazardZone {
             center: [0.0, -400.0],
             radius: 180.0,
             damage_per_tick: 2.5,
         }];
-        let light = LightField::from_environment(&env, &bounds);
-        let hazards = HazardField::from_environment(&env);
-        let vents = VentField::from_environment(&env);
+        let mut cfg = config.clone();
+        cfg.environment = env;
 
         let mut app = App::new();
-        app.insert_resource(light);
-        app.insert_resource(hazards);
-        app.insert_resource(vents);
+        insert_exposure_resources(&mut app, &cfg);
         let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
         let phenotype = crate::genome::decode(&genome, &config).unwrap();
         let life = LifeBundle::from_parts(genome, phenotype, &config, 1, None, 0);
@@ -163,6 +178,7 @@ mod tests {
             LightExposure(0.0),
             HazardExposure::default(),
             VentExposure::default(),
+            MineralExposure::default(),
             Transform::from_translation(Vec3::new(400.0, 400.0, 0.0)),
         ));
         app.add_systems(Update, sense_exposure);
@@ -175,22 +191,18 @@ mod tests {
 
     #[test]
     fn vent_flux_inside_zone() {
-        let config = SimConfig::load_default().unwrap();
-        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+        let config = SimConfig::load_v1_regression().unwrap();
         let mut env = config.environment.clone();
         env.vents = vec![VentZone {
             center: [0.0, -450.0],
             radius: 150.0,
             vent_flux: 0.032,
         }];
-        let light = LightField::from_environment(&env, &bounds);
-        let hazards = HazardField::from_environment(&env);
-        let vents = VentField::from_environment(&env);
+        let mut cfg = config.clone();
+        cfg.environment = env;
 
         let mut app = App::new();
-        app.insert_resource(light);
-        app.insert_resource(hazards);
-        app.insert_resource(vents);
+        insert_exposure_resources(&mut app, &cfg);
         let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
         let phenotype = crate::genome::decode(&genome, &config).unwrap();
         let life = LifeBundle::from_parts(genome, phenotype, &config, 1, None, 0);
@@ -200,6 +212,7 @@ mod tests {
             LightExposure(0.0),
             HazardExposure::default(),
             VentExposure::default(),
+            MineralExposure::default(),
             Transform::from_translation(Vec3::new(0.0, -450.0, 0.0)),
         ));
         app.add_systems(Update, sense_exposure);
@@ -213,22 +226,18 @@ mod tests {
 
     #[test]
     fn vent_flux_outside_zone_is_zero() {
-        let config = SimConfig::load_default().unwrap();
-        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+        let config = SimConfig::load_v1_regression().unwrap();
         let mut env = config.environment.clone();
         env.vents = vec![VentZone {
             center: [0.0, -450.0],
             radius: 150.0,
             vent_flux: 0.032,
         }];
-        let light = LightField::from_environment(&env, &bounds);
-        let hazards = HazardField::from_environment(&env);
-        let vents = VentField::from_environment(&env);
+        let mut cfg = config.clone();
+        cfg.environment = env;
 
         let mut app = App::new();
-        app.insert_resource(light);
-        app.insert_resource(hazards);
-        app.insert_resource(vents);
+        insert_exposure_resources(&mut app, &cfg);
         let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
         let phenotype = crate::genome::decode(&genome, &config).unwrap();
         let life = LifeBundle::from_parts(genome, phenotype, &config, 1, None, 0);
@@ -238,6 +247,7 @@ mod tests {
             LightExposure(0.0),
             HazardExposure::default(),
             VentExposure::default(),
+            MineralExposure::default(),
             Transform::from_translation(Vec3::new(400.0, 400.0, 0.0)),
         ));
         app.add_systems(Update, sense_exposure);
@@ -250,20 +260,16 @@ mod tests {
 
     #[test]
     fn every_agent_receives_exposure_before_metabolism_order() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let light = LightField::from_environment(&config.environment, &bounds);
-        let hazards = HazardField::from_environment(&config.environment);
-        let vents = VentField::from_environment(&config.environment);
         let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
         let phenotype = crate::genome::decode(&genome, &config).unwrap();
         let expected_top = light.sample(Vec2::new(0.0, 100.0));
         let expected_bottom = light.sample(Vec2::new(0.0, -100.0));
 
         let mut app = App::new();
-        app.insert_resource(light);
-        app.insert_resource(hazards);
-        app.insert_resource(vents);
+        insert_exposure_resources(&mut app, &config);
 
         for (i, y) in [0.0, 100.0, -100.0].into_iter().enumerate() {
             let life = LifeBundle::from_parts(
@@ -280,6 +286,7 @@ mod tests {
                 LightExposure(0.0),
                 HazardExposure::default(),
                 VentExposure::default(),
+                MineralExposure::default(),
                 Transform::from_translation(Vec2::new(0.0, y).extend(0.0)),
             ));
         }

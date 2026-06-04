@@ -2,7 +2,7 @@
 
 This document describes configurable energy models, per-entity energy and health economics, the light field, thermal vents, hazards, and soup compounds.
 
-**Phase 2 status:** Model **A** (`energy_model = "local"`) and light modes `uniform` / `gradient_y` are implemented in [`src/sim/light.rs`](../src/sim/light.rs), [`src/sim/systems/sense.rs`](../src/sim/systems/sense.rs), and [`src/sim/systems/metabolism.rs`](../src/sim/systems/metabolism.rs). Default config: [`configs/default.toml`](../configs/default.toml). Checklist: [PHASE_2.md](PHASE_2.md). Models **B** (pool) and **C** (spatial occlusion) remain Phase 6.
+**Default config (v2):** [`configs/default.toml`](../configs/default.toml) uses EVO2 photosynthesis (`0.1 × radius × photo_eff × light × solar_constant` per second, per tick in code). v1 regression: [`configs/v1_regression.toml`](../configs/v1_regression.toml) (`photo_strength` + greenness). Light and hazards: [`src/sim/light.rs`](../src/sim/light.rs), [`src/sim/systems/sense.rs`](../src/sim/systems/sense.rs). **G7:** mineral field (vent bridge), corpses, minimal global soup — [`src/sim/minerals.rs`](../src/sim/minerals.rs), [`src/sim/systems/feeding_v2.rs`](../src/sim/systems/feeding_v2.rs). Models **B** (pool) and **C** (spatial occlusion) remain Phase 6.
 
 ## Design problem: per-entity vs global energy
 

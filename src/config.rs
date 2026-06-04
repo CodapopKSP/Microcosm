@@ -7,12 +7,26 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// Supported genome encoder version (see [GENOME.md](../docs/GENOME.md)).
-pub const SUPPORTED_GENOME_VERSION: u8 = 1;
+/// Legacy genome encoder (see [GENOME.md](../docs/GENOME.md)).
+pub const GENOME_VERSION_V1: u8 = 1;
+/// Target genome encoder ([Genome_Definition.md](../docs/Genome_Definition.md)).
+pub const GENOME_VERSION_V2: u8 = 2;
+
+/// Default `genetics.genome_version` for [`SimConfig::load_default`] (EVO2).
+pub const SUPPORTED_GENOME_VERSION: u8 = GENOME_VERSION_V2;
+
+pub fn is_supported_genome_version(version: u8) -> bool {
+    matches!(version, GENOME_VERSION_V1 | GENOME_VERSION_V2)
+}
 
 /// Default config path relative to the crate manifest (works with `cargo run` from any cwd).
 pub fn default_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/default.toml")
+}
+
+/// Legacy EVO1 config for regression tests ([GENOME.md](../docs/GENOME.md)).
+pub fn v1_regression_config_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/v1_regression.toml")
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,10 +104,86 @@ pub struct GeneticsConfig {
     pub mutations_per_offspring: u32,
     #[serde(default = "default_delta_max")]
     pub delta_max: u8,
-    pub decode_ranges: DecodeRanges,
+    /// Required when `genome_version = 1`.
+    #[serde(default)]
+    pub decode_ranges: Option<DecodeRanges>,
+    /// Required when `genome_version = 2` ([CONFIG.md](../docs/CONFIG.md) `[genetics.decode_v2]`).
+    #[serde(default)]
+    pub decode_v2: Option<GeneticsDecodeV2>,
+    #[serde(default)]
+    pub triad: Option<GeneticsTriadConfig>,
+    #[serde(default)]
+    pub behavior: Option<GeneticsBehaviorConfig>,
+    #[serde(default = "default_max_genome_bytes")]
+    pub max_genome_bytes: usize,
+    #[serde(default = "default_max_pursue_slots")]
+    pub max_pursue_slots: u8,
+    #[serde(default = "default_max_avoid_slots")]
+    pub max_avoid_slots: u8,
     /// Greenness niche: photosynthesis buff + metabolism penalty ([PHASE_4.md](../docs/PHASE_4.md) §4.7).
     #[serde(default)]
     pub color_photosynthesis: ColorPhotosynthesisConfig,
+}
+
+fn default_max_genome_bytes() -> usize {
+    512
+}
+fn default_max_pursue_slots() -> u8 {
+    8
+}
+fn default_max_avoid_slots() -> u8 {
+    8
+}
+
+/// Decode scales for EVO2 ([CONFIG.md](../docs/CONFIG.md) `[genetics.decode_v2]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct GeneticsDecodeV2 {
+    pub nibble_levels: u32,
+    pub channel_max: f32,
+    pub radius_at_zero: f32,
+    pub radius_at_max: f32,
+    pub energy_bonus_at_max: f32,
+    pub metabolism_bonus_at_max: f32,
+    pub stroke_max: f32,
+    pub metabolism_pct_at_max: f32,
+    pub speed_penalty_at_max: f32,
+    pub heal_base_hp_per_sec: f32,
+    pub heal_speed_mult_at_max: f32,
+    pub heal_cost_mult_at_max: f32,
+    pub energy_cap_frac_at_byte0: f32,
+    pub energy_cap_frac_at_byte255: f32,
+    pub vitality_budget_from_radius: bool,
+    pub byte_scale: f32,
+    pub turn_chance_max_per_sec: f32,
+    pub turn_degrees_max: f32,
+    pub max_speed_at_max_byte: f32,
+    pub movement_cost_reduction_at_max: f32,
+    pub photo_rate_per_sec_per_radius: f32,
+    pub sensor_distance_at_high_nibble_f: f32,
+    pub sensor_width_deg_at_low_nibble_f: f32,
+    pub sensor_ray_count: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriadCouplingMode {
+    MaxOther,
+    MeanOther,
+    ProductOther,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GeneticsTriadConfig {
+    pub coupling_mode: TriadCouplingMode,
+    pub coupling_strength: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GeneticsBehaviorConfig {
+    pub fuzzy_nibble_delta: u8,
+    pub avoid_flee_heading_offset_deg: f32,
+    pub sensor_upkeep_per_eye_per_tick: f32,
+    pub sensor_upkeep_strength_scale: f32,
 }
 
 /// Color-driven photosynthesis tradeoff (Phase 4G).
@@ -243,10 +333,23 @@ fn default_repair_policy() -> RepairPolicy {
     RepairPolicy::CoreFirst
 }
 
+/// Order parents pay reproduction endowment from current vitality pools (v2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReproPaymentOrder {
+    #[default]
+    HealthFirst,
+    EnergyFirst,
+    Proportional,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct EconomyConfig {
     pub metabolism_floor: f32,
     pub spawn_energy: f32,
+    /// Fraction of decoded max health at spawn (v2); v1 uses [`core_max_hp`](EconomyConfig::core_max_hp) from phenotype decode.
+    #[serde(default = "default_spawn_health_frac")]
+    pub spawn_health_frac: f32,
     pub flat_energy_grant_per_tick: f32,
     pub core_max_hp: f32,
     pub repro_safety_margin: f32,
@@ -256,6 +359,9 @@ pub struct EconomyConfig {
     pub p_damage_on_repro_base: f32,
     /// Fraction of [`Phenotype::repro_threshold`] applied when a repro damage roll succeeds.
     pub repro_damage_fraction_of_max_hp: f32,
+    /// v2: which parent pool is spent first when paying offspring endowment.
+    #[serde(default)]
+    pub repro_payment_order: ReproPaymentOrder,
     pub repair_energy_per_hp: f32,
     /// Max HP restored per tick at `repair_rate = 1.0` (throughput cap; energy still `hp * repair_energy_per_hp`).
     #[serde(default = "default_repair_hp_per_tick_at_rate_1")]
@@ -274,6 +380,9 @@ pub struct EconomyConfig {
     /// Speed ratio anchor for `move_energy_per_sec_at_half_speed` (default 0.5 = half max speed).
     #[serde(default = "default_move_energy_half_speed_ratio")]
     pub move_energy_half_speed_ratio: f32,
+    /// v2 move calibration: energy per `distance / (this × body_radius)` at efficiency multiplier 1.0.
+    #[serde(default = "default_move_energy_units_per_radius")]
+    pub move_energy_units_per_radius: f32,
 }
 
 fn default_move_energy_per_sec_at_half_speed() -> f32 {
@@ -284,8 +393,16 @@ fn default_move_energy_half_speed_ratio() -> f32 {
     0.5
 }
 
+fn default_move_energy_units_per_radius() -> f32 {
+    10.0
+}
+
 fn default_repair_hp_per_tick_at_rate_1() -> f32 {
     50.0
+}
+
+fn default_spawn_health_frac() -> f32 {
+    1.0
 }
 
 /// Axis-aligned circular hazard zone ([PHASE_4.md](../docs/PHASE_4.md) §4.1).
@@ -302,6 +419,118 @@ pub struct VentZone {
     pub center: [f32; 2],
     pub radius: f32,
     pub vent_flux: f32,
+}
+
+/// v2 ingestion and environment sampling ([Genome_Definition.md](../docs/Genome_Definition.md), G7).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FeedingConfig {
+    /// Maps summed vent flux at a point to mineral concentration in `[0, 1]`.
+    #[serde(default = "default_minerals_vent_flux_scale")]
+    pub minerals_vent_flux_scale: f32,
+    /// Energy gained per tick at full minerals digestion and concentration `1.0`.
+    #[serde(default = "default_minerals_uptake_per_tick")]
+    pub minerals_uptake_per_tick: f32,
+    /// Biomass energy per tick per unit corpse radius at full biomass digestion.
+    #[serde(default = "default_biomass_uptake_per_radius")]
+    pub biomass_uptake_per_radius: f32,
+    /// Fraction of parent's current energy + health left on the corpse marker.
+    #[serde(default = "default_corpse_biomass_frac")]
+    pub corpse_biomass_frac: f32,
+    #[serde(default = "default_corpse_ttl_ticks")]
+    pub corpse_ttl_ticks: u32,
+    /// Global soup pool (Phase 6 minimal scalar field).
+    #[serde(default)]
+    pub soup_enabled: bool,
+    #[serde(default = "default_soup_regen_per_tick")]
+    pub soup_regen_per_tick: f32,
+    #[serde(default = "default_soup_max_concentration")]
+    pub soup_max_concentration: f32,
+    #[serde(default = "default_soup_initial_concentration")]
+    pub soup_initial_concentration: f32,
+    /// Config-only uptake multiplier (transporter loci are future).
+    #[serde(default = "default_soup_uptake_rate")]
+    pub soup_uptake_rate: f32,
+}
+
+fn default_minerals_vent_flux_scale() -> f32 {
+    25.0
+}
+fn default_minerals_uptake_per_tick() -> f32 {
+    0.08
+}
+fn default_biomass_uptake_per_radius() -> f32 {
+    0.15
+}
+fn default_corpse_biomass_frac() -> f32 {
+    0.4
+}
+fn default_corpse_ttl_ticks() -> u32 {
+    3600
+}
+fn default_soup_regen_per_tick() -> f32 {
+    0.0005
+}
+fn default_soup_max_concentration() -> f32 {
+    1.0
+}
+fn default_soup_initial_concentration() -> f32 {
+    0.0
+}
+fn default_soup_uptake_rate() -> f32 {
+    0.04
+}
+
+fn default_feeding_config() -> FeedingConfig {
+    FeedingConfig {
+        minerals_vent_flux_scale: default_minerals_vent_flux_scale(),
+        minerals_uptake_per_tick: default_minerals_uptake_per_tick(),
+        biomass_uptake_per_radius: default_biomass_uptake_per_radius(),
+        corpse_biomass_frac: default_corpse_biomass_frac(),
+        corpse_ttl_ticks: default_corpse_ttl_ticks(),
+        soup_enabled: false,
+        soup_regen_per_tick: default_soup_regen_per_tick(),
+        soup_max_concentration: default_soup_max_concentration(),
+        soup_initial_concentration: default_soup_initial_concentration(),
+        soup_uptake_rate: default_soup_uptake_rate(),
+    }
+}
+
+impl FeedingConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        for (name, v) in [
+            ("minerals_vent_flux_scale", self.minerals_vent_flux_scale),
+            ("minerals_uptake_per_tick", self.minerals_uptake_per_tick),
+            ("biomass_uptake_per_radius", self.biomass_uptake_per_radius),
+            ("corpse_biomass_frac", self.corpse_biomass_frac),
+            ("soup_regen_per_tick", self.soup_regen_per_tick),
+            ("soup_max_concentration", self.soup_max_concentration),
+            ("soup_initial_concentration", self.soup_initial_concentration),
+            ("soup_uptake_rate", self.soup_uptake_rate),
+        ] {
+            if !v.is_finite() || v < 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "environment.feeding.{name} must be finite and >= 0"
+                )));
+            }
+        }
+        if self.corpse_biomass_frac > 1.0 {
+            return Err(ConfigError::Validation(
+                "environment.feeding.corpse_biomass_frac must be in [0, 1]".into(),
+            ));
+        }
+        if self.soup_max_concentration <= 0.0 {
+            return Err(ConfigError::Validation(
+                "environment.feeding.soup_max_concentration must be positive".into(),
+            ));
+        }
+        if self.soup_initial_concentration > self.soup_max_concentration {
+            return Err(ConfigError::Validation(
+                "environment.feeding.soup_initial_concentration must be <= soup_max_concentration"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// World energy and light ([PHASE_2.md](../docs/PHASE_2.md) sub-phase 2A).
@@ -329,6 +558,14 @@ pub struct EnvironmentConfig {
     /// Circular thermal vents; empty ⇒ no chemo flux sample (Phase 5A).
     #[serde(default)]
     pub vents: Vec<VentZone>,
+    /// Mineral field for signature `0x0201` (G7).
+    #[serde(default)]
+    pub minerals_enabled: bool,
+    /// Corpse markers for signature `0x0200` (G7).
+    #[serde(default)]
+    pub corpses_enabled: bool,
+    #[serde(default = "default_feeding_config")]
+    pub feeding: FeedingConfig,
 }
 
 fn default_overlap_shades_photosynthesis() -> bool {
@@ -459,6 +696,8 @@ impl EnvironmentConfig {
             }
         }
 
+        self.feeding.validate()?;
+
         Ok(())
     }
 }
@@ -532,10 +771,15 @@ impl SimConfig {
         Self::load_from_path(default_config_path())
     }
 
+    /// Load the v1 regression TOML (`configs/v1_regression.toml`).
+    pub fn load_v1_regression() -> Result<Self, ConfigError> {
+        Self::load_from_path(v1_regression_config_path())
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.genetics.genome_version != SUPPORTED_GENOME_VERSION {
+        if !is_supported_genome_version(self.genetics.genome_version) {
             return Err(ConfigError::Validation(format!(
-                "unsupported genetics.genome_version {} (expected {SUPPORTED_GENOME_VERSION})",
+                "unsupported genetics.genome_version {} (supported: {GENOME_VERSION_V1}, {GENOME_VERSION_V2})",
                 self.genetics.genome_version
             )));
         }
@@ -555,8 +799,23 @@ impl SimConfig {
             )));
         }
 
-        crate::genome::Genome::ancestor_from_genetics(&self.genetics)
-            .map_err(|e| ConfigError::Validation(e.to_string()))?;
+        match self.genetics.genome_version {
+            GENOME_VERSION_V1 => {
+                self.genetics.require_decode_ranges()?;
+                crate::genome::Genome::ancestor_from_genetics(&self.genetics)
+                    .map_err(|e| ConfigError::Validation(e.to_string()))?;
+                self.validate_v1_decode_ranges()?;
+            }
+            GENOME_VERSION_V2 => {
+                let d2 = self.genetics.require_decode_v2()?;
+                self.genetics.require_triad()?;
+                self.genetics.require_behavior()?;
+                d2.validate()?;
+                crate::genome::GenomeV2::ancestor_from_genetics(&self.genetics)
+                    .map_err(|e| ConfigError::Validation(e.to_string()))?;
+            }
+            _ => unreachable!(),
+        }
 
         if self.world.width <= 0.0 || self.world.height <= 0.0 {
             return Err(ConfigError::Validation(
@@ -582,53 +841,23 @@ impl SimConfig {
             ));
         }
 
-        let dr = &self.genetics.decode_ranges;
-        if dr.body_radius_max <= dr.body_radius_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.body_radius_max must exceed body_radius_min".into(),
-            ));
-        }
-
-        if dr.pace_max <= dr.pace_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.pace_max must exceed pace_min".into(),
-            ));
-        }
-
-        if dr.repair_rate_max <= dr.repair_rate_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.repair_rate_max must exceed repair_rate_min".into(),
-            ));
-        }
-
         if self.economy.repair_hp_per_tick_at_rate_1 <= 0.0 {
             return Err(ConfigError::Validation(
                 "economy.repair_hp_per_tick_at_rate_1 must be positive".into(),
             ));
         }
 
-        if dr.meta_max <= dr.meta_min {
+        if self.economy.move_energy_units_per_radius <= 0.0
+            || !self.economy.move_energy_units_per_radius.is_finite()
+        {
             return Err(ConfigError::Validation(
-                "genetics.decode_ranges.meta_max must exceed meta_min".into(),
-            ));
-        }
-
-        if dr.e_max <= dr.e_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.e_max must exceed e_min".into(),
+                "economy.move_energy_units_per_radius must be positive and finite".into(),
             ));
         }
 
         if self.economy.repro_cooldown_ticks == 0 {
             return Err(ConfigError::Validation(
                 "economy.repro_cooldown_ticks must be positive".into(),
-            ));
-        }
-
-        if dr.age_metabolism_scale_max <= dr.age_metabolism_scale_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.age_metabolism_scale_max must exceed age_metabolism_scale_min"
-                    .into(),
             ));
         }
 
@@ -673,16 +902,18 @@ impl SimConfig {
             ));
         }
 
-        if dr.k_mitigate < 0.0 || !dr.k_mitigate.is_finite() {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.k_mitigate must be non-negative and finite".into(),
-            ));
-        }
-
-        if dr.k_chemo < 0.0 || !dr.k_chemo.is_finite() {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.k_chemo must be non-negative and finite".into(),
-            ));
+        if self.genetics.genome_version == GENOME_VERSION_V1 {
+            let dr = self.genetics.decode_ranges_ref();
+            if dr.k_mitigate < 0.0 || !dr.k_mitigate.is_finite() {
+                return Err(ConfigError::Validation(
+                    "genetics.decode_ranges.k_mitigate must be non-negative and finite".into(),
+                ));
+            }
+            if dr.k_chemo < 0.0 || !dr.k_chemo.is_finite() {
+                return Err(ConfigError::Validation(
+                    "genetics.decode_ranges.k_chemo must be non-negative and finite".into(),
+                ));
+            }
         }
 
         if self.economy.collision_damage_scale < 0.0
@@ -727,6 +958,125 @@ impl GeneticsConfig {
     /// Parse `ancestor_hex` (optional `0x` prefix, whitespace ignored).
     pub fn parse_ancestor_bytes(&self) -> Result<Vec<u8>, ConfigError> {
         parse_hex_bytes(&self.ancestor_hex)
+    }
+
+    pub fn require_decode_ranges(&self) -> Result<&DecodeRanges, ConfigError> {
+        self.decode_ranges.as_ref().ok_or_else(|| {
+            ConfigError::Validation(
+                "genetics.decode_ranges is required when genetics.genome_version = 1".into(),
+            )
+        })
+    }
+
+    pub fn decode_ranges_ref(&self) -> &DecodeRanges {
+        self.decode_ranges
+            .as_ref()
+            .expect("decode_ranges present after v1 validation")
+    }
+
+    pub fn require_decode_v2(&self) -> Result<&GeneticsDecodeV2, ConfigError> {
+        self.decode_v2.as_ref().ok_or_else(|| {
+            ConfigError::Validation(
+                "genetics.decode_v2 is required when genetics.genome_version = 2".into(),
+            )
+        })
+    }
+
+    pub fn require_triad(&self) -> Result<&GeneticsTriadConfig, ConfigError> {
+        self.triad.as_ref().ok_or_else(|| {
+            ConfigError::Validation(
+                "genetics.triad is required when genetics.genome_version = 2".into(),
+            )
+        })
+    }
+
+    pub fn require_behavior(&self) -> Result<&GeneticsBehaviorConfig, ConfigError> {
+        self.behavior.as_ref().ok_or_else(|| {
+            ConfigError::Validation(
+                "genetics.behavior is required when genetics.genome_version = 2".into(),
+            )
+        })
+    }
+}
+
+impl GeneticsDecodeV2 {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let positive = |name: &str, v: f32| -> Result<(), ConfigError> {
+            if !v.is_finite() || v <= 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "genetics.decode_v2.{name} must be positive and finite"
+                )));
+            }
+            Ok(())
+        };
+        if self.nibble_levels < 2 {
+            return Err(ConfigError::Validation(
+                "genetics.decode_v2.nibble_levels must be at least 2".into(),
+            ));
+        }
+        positive("channel_max", self.channel_max)?;
+        positive("radius_at_max", self.radius_at_max)?;
+        if self.radius_at_max <= self.radius_at_zero {
+            return Err(ConfigError::Validation(
+                "genetics.decode_v2.radius_at_max must exceed radius_at_zero".into(),
+            ));
+        }
+        positive("energy_bonus_at_max", self.energy_bonus_at_max)?;
+        positive("metabolism_bonus_at_max", self.metabolism_bonus_at_max)?;
+        positive("byte_scale", self.byte_scale)?;
+        if self.energy_cap_frac_at_byte0 < 0.0
+            || self.energy_cap_frac_at_byte0 > 1.0
+            || self.energy_cap_frac_at_byte255 < 0.0
+            || self.energy_cap_frac_at_byte255 > 1.0
+        {
+            return Err(ConfigError::Validation(
+                "genetics.decode_v2 energy cap fractions must be in [0, 1]".into(),
+            ));
+        }
+        if self.sensor_ray_count == 0 {
+            return Err(ConfigError::Validation(
+                "genetics.decode_v2.sensor_ray_count must be positive".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl SimConfig {
+    fn validate_v1_decode_ranges(&self) -> Result<(), ConfigError> {
+        let dr = self.genetics.decode_ranges_ref();
+        if dr.body_radius_max <= dr.body_radius_min {
+            return Err(ConfigError::Validation(
+                "genetics.decode_ranges.body_radius_max must exceed body_radius_min".into(),
+            ));
+        }
+        if dr.pace_max <= dr.pace_min {
+            return Err(ConfigError::Validation(
+                "genetics.decode_ranges.pace_max must exceed pace_min".into(),
+            ));
+        }
+        if dr.repair_rate_max <= dr.repair_rate_min {
+            return Err(ConfigError::Validation(
+                "genetics.decode_ranges.repair_rate_max must exceed repair_rate_min".into(),
+            ));
+        }
+        if dr.meta_max <= dr.meta_min {
+            return Err(ConfigError::Validation(
+                "genetics.decode_ranges.meta_max must exceed meta_min".into(),
+            ));
+        }
+        if dr.e_max <= dr.e_min {
+            return Err(ConfigError::Validation(
+                "genetics.decode_ranges.e_max must exceed e_min".into(),
+            ));
+        }
+        if dr.age_metabolism_scale_max <= dr.age_metabolism_scale_min {
+            return Err(ConfigError::Validation(
+                "genetics.decode_ranges.age_metabolism_scale_max must exceed age_metabolism_scale_min"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -882,16 +1232,44 @@ mod tests {
         let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
         let phenotype = crate::genome::decode(&genome, &config).unwrap();
         assert!(
-            phenotype.is_chemo_above_cliff(config.genetics.decode_ranges.chemo_cliff),
+            phenotype.is_chemo_above_cliff(config.genetics.decode_ranges_ref().chemo_cliff),
             "vent_lab ancestor should be above chemo cliff"
         );
     }
 
     #[test]
+    fn mineral_vent_v2_toml_loads() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/mineral_vent_v2.toml");
+        let config = SimConfig::load_from_path(&path).expect("mineral_vent_v2.toml should load");
+        assert!(config.environment.minerals_enabled);
+        assert!(config.environment.corpses_enabled);
+        assert!(config.environment.feeding.soup_enabled);
+        let genome = crate::genome::GenomeV2::ancestor_from_config(&config).unwrap();
+        let phenotype = crate::genome::decode_v2(&genome, &config).unwrap();
+        assert!(phenotype.minerals_effective > 0.0);
+    }
+
+    #[test]
+    fn genome_v2_example_toml_loads() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/genome_v2.example.toml");
+        let config = SimConfig::load_from_path(&path).expect("genome_v2.example.toml should load");
+        assert_eq!(config.genetics.genome_version, GENOME_VERSION_V2);
+        assert_eq!(config.genetics.core_length, 28);
+        let genome = crate::genome::GenomeV2::ancestor_from_config(&config).unwrap();
+        let phenotype = crate::genome::decode_v2(&genome, &config).unwrap();
+        assert_eq!(phenotype.max_speed_effective, 0.0);
+        assert!((phenotype.repro_threshold_frac - 1.0).abs() < 1e-6);
+        assert!((phenotype.offspring_endowment_frac - 15.0 / 255.0).abs() < 0.02);
+        assert!(phenotype.photo_effective > 0.0);
+    }
+
+    #[test]
     fn load_default_toml() {
         let config = SimConfig::load_default().expect("default.toml should load");
-        assert_eq!(config.genetics.genome_version, SUPPORTED_GENOME_VERSION);
-        assert_eq!(config.genetics.core_length, 32);
+        assert_eq!(config.genetics.genome_version, GENOME_VERSION_V2);
+        assert_eq!(config.genetics.core_length, 28);
         assert_eq!(config.world.initial_population, 80);
         assert!(config.is_seeded());
         assert_eq!(config.environment.energy_model, EnergyModel::Local);
@@ -899,13 +1277,19 @@ mod tests {
         assert_eq!(config.economy.repair_policy, RepairPolicy::CoreFirst);
         assert_eq!(config.environment.light_mode, LightMode::GradientY);
         assert!(!config.environment.crowding_blocks_photosynthesis);
+        assert!(config.genetics.decode_v2.is_some());
+        assert!(config.genetics.triad.is_some());
+        assert!(config.genetics.behavior.is_some());
+    }
+
+    #[test]
+    fn v1_regression_toml_loads() {
+        let config = SimConfig::load_v1_regression().expect("v1_regression.toml should load");
+        assert_eq!(config.genetics.genome_version, GENOME_VERSION_V1);
+        assert_eq!(config.genetics.core_length, 32);
+        assert!(config.genetics.decode_ranges.is_some());
+        crate::genome::Genome::ancestor_from_config(&config).unwrap();
         assert!(config.genetics.color_photosynthesis.k_green_photo > 0.0);
-        assert!(
-            config.genetics.color_photosynthesis.k_green_meta
-                < config.genetics.color_photosynthesis.k_green_photo
-                    * config.genetics.color_photosynthesis.light_ref
-                    * config.environment.solar_constant
-        );
     }
 
     #[test]
@@ -955,7 +1339,7 @@ mod tests {
     fn rejects_unsupported_genome_version() {
         let path = default_config_path();
         let mut contents = fs::read_to_string(&path).unwrap();
-        contents = contents.replace("genome_version = 1", "genome_version = 99");
+        contents = contents.replace("genome_version = 2", "genome_version = 99");
         let config: SimConfig = toml::from_str(&contents).unwrap();
         let err = config.validate().unwrap_err();
         assert!(matches!(err, ConfigError::Validation(_)));
@@ -980,9 +1364,17 @@ mod tests {
 
     #[test]
     fn ancestor_matches_core_length() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let bytes = config.genetics.parse_ancestor_bytes().unwrap();
         assert_eq!(bytes.len(), config.genetics.core_length);
         assert_eq!(&bytes[0..4], b"EVO1");
+    }
+
+    #[test]
+    fn v2_default_ancestor_matches_core_length() {
+        let config = SimConfig::load_default().unwrap();
+        let bytes = config.genetics.parse_ancestor_bytes().unwrap();
+        assert_eq!(bytes.len(), config.genetics.core_length);
+        assert_eq!(&bytes[0..4], b"EVO2");
     }
 }

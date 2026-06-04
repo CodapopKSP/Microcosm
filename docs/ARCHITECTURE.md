@@ -43,23 +43,23 @@ src/
   config.rs            # SimConfig deserialize from TOML
   genome/
     mod.rs
-    encoding.rs        # v1 layout, magic, offsets, decode
-    mutation.rs        # bit flip, point noise, resample, dup/del
-    phenotype.rs       # Phenotype struct, derived traits, upkeeps
+    encoding.rs        # v1 EVO1 (legacy)
+    encoding_v2.rs     # v2 EVO2 fixed core + slots
+    signatures.rs      # pursue/avoid registry
+    phenotype_v2.rs    # v2 decode from config
+    mutation_v2.rs
+    decode.rs          # dispatch by genome_version
   sim/
     mod.rs
-    world.rs           # Resources: tick, solar pool, light sampler
+    minerals.rs, soup.rs
+    perception.rs, behavior.rs
     systems/
-      mod.rs
-      environment.rs
-      sense.rs
-      metabolism.rs
-      movement.rs
-      interaction.rs
-      healing.rs
-      reproduction.rs
-      death.rs
-      failsafe.rs
+      environment_tick.rs, feeding_v2.rs
+      sense.rs, sense_rays.rs, behavior_v2.rs
+      metabolism.rs, metabolism_v2.rs
+      movement.rs, movement_v2.rs
+      healing.rs, healing_v2.rs
+      reproduction.rs, reproduction_v2.rs
     metrics.rs         # Snapshot aggregation, JSON export
     snapshot.rs        # Read-only copy for renderer
   visual/
@@ -111,13 +111,18 @@ Register systems as a chained set in [SIMULATION.md](SIMULATION.md) order:
 
 ```rust
 // Conceptual
-app.add_systems(Update, (
+app.add_systems(SimTickSchedule, (
     environment_tick,
     sense_exposure,
+    sense_rays,          // v2
+    behavior_v2,         // v2
+    feeding_v2,          // v2
     metabolism_and_gains,
-    behavior_movement,
+    behavior_movement,   // v1
+    behavior_movement_v2,// v2
     interactions,
     healing,
+    healing_v2,
     reproduction,
     advance_age,
     death_and_despawn,

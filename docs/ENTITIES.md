@@ -10,10 +10,13 @@ Logical components for implementation (names may map 1:1 to Bevy components):
 |-----------|---------------------|------|
 | `Genome` | `bytes: Vec<u8>`, `version: u8` | Heritable DNA; mutated on reproduction |
 | `Phenotype` | Decoded scalars + derived traits + optional `Morphology` | Cache rebuilt on birth / mutation |
-| `Energy` | `internal_energy: f32` | Spendable energy store |
-| `Health` | `core_hp`, `core_max_hp`, `part_hp: Vec<f32>` | Part vector aligns with morphology nodes |
+| `Energy` | `internal_energy`, `max_internal_energy` | Spendable store; v2 caps from radius + E/H ratio |
+| `Health` | `core_hp`, `core_max_hp`, `part_hp: Vec<f32>` | v2 `core_max_hp` from decoded `max_health`; v1 from config decode |
 | `Transform` | position, rotation (2D) | World placement |
+| `Heading` | radians | v2: sensor rays and steering |
 | `Velocity` | `Vec2` | Motion; capped by `phenotype.max_speed` |
+| `MineralExposure` | concentration `0..1` | v2 vent/mineral field sample |
+| `Corpse` | `remaining_biomass`, `radius`, TTL | v2 dead-agent marker (not an `Agent`) |
 | `Agent` | `radius` (from phenotype), collision flags | Physics and rendering hull |
 | `Lineage` | `id`, `parent_id`, `generation` | Optional tracking and metrics |
 | `Cooldowns` | `repro_ticks_remaining` | Reproduction timer |
@@ -57,7 +60,7 @@ stateDiagram-v2
 Order follows [SIMULATION.md](SIMULATION.md):
 
 1. Sample environment at position.
-2. Apply energy gains (photosynthesis / chemo / soup per phase).
+2. Apply feeding gains (v2: minerals, corpses, soup) then metabolism (photosynthesis; v1 chemo at vents).
 3. Subtract upkeeps and metabolism.
 4. Movement if `internal_energy` covers speed-scaled movement cost (`movement_energy_per_tick`); optional moving metabolism when `k_move_meta > 0`.
 5. Resolve damage to parts / core (Phase 4: core only when `part_hp` empty).
@@ -69,7 +72,7 @@ Order follows [SIMULATION.md](SIMULATION.md):
 **Preconditions:**
 
 - `repro_ticks_remaining == 0`
-- `internal_energy >= repro_threshold`
+- v1: `internal_energy >= repro_threshold` (absolute); v2: `internal_energy >= repro_threshold_frac × max_energy`
 
 **Steps:**
 
@@ -148,9 +151,15 @@ Per-entity events (optional log):
 
 Aggregates in [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Config vs genome (v2 target)
+
+Per [Genome_Definition.md](Genome_Definition.md): only chromosomes and pursue/avoid slots vary by agent. Mechanics such as **age metabolism**, **reproduction risk**, **cooldown**, and **spawn energy** are **global** — see [CONFIG.md](CONFIG.md) `[economy]`. Decode formulas for genes use [CONFIG.md](CONFIG.md) `[genetics.decode_v2]`, not hard-coded Rust constants.
+
 ## Further reading
 
-- [GENOME.md](GENOME.md) — What gets inherited and mutated
+- [Genome_Definition.md](Genome_Definition.md) — Canonical heritable model (v2)
+- [CONFIG.md](CONFIG.md) — All tunable parameters
+- [GENOME.md](GENOME.md) — Legacy v1 layout
 - [ENERGY_AND_ENVIRONMENT.md](ENERGY_AND_ENVIRONMENT.md) — Gains, costs, damage
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Where systems live in code
 - [ROADMAP.md](ROADMAP.md) — When each interaction lands

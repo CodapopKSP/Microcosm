@@ -4,6 +4,8 @@ Detailed implementation plan for **Phase 5** from [ROADMAP.md](ROADMAP.md). Phas
 
 **Prerequisite reading:** [SIMULATION.md](SIMULATION.md), [GENOME.md](GENOME.md), [ENTITIES.md](ENTITIES.md), [ENERGY_AND_ENVIRONMENT.md](ENERGY_AND_ENVIRONMENT.md), [ARCHITECTURE.md](ARCHITECTURE.md), [PHASE_4.md](PHASE_4.md).
 
+> **Note:** [Genome_Definition.md](Genome_Definition.md) is the canonical target. Sub-phases **5C–5D** (repurpose `repro_cost` as v1 sensor bytes) are **deferred** — sensors live in the v2 core (bytes 20–21). Finish **5A–5B** on v1 as a bridge; port perception/behavior to v2 per [GENOME_V2_ARCHITECTURE_ROADMAP.md](GENOME_V2_ARCHITECTURE_ROADMAP.md).
+
 ---
 
 ## Master checklist

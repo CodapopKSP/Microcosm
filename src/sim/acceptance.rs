@@ -17,6 +17,7 @@ use super::headless::run_headless_sim;
 use super::systems::healing::apply_repair_tick;
 use super::apply_metabolism_tick;
 use super::spawn::{build_offspring_spawn_params, build_spawn_params, try_prepare_spawn};
+use crate::genome::{AnyGenome, AnyPhenotype};
 
 /// Config where `repro_death_probability` stays meaningful so `p_death_on_repro_base` A/B diverges.
 fn repro_risk_ab_config(mut config: SimConfig) -> SimConfig {
@@ -45,7 +46,7 @@ fn set_color_bytes(bytes: &mut [u8], r: u8, g: u8, b: u8) {
 }
 
 fn phenotype_with_colors(r: u8, g: u8, b: u8) -> (SimConfig, PhenotypeData) {
-    let config = SimConfig::load_default().unwrap();
+    let config = SimConfig::load_v1_regression().unwrap();
     let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
     set_color_bytes(&mut bytes, r, g, b);
     let genome = GenomeData::from_bytes(
@@ -64,7 +65,7 @@ fn config_with_ancestor_hex(mut config: SimConfig, ancestor_hex: &str) -> SimCon
 }
 
 fn phenotype_with_loci(photo_raw: u16, meta_raw: u16) -> (SimConfig, PhenotypeData) {
-    let config = SimConfig::load_default().unwrap();
+    let config = SimConfig::load_v1_regression().unwrap();
     let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
     set_u16_locus(&mut bytes, genome::core::PHOTO_STRENGTH, photo_raw);
     set_u16_locus(&mut bytes, genome::core::METABOLISM_BASE, meta_raw);
@@ -84,9 +85,7 @@ fn ticks_until_depleted(
     config: &SimConfig,
     start_energy: f32,
 ) -> u32 {
-    let mut energy = Energy {
-        internal_energy: start_energy,
-    };
+    let mut energy = Energy::new_v1(start_energy);
     let mut health = Health {
         core_hp: config.economy.core_max_hp,
         core_max_hp: config.economy.core_max_hp,
@@ -103,7 +102,7 @@ fn ticks_until_depleted(
             0.0,
             &config.environment,
             &config.economy,
-            &config.genetics.decode_ranges,
+            &config.genetics.decode_ranges_ref(),
             1.0,
         );
         ticks += 1;
@@ -117,9 +116,7 @@ fn net_energy_after_ticks(
     config: &SimConfig,
     ticks: u32,
 ) -> f32 {
-    let mut energy = Energy {
-        internal_energy: config.economy.spawn_energy,
-    };
+    let mut energy = Energy::new_v1(config.economy.spawn_energy);
     let mut health = Health {
         core_hp: config.economy.core_max_hp,
         core_max_hp: config.economy.core_max_hp,
@@ -136,7 +133,7 @@ fn net_energy_after_ticks(
             0.0,
             &config.environment,
             &config.economy,
-            &config.genetics.decode_ranges,
+            &config.genetics.decode_ranges_ref(),
             1.0,
         );
     }
@@ -149,9 +146,7 @@ fn energy_after_ticks(
     config: &SimConfig,
     ticks: u32,
 ) -> f32 {
-    let mut energy = Energy {
-        internal_energy: config.economy.spawn_energy,
-    };
+    let mut energy = Energy::new_v1(config.economy.spawn_energy);
     let mut health = Health {
         core_hp: config.economy.core_max_hp,
         core_max_hp: config.economy.core_max_hp,
@@ -167,7 +162,7 @@ fn energy_after_ticks(
             0.0,
             &config.environment,
             &config.economy,
-            &config.genetics.decode_ranges,
+            &config.genetics.decode_ranges_ref(),
             1.0,
         );
     }
@@ -204,7 +199,7 @@ fn ticks_until_hazard_death(
 
 #[test]
 fn population_viable_20k_ticks_with_age() {
-    let config = SimConfig::load_default().unwrap();
+    let config = SimConfig::load_v1_regression().unwrap();
     let summary = run_headless_sim(&config, 20_000);
     assert!(
         summary.alive > 0,
@@ -218,7 +213,7 @@ fn population_viable_20k_ticks_with_age() {
 
 #[test]
 fn population_survives_5000_ticks() {
-    let mut config = SimConfig::load_default().unwrap();
+    let mut config = SimConfig::load_v1_regression().unwrap();
     config.world.initial_population = 20;
 
     let summary = run_headless_sim(&config, 5000);
@@ -231,7 +226,7 @@ fn population_survives_5000_ticks() {
 
 #[test]
 fn repro_risk_ab_same_seed_different_trajectories() {
-    let base = repro_risk_ab_config(SimConfig::load_default().unwrap());
+    let base = repro_risk_ab_config(SimConfig::load_v1_regression().unwrap());
     assert!(base.run.master_seed.is_some());
 
     let mut low = base.clone();
@@ -264,7 +259,7 @@ fn diversity_proxy_color_variance_across_seeds() {
     let mut all_colors = HashSet::new();
 
     for seed in 1..=10_u64 {
-        let mut config = SimConfig::load_default().unwrap();
+        let mut config = SimConfig::load_v1_regression().unwrap();
         config.run.master_seed = Some(seed);
         config.world.initial_population = 15;
 
@@ -282,7 +277,7 @@ fn diversity_proxy_color_variance_across_seeds() {
 
 #[test]
 fn single_run_accumulates_phenotype_color_diversity() {
-    let mut config = SimConfig::load_default().unwrap();
+    let mut config = SimConfig::load_v1_regression().unwrap();
     config.world.initial_population = 25;
 
     let summary = run_headless_sim(&config, 5000);
@@ -295,7 +290,7 @@ fn single_run_accumulates_phenotype_color_diversity() {
 
 #[test]
 fn zero_solar_local_model_extinguishes_population() {
-    let mut config = SimConfig::load_default().unwrap();
+    let mut config = SimConfig::load_v1_regression().unwrap();
     config.environment.solar_constant = 0.0;
     config.world.initial_population = 20;
     // Keep timing stable: this test asserts extinction rate, not absolute HP scale.
@@ -311,7 +306,7 @@ fn zero_solar_local_model_extinguishes_population() {
 
 #[test]
 fn default_config_survives_without_crowding_block() {
-    let config = SimConfig::load_default().unwrap();
+    let config = SimConfig::load_v1_regression().unwrap();
     assert!(
         !config.environment.crowding_blocks_photosynthesis,
         "default headless acceptance assumes crowding_blocks_photosynthesis = false"
@@ -326,7 +321,7 @@ fn default_config_survives_without_crowding_block() {
 
 #[test]
 fn local_model_population_survives_3000_ticks() {
-    let config = SimConfig::load_default().unwrap();
+    let config = SimConfig::load_v1_regression().unwrap();
     assert_eq!(
         config.environment.energy_model,
         EnergyModel::Local,
@@ -364,7 +359,7 @@ fn high_photo_bright_band_net_positive() {
 #[test]
 fn high_photo_shade_band_net_negative() {
     let (config, mut phenotype) = phenotype_with_loci(0xFFFF, 0x8000);
-    phenotype.photo_upkeep = config.genetics.decode_ranges.k_photo * phenotype.photo_strength;
+    phenotype.photo_upkeep = config.genetics.decode_ranges_ref().k_photo * phenotype.photo_strength;
     let shade = config.environment.gradient_min;
     let delta = net_energy_after_ticks(&phenotype, shade, &config, 500);
     assert!(
@@ -391,7 +386,7 @@ fn low_photo_shade_survives_longer_than_high_photo_shade() {
 
 #[test]
 fn population_stable_5000_ticks_gradient_default_config() {
-    let config = SimConfig::load_default().unwrap();
+    let config = SimConfig::load_v1_regression().unwrap();
     assert_eq!(config.environment.light_mode, crate::config::LightMode::GradientY);
 
     let summary = run_headless_sim(&config, 5000);
@@ -430,7 +425,7 @@ fn population_stable_5000_ticks_gradient_default_config() {
 
 #[test]
 fn population_stable_10000_ticks_gradient_default_config() {
-    let config = SimConfig::load_default().unwrap();
+    let config = SimConfig::load_v1_regression().unwrap();
     let summary = run_headless_sim(&config, 10_000);
     let cap = config.performance.max_entities;
     let initial = config.world.initial_population;
@@ -451,21 +446,31 @@ fn population_stable_10000_ticks_gradient_default_config() {
 /// Phase 4C: default initial spawn and offspring bundles keep `part_hp` empty.
 #[test]
 fn part_hp_empty_for_default_spawn_and_offspring_paths() {
-    let config = SimConfig::load_default().unwrap();
+    let config = SimConfig::load_v1_regression().unwrap();
     let ancestor = GenomeData::ancestor_from_config(&config).unwrap();
 
     for n in 0..config.world.initial_population {
-        let (genome, phenotype) =
-            try_prepare_spawn(ancestor.clone_genome(), &config).expect("ancestor viable");
-        let params = build_spawn_params(genome, phenotype.clone(), &config, n as u64 + 1, None, 0);
+        let (genome, phenotype) = try_prepare_spawn(
+            AnyGenome::V1(ancestor.clone_genome()),
+            &config,
+        )
+        .expect("ancestor viable");
+        let params = build_spawn_params(
+            genome,
+            phenotype.clone(),
+            &config,
+            n as u64 + 1,
+            None,
+            0,
+        );
         assert!(
             params.life.health.part_hp.is_empty(),
             "initial spawn {n} must have empty part_hp"
         );
     }
 
-    let (genome, phenotype) = try_prepare_spawn(ancestor, &config).unwrap();
-    let endowment = phenotype.offspring_endowment;
+    let (genome, phenotype) = try_prepare_spawn(AnyGenome::V1(ancestor), &config).unwrap();
+    let endowment = phenotype.v1().unwrap().offspring_endowment;
     let child = build_offspring_spawn_params(
         genome,
         phenotype,
@@ -491,14 +496,12 @@ fn part_hp_empty_for_default_spawn_and_offspring_paths() {
 /// Offspring at endowment HP must not sink all photosynthetic gain into a phantom repair deficit.
 #[test]
 fn offspring_gains_energy_when_spawned_at_endowment_hp() {
-    let config = SimConfig::load_default().unwrap();
+    let config = SimConfig::load_v1_regression().unwrap();
     let genome = GenomeData::ancestor_from_config(&config).unwrap();
     let phenotype = decode(&genome, &config).unwrap();
     let endowment = phenotype.offspring_endowment;
 
-    let mut energy = Energy {
-        internal_energy: 0.0,
-    };
+    let mut energy = Energy::new_v1(0.0);
     let mut health = Health {
         core_hp: endowment,
         core_max_hp: endowment,
@@ -516,7 +519,7 @@ fn offspring_gains_energy_when_spawned_at_endowment_hp() {
             0.0,
             &config.environment,
             &config.economy,
-            &config.genetics.decode_ranges,
+            &config.genetics.decode_ranges_ref(),
             1.0,
         );
         apply_repair_tick(
@@ -594,9 +597,7 @@ fn hazard_harness_agent(config: &SimConfig, phenotype: PhenotypeData, position: 
             core_max_hp: config.economy.core_max_hp,
             part_hp: vec![],
         },
-        energy: Energy {
-            internal_energy: config.economy.spawn_energy,
-        },
+        energy: Energy::new_v1(config.economy.spawn_energy),
         phenotype,
         position,
     }
@@ -605,7 +606,7 @@ fn hazard_harness_agent(config: &SimConfig, phenotype: PhenotypeData, position: 
 /// Phase 4F: repair spends energy when hazard damage and repair are both enabled.
 #[test]
 fn repair_energy_spent_after_hazard_damage() {
-    let config = SimConfig::load_default().unwrap();
+    let config = SimConfig::load_v1_regression().unwrap();
     assert!(config.economy.repair_energy_per_hp > 0.0);
     let hazard_center = Vec2::from_array(config.environment.hazards[0].center);
     let phenotype = phenotype_with_skin_hardness(&config, 0x0000);
@@ -646,7 +647,7 @@ fn repair_energy_spent_after_hazard_damage() {
 /// Phase 4D: without repair, agents in hazard bands die faster than agents in a safe region.
 #[test]
 fn hazard_kills_faster_than_safe_zone_when_repair_disabled() {
-    let mut config = SimConfig::load_default().unwrap();
+    let mut config = SimConfig::load_v1_regression().unwrap();
     config.economy.core_max_hp = 100.0;
     config.economy.repair_energy_per_hp = 0.0;
     assert!(!config.environment.hazards.is_empty());
@@ -678,7 +679,7 @@ fn hazard_kills_faster_than_safe_zone_when_repair_disabled() {
 /// Phase 4E: harder armor survives longer in hazard with repair enabled.
 #[test]
 fn hardness_hazard_survival_tradeoff() {
-    let mut config = SimConfig::load_default().unwrap();
+    let mut config = SimConfig::load_v1_regression().unwrap();
     config.economy.core_max_hp = 100.0;
     config.economy.spawn_energy = 200.0;
     assert!(config.economy.repair_energy_per_hp > 0.0);
@@ -699,7 +700,7 @@ fn hardness_hazard_survival_tradeoff() {
 /// Phase 4E: high hardness pays more upkeep in a safe zone (no hazard overlap).
 #[test]
 fn hardness_safe_zone_energy_penalty() {
-    let mut config = SimConfig::load_default().unwrap();
+    let mut config = SimConfig::load_v1_regression().unwrap();
     config.economy.spawn_energy = 200.0;
     // Bright top band, far from default hazard cluster (see configs/default.toml).
     let safe_pos = Vec2::new(-400.0, 700.0);
@@ -770,7 +771,7 @@ fn high_green_pays_higher_metabolism_drain_than_low_green() {
 fn green_ab_metrics_diverge_same_seed() {
     use super::headless::run_headless_sim;
 
-    let base = SimConfig::load_default().unwrap();
+    let base = SimConfig::load_v1_regression().unwrap();
     let bright_green_hex = "45564f3120ff206dffff30002800ffff4000ffff088000008000000000008000";
     let dull_hex = "45564f31ff40ff6dffff30002800ffff4000ffff088000008000000000008000";
 
@@ -792,4 +793,33 @@ fn green_ab_metrics_diverge_same_seed() {
         summary_high.alive > 0 && summary_low.alive > 0,
         "both green A/B runs should survive 5k ticks"
     );
+}
+
+/// G8: default EVO2 config decodes and stays metabolically viable in bright band.
+#[test]
+fn v2_default_ancestor_positive_metabolism_in_bright_band() {
+    use crate::genome::{decode_v2, GenomeV2};
+    use super::metabolism_tick_delta_v2;
+
+    let config = SimConfig::load_default().unwrap();
+    assert_eq!(config.genetics.genome_version, 2);
+    let genome = GenomeV2::ancestor_from_config(&config).unwrap();
+    let phenotype = decode_v2(&genome, &config).unwrap();
+    let decode = config.genetics.decode_v2.as_ref().unwrap();
+    let behavior = config.genetics.behavior.as_ref().unwrap();
+    let delta = metabolism_tick_delta_v2(
+        &phenotype,
+        0,
+        config.environment.gradient_max,
+        &config.environment,
+        &config.economy,
+        decode,
+        behavior,
+        1.0,
+    );
+    assert!(
+        delta > 0.0,
+        "v2 default sessile photo ancestor should net positive in bright band (delta={delta})"
+    );
+    assert!(phenotype.max_energy > 0.0 && phenotype.max_health > 0.0);
 }

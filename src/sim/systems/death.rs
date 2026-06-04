@@ -6,9 +6,11 @@
 
 use bevy::prelude::*;
 
-use super::super::components::{Age, DeathReason, Energy, Health, PendingDeath, Phenotype};
+use super::feeding_v2::corpse_biomass_from_vitals;
+use super::super::components::{Agent, Age, Corpse, DeathReason, Energy, Health, PendingDeath, Phenotype};
 use super::super::metrics::MetricsPeriodCounters;
-use crate::genome::Phenotype as PhenotypeData;
+use super::super::world::SimConfigResource;
+use crate::genome::{AnyPhenotype, Phenotype as PhenotypeData};
 
 /// Old-age hard cap removed; aging costs metabolism instead ([GENOME.md](../../../docs/GENOME.md)).
 pub fn death_reason_from_age(_age: &Age, _phenotype: &PhenotypeData) -> Option<DeathReason> {
@@ -26,20 +28,54 @@ pub fn death_reason_from_vitals(_energy: &Energy, health: &Health) -> Option<Dea
     }
 }
 
-/// Bevy system: despawn agents that died this tick.
+/// Bevy system: despawn agents that died this tick; optionally leave corpse markers (G7).
 pub fn death_and_despawn(
     mut commands: Commands,
+    config: Res<SimConfigResource>,
     mut counters: ResMut<MetricsPeriodCounters>,
-    query: Query<(Entity, &Age, &Phenotype, &Energy, &Health, Option<&PendingDeath>)>,
+    query: Query<(
+        Entity,
+        &Transform,
+        &Agent,
+        &Age,
+        &Phenotype,
+        &Energy,
+        &Health,
+        Option<&PendingDeath>,
+    )>,
 ) {
-    for (entity, age, phenotype, energy, health, pending) in &query {
+    let env = &config.0.environment;
+    let feeding = &env.feeding;
+    let corpses_on = env.corpses_enabled && config.0.genetics.genome_version == 2;
+
+    for (entity, transform, agent, age, phenotype, energy, health, pending) in &query {
         let reason = pending
             .map(|p| p.0)
-            .or_else(|| death_reason_from_age(age, &phenotype.0))
+            .or_else(|| phenotype.v1().and_then(|p| death_reason_from_age(age, p)))
             .or_else(|| death_reason_from_vitals(energy, health));
 
         if let Some(reason) = reason {
             counters.record_death(reason);
+            if corpses_on {
+                if let AnyPhenotype::V2(_) = &phenotype.0 {
+                    let biomass = corpse_biomass_from_vitals(
+                        energy.internal_energy,
+                        health.core_hp,
+                        feeding.corpse_biomass_frac,
+                    );
+                    if biomass > 1e-6 {
+                        let ttl = feeding.corpse_ttl_ticks;
+                        commands.spawn((
+                            transform.clone(),
+                            Corpse {
+                                remaining_biomass: biomass,
+                                radius: agent.radius,
+                                ticks_remaining: if ttl > 0 { ttl } else { u32::MAX },
+                            },
+                        ));
+                    }
+                }
+            }
             commands.entity(entity).despawn();
         }
     }
@@ -53,9 +89,7 @@ mod tests {
 
     #[test]
     fn zero_energy_with_hp_is_not_fatal() {
-        let energy = Energy {
-            internal_energy: 0.0,
-        };
+        let energy = Energy::new_v1(0.0);
         let health = Health {
             core_hp: 50.0,
             core_max_hp: 100.0,
@@ -66,9 +100,7 @@ mod tests {
 
     #[test]
     fn core_destroyed_triggers_death() {
-        let energy = Energy {
-            internal_energy: 10.0,
-        };
+        let energy = Energy::new_v1(10.0);
         let health = Health {
             core_hp: 0.0,
             core_max_hp: 100.0,
@@ -82,9 +114,7 @@ mod tests {
 
     #[test]
     fn healthy_agent_not_flagged() {
-        let energy = Energy {
-            internal_energy: 1.0,
-        };
+        let energy = Energy::new_v1(1.0);
         let health = Health {
             core_hp: 1.0,
             core_max_hp: 100.0,
@@ -117,7 +147,7 @@ mod tests {
 
     #[test]
     fn age_no_longer_triggers_death() {
-        let config = SimConfig::load_default().unwrap();
+        let config = SimConfig::load_v1_regression().unwrap();
         let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
         let phenotype = crate::genome::decode(&genome, &config).unwrap();
         let old = Age {
@@ -128,9 +158,7 @@ mod tests {
 
     #[test]
     fn negative_energy_field_is_not_fatal_if_hp_positive() {
-        let energy = Energy {
-            internal_energy: -0.01,
-        };
+        let energy = Energy::new_v1(-0.01);
         let health = Health {
             core_hp: 100.0,
             core_max_hp: 100.0,
