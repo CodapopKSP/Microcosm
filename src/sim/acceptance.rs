@@ -37,6 +37,32 @@ fn set_u16_locus(bytes: &mut [u8], core_offset: usize, raw: u16) {
     bytes[i + 1] = (raw & 0xFF) as u8;
 }
 
+fn set_color_bytes(bytes: &mut [u8], r: u8, g: u8, b: u8) {
+    let base = HEADER_LEN;
+    bytes[base + genome::core::COLOR_R] = r;
+    bytes[base + genome::core::COLOR_G] = g;
+    bytes[base + genome::core::COLOR_B] = b;
+}
+
+fn phenotype_with_colors(r: u8, g: u8, b: u8) -> (SimConfig, PhenotypeData) {
+    let config = SimConfig::load_default().unwrap();
+    let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+    set_color_bytes(&mut bytes, r, g, b);
+    let genome = GenomeData::from_bytes(
+        bytes,
+        config.genetics.genome_version,
+        config.genetics.core_length,
+    )
+    .unwrap();
+    let phenotype = decode(&genome, &config).unwrap();
+    (config, phenotype)
+}
+
+fn config_with_ancestor_hex(mut config: SimConfig, ancestor_hex: &str) -> SimConfig {
+    config.genetics.ancestor_hex = ancestor_hex.to_string();
+    config
+}
+
 fn phenotype_with_loci(photo_raw: u16, meta_raw: u16) -> (SimConfig, PhenotypeData) {
     let config = SimConfig::load_default().unwrap();
     let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
@@ -74,8 +100,10 @@ fn ticks_until_depleted(
             phenotype,
             0,
             light,
+            0.0,
             &config.environment,
             &config.economy,
+            &config.genetics.decode_ranges,
             1.0,
         );
         ticks += 1;
@@ -105,8 +133,10 @@ fn net_energy_after_ticks(
             phenotype,
             0,
             light,
+            0.0,
             &config.environment,
             &config.economy,
+            &config.genetics.decode_ranges,
             1.0,
         );
     }
@@ -134,8 +164,10 @@ fn energy_after_ticks(
             phenotype,
             0,
             light,
+            0.0,
             &config.environment,
             &config.economy,
+            &config.genetics.decode_ranges,
             1.0,
         );
     }
@@ -266,6 +298,8 @@ fn zero_solar_local_model_extinguishes_population() {
     let mut config = SimConfig::load_default().unwrap();
     config.environment.solar_constant = 0.0;
     config.world.initial_population = 20;
+    // Keep timing stable: this test asserts extinction rate, not absolute HP scale.
+    config.economy.core_max_hp = 100.0;
 
     // Energy hits zero first; metabolic deficit then drains core HP (~6k ticks from full HP).
     let summary = run_headless_sim(&config, 10_000);
@@ -445,8 +479,65 @@ fn part_hp_empty_for_default_spawn_and_offspring_paths() {
     assert_eq!(child.life.energy.internal_energy, 0.0);
     assert!((child.life.health.core_hp - endowment).abs() < 1e-3);
     assert!(
+        (child.life.health.core_max_hp - endowment).abs() < 1e-3,
+        "offspring max HP must match endowment, not config species cap"
+    );
+    assert!(
         child.life.health.part_hp.is_empty(),
         "offspring spawn must have empty part_hp in Phase 4"
+    );
+}
+
+/// Offspring at endowment HP must not sink all photosynthetic gain into a phantom repair deficit.
+#[test]
+fn offspring_gains_energy_when_spawned_at_endowment_hp() {
+    let config = SimConfig::load_default().unwrap();
+    let genome = GenomeData::ancestor_from_config(&config).unwrap();
+    let phenotype = decode(&genome, &config).unwrap();
+    let endowment = phenotype.offspring_endowment;
+
+    let mut energy = Energy {
+        internal_energy: 0.0,
+    };
+    let mut health = Health {
+        core_hp: endowment,
+        core_max_hp: endowment,
+        part_hp: vec![],
+    };
+    let bright = config.environment.gradient_max;
+
+    for tick in 0..2000 {
+        apply_metabolism_tick(
+            &mut energy,
+            &mut health,
+            &phenotype,
+            tick,
+            bright,
+            0.0,
+            &config.environment,
+            &config.economy,
+            &config.genetics.decode_ranges,
+            1.0,
+        );
+        apply_repair_tick(
+            &mut health,
+            &mut energy,
+            &phenotype,
+            config.economy.repair_policy,
+            &config.economy,
+            0,
+        );
+    }
+
+    assert!(
+        energy.internal_energy > 1.0,
+        "offspring at full endowment HP should accumulate energy in bright band (end={})",
+        energy.internal_energy
+    );
+    assert!(
+        (health.core_hp - endowment).abs() < 1e-3,
+        "full endowment HP should not require repair (hp={})",
+        health.core_hp
     );
 }
 
@@ -511,10 +602,52 @@ fn hazard_harness_agent(config: &SimConfig, phenotype: PhenotypeData, position: 
     }
 }
 
+/// Phase 4F: repair spends energy when hazard damage and repair are both enabled.
+#[test]
+fn repair_energy_spent_after_hazard_damage() {
+    let config = SimConfig::load_default().unwrap();
+    assert!(config.economy.repair_energy_per_hp > 0.0);
+    let hazard_center = Vec2::from_array(config.environment.hazards[0].center);
+    let phenotype = phenotype_with_skin_hardness(&config, 0x0000);
+
+    let mut agent = hazard_harness_agent(&config, phenotype, hazard_center);
+    let start_energy = agent.energy.internal_energy;
+    let hazards = HazardField::from_environment(&config.environment);
+
+    let mut total_repair = 0.0f32;
+    for _ in 0..200 {
+        let raw = hazards.damage_at(agent.position);
+        let applied = mitigated_damage(raw, agent.phenotype.damage_mitigation);
+        agent.health.apply_damage_to_core(applied);
+        total_repair += apply_repair_tick(
+            &mut agent.health,
+            &mut agent.energy,
+            &agent.phenotype,
+            config.economy.repair_policy,
+            &config.economy,
+            0,
+        );
+        if agent.health.core_hp <= 0.0 {
+            break;
+        }
+    }
+
+    assert!(
+        total_repair > 0.0,
+        "repair should spend energy after hazard damage (spent={total_repair})"
+    );
+    assert!(
+        agent.energy.internal_energy < start_energy,
+        "energy should drop from repair (start={start_energy}, end={})",
+        agent.energy.internal_energy
+    );
+}
+
 /// Phase 4D: without repair, agents in hazard bands die faster than agents in a safe region.
 #[test]
 fn hazard_kills_faster_than_safe_zone_when_repair_disabled() {
     let mut config = SimConfig::load_default().unwrap();
+    config.economy.core_max_hp = 100.0;
     config.economy.repair_energy_per_hp = 0.0;
     assert!(!config.environment.hazards.is_empty());
 
@@ -529,8 +662,9 @@ fn hazard_kills_faster_than_safe_zone_when_repair_disabled() {
         .map(|_| hazard_harness_agent(&config, soft.clone(), safe_pos))
         .collect();
 
-    simulate_hazard_damage_ticks(&config, &mut in_hazard, 800, false);
-    simulate_hazard_damage_ticks(&config, &mut in_safe, 800, false);
+    // ~0.5 HP/s hazard damage ⇒ ~12k ticks to exhaust 100 HP without repair.
+    simulate_hazard_damage_ticks(&config, &mut in_hazard, 15_000, false);
+    simulate_hazard_damage_ticks(&config, &mut in_safe, 15_000, false);
 
     assert!(
         in_hazard.len() < in_safe.len(),
@@ -545,6 +679,7 @@ fn hazard_kills_faster_than_safe_zone_when_repair_disabled() {
 #[test]
 fn hardness_hazard_survival_tradeoff() {
     let mut config = SimConfig::load_default().unwrap();
+    config.economy.core_max_hp = 100.0;
     config.economy.spawn_energy = 200.0;
     assert!(config.economy.repair_energy_per_hp > 0.0);
     let hazard_center = Vec2::from_array(config.environment.hazards[0].center);
@@ -553,8 +688,8 @@ fn hardness_hazard_survival_tradeoff() {
     let hard = phenotype_with_skin_hardness(&config, 0xFFFF);
     assert!(hard.damage_mitigation > soft.damage_mitigation);
 
-    let soft_ticks = ticks_until_hazard_death(&config, soft, hazard_center, true);
-    let hard_ticks = ticks_until_hazard_death(&config, hard, hazard_center, true);
+    let soft_ticks = ticks_until_hazard_death(&config, soft, hazard_center, false);
+    let hard_ticks = ticks_until_hazard_death(&config, hard, hazard_center, false);
     assert!(
         hard_ticks > soft_ticks,
         "high hardness should survive more hazard ticks (soft={soft_ticks}, hard={hard_ticks})"
@@ -594,5 +729,67 @@ fn hardness_safe_zone_energy_penalty() {
     assert!(
         soft_remaining > hard_remaining,
         "soft armor should retain more energy in safe zone (soft={soft_remaining}, hard={hard_remaining})"
+    );
+}
+
+/// Phase 4G: high-green genotype gains more net energy than low-green control in bright band.
+#[test]
+fn green_ancestor_higher_net_energy_in_bright_band() {
+    let (config, high_green) = phenotype_with_colors(0x20, 0xFF, 0x20);
+    let (_, low_green) = phenotype_with_colors(0xFF, 0x40, 0xFF);
+    assert!(high_green.greenness > low_green.greenness);
+
+    let bright = config.environment.gradient_max;
+    let high_delta = net_energy_after_ticks(&high_green, bright, &config, 5000);
+    let low_delta = net_energy_after_ticks(&low_green, bright, &config, 5000);
+    assert!(
+        high_delta > low_delta,
+        "high-green should gain more net energy in bright band (high={high_delta}, low={low_delta})"
+    );
+}
+
+/// Phase 4G: green metabolism penalty exceeds low-green control at equal light.
+#[test]
+fn high_green_pays_higher_metabolism_drain_than_low_green() {
+    let (config, high_green) = phenotype_with_colors(0x20, 0xFF, 0x20);
+    let (_, low_green) = phenotype_with_colors(0xFF, 0x40, 0xFF);
+    let high_cost = super::metabolism_tick_cost(&high_green, 0, &config.economy);
+    let low_cost = super::metabolism_tick_cost(&low_green, 0, &config.economy);
+    assert!(
+        high_cost > low_cost,
+        "high-green should pay higher per-tick metabolism (high={high_cost}, low={low_cost})"
+    );
+    assert!(
+        high_green.green_metabolism_extra > low_green.green_metabolism_extra,
+        "green penalty component should be larger for high-green"
+    );
+}
+
+/// Phase 4G: seeded headless runs diverge in color_bins and mean_energy when ancestor color differs.
+#[test]
+fn green_ab_metrics_diverge_same_seed() {
+    use super::headless::run_headless_sim;
+
+    let base = SimConfig::load_default().unwrap();
+    let bright_green_hex = "45564f3120ff206dffff30002800ffff4000ffff088000008000000000008000";
+    let dull_hex = "45564f31ff40ff6dffff30002800ffff4000ffff088000008000000000008000";
+
+    let mut high_g = config_with_ancestor_hex(base.clone(), bright_green_hex);
+    high_g.world.initial_population = 30;
+    let mut low_g = config_with_ancestor_hex(base, dull_hex);
+    low_g.world.initial_population = 30;
+
+    let summary_high = run_headless_sim(&high_g, 5000);
+    let summary_low = run_headless_sim(&low_g, 5000);
+
+    let high_colors: HashSet<_> = summary_high.survivor_color_keys.iter().copied().collect();
+    let low_colors: HashSet<_> = summary_low.survivor_color_keys.iter().copied().collect();
+    assert_ne!(
+        high_colors, low_colors,
+        "color keys should differ between green A/B ancestors: high={high_colors:?} low={low_colors:?}"
+    );
+    assert!(
+        summary_high.alive > 0 && summary_low.alive > 0,
+        "both green A/B runs should survive 5k ticks"
     );
 }

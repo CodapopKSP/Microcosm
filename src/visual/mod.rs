@@ -2,6 +2,7 @@
 //!
 //! - **L** — toggle light-field background gradient
 //! - **H** — toggle hazard zone circles
+//! - **↑ / ↓** — simulation speed (1×, 2×, 4×, 8×, 16×)
 //! - **Click** — select agent (energy bar + light ring)
 //! - **Esc** — clear selection
 //!
@@ -12,10 +13,9 @@ use bevy::sprite::ColorMaterial;
 use std::collections::{HashMap, HashSet};
 
 use crate::sim::{
-    Agent, Energy, HazardField, Health, LightExposure, LightField, Phenotype, SimConfigResource,
-    WorldBounds,
+    run_sim_tick_schedule, Agent, Energy, HazardField, Health, LightExposure, LightField,
+    Phenotype, SimConfigResource, SimSpeed, WorldBounds,
 };
-use crate::sim::death_and_despawn;
 
 /// Keyboard-driven debug overlay state (visual mode only).
 #[derive(Resource)]
@@ -83,16 +83,17 @@ impl Plugin for VisualDebugPlugin {
                     spawn_selection_overlays,
                 ),
             )
+            .add_systems(Update, debug_keyboard_input.before(run_sim_tick_schedule))
             .add_systems(
                 Update,
                 (
-                    debug_keyboard_input,
                     select_agent_on_click,
                     sync_light_gradient_visibility,
                     sync_hazard_overlay_visibility,
-                    update_damaged_health_bars.after(death_and_despawn),
-                    update_selection_overlay.after(death_and_despawn),
-                ),
+                    update_damaged_health_bars,
+                    update_selection_overlay,
+                )
+                    .after(run_sim_tick_schedule),
             );
     }
 }
@@ -234,12 +235,21 @@ fn spawn_selection_overlays(
 fn debug_keyboard_input(
     keyboard: Res<ButtonInput<KeyCode>>,
     mut state: ResMut<DebugVisualState>,
+    mut sim_speed: ResMut<SimSpeed>,
 ) {
     if keyboard.just_pressed(KeyCode::KeyL) {
         state.show_light_gradient = !state.show_light_gradient;
     }
     if keyboard.just_pressed(KeyCode::KeyH) {
         state.show_hazard_overlay = !state.show_hazard_overlay;
+    }
+    if keyboard.just_pressed(KeyCode::ArrowUp) {
+        let mult = sim_speed.step_up();
+        eprintln!("sim speed: {mult}x");
+    }
+    if keyboard.just_pressed(KeyCode::ArrowDown) {
+        let mult = sim_speed.step_down();
+        eprintln!("sim speed: {mult}x");
     }
     if keyboard.just_pressed(KeyCode::Escape) {
         state.selected = None;

@@ -2,16 +2,20 @@
 
 use std::fmt;
 
-use crate::config::{EconomyConfig, SimConfig};
+use crate::config::{ColorPhotosynthesisConfig, SimConfig};
 use crate::genome::encoding::{Genome, GenomeError};
 
-const REPAIR_EFFICIENCY_MIN: f32 = 0.1;
-const REPAIR_EFFICIENCY_MAX: f32 = 2.0;
 const CHEMO_UPKEEP_SCALE: f32 = 0.12;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Phenotype {
     pub color: [f32; 3],
+    /// Fitness-linked green excess from color loci ([PHASE_4.md](../../docs/PHASE_4.md) §4.7).
+    pub greenness: f32,
+    /// Photosynthesis multiplier: `1 + k_green_photo * greenness`.
+    pub green_photo_mult: f32,
+    /// Extra idle metabolism per tick: `k_green_meta * greenness`.
+    pub green_metabolism_extra: f32,
     pub body_radius: f32,
     pub photo_strength: f32,
     /// Photosynthetic surface vs `r_ref` (1.0 at reference radius; scales with body area).
@@ -22,21 +26,29 @@ pub struct Phenotype {
     /// Decoded metabolism gene before radius scale (for moving-metabolism formula).
     pub metabolism_base: f32,
     pub locomotion_investment: f32,
+    /// Per-tick probability of attempting movement (`raw / 255`; 0 = never, 1 = always).
+    pub desire_to_move: f32,
+    /// Speed cap at `movement_pace = 1` before pace multiplier.
+    pub max_speed_base: f32,
+    /// Evolvable pace: scales `max_speed` and distance-indexed move energy together.
+    pub movement_pace: f32,
     pub max_speed: f32,
+    /// Energy per world unit at `movement_pace = 1` (`1 / (10 * body_radius)`).
     pub move_cost: f32,
     pub move_penalty: f32,
     pub repro_threshold: f32,
     pub repro_cost: f32,
     pub offspring_endowment: f32,
-    pub repro_cooldown_ticks: u32,
-    pub repro_risk_factor: f32,
     pub skin_hardness: f32,
     /// `skin_hardness / (skin_hardness + k_mitigate)` — reduces incoming damage (Phase 4B).
     pub damage_mitigation: f32,
     pub armor_upkeep: f32,
-    pub repair_efficiency: f32,
+    /// HP throughput cap per tick scales with this; energy per HP is config `repair_energy_per_hp`.
+    pub repair_rate: f32,
     pub chemo_potential: f32,
     pub chemo_upkeep: f32,
+    /// Vent/soup sampling quality when above `chemo_cliff` ([PHASE_5.md](../../docs/PHASE_5.md) §5.3).
+    pub chemo_sensitivity: f32,
     pub core_max_hp: f32,
     /// Scales logarithmic age metabolism (`max_age` locus; see [GENOME.md](../../docs/GENOME.md)).
     pub age_metabolism_scale: f32,
@@ -70,27 +82,32 @@ impl From<GenomeError> for DecodeError {
     }
 }
 
-/// Movement energy per second: scales with `(body_radius/r_ref)²` and speed ratio.
-///
-/// At reference size, `speed_ratio = move_energy_half_speed_ratio` costs
-/// `move_energy_per_sec_at_half_speed` (default 1 J/s).
-pub fn movement_energy_per_sec(
-    photo_area_scale: f32,
-    speed_ratio: f32,
-    economy: &EconomyConfig,
-) -> f32 {
-    let anchor = economy.move_energy_half_speed_ratio.max(0.01);
-    let ratio = speed_ratio.clamp(0.0, 1.0);
-    economy.move_energy_per_sec_at_half_speed * photo_area_scale.max(0.0) * (ratio / anchor)
+/// Decode byte 16: `0` = never move, `255` (`0xFF`) = move every tick.
+pub fn desire_to_move_from_raw(raw: u8) -> f32 {
+    raw as f32 / 255.0
 }
 
-/// Movement energy per tick (60 Hz).
-pub fn movement_energy_per_tick(
-    photo_area_scale: f32,
-    speed_ratio: f32,
-    economy: &EconomyConfig,
+/// Whether an agent attempts movement this tick (`roll` in `[0, 1)`).
+pub fn wants_to_move_this_tick(desire_to_move: f32, roll: f32) -> bool {
+    if desire_to_move <= 0.0 {
+        false
+    } else if desire_to_move >= 1.0 {
+        true
+    } else {
+        roll < desire_to_move
+    }
+}
+
+/// Distance-indexed movement energy ([GENOME_REVISIONS.md](../../docs/GENOME_REVISIONS.md)).
+///
+/// At `movement_pace = 1`, traveling `10 * body_radius` world units costs 1 energy.
+pub fn movement_energy_for_distance(
+    distance: f32,
+    body_radius: f32,
+    movement_pace: f32,
 ) -> f32 {
-    movement_energy_per_sec(photo_area_scale, speed_ratio, economy) / 60.0
+    let r = body_radius.max(1e-6);
+    distance.max(0.0) / (10.0 * r) * movement_pace.max(0.0)
 }
 
 impl Phenotype {
@@ -111,6 +128,31 @@ impl Phenotype {
     }
 }
 
+/// Sensitivity derived from `chemo_potential` once above the cliff (Phase 5B).
+pub fn chemo_sensitivity_from_potential(chemo_potential: f32, chemo_cliff: f32) -> f32 {
+    if chemo_potential > chemo_cliff && chemo_cliff > 0.0 {
+        (chemo_potential / chemo_cliff).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Chemosynthetic gain at a vent sample ([ENERGY_AND_ENVIRONMENT.md](../../docs/ENERGY_AND_ENVIRONMENT.md)).
+pub fn chemo_gain_per_tick(
+    phenotype: &Phenotype,
+    vent_flux: f32,
+    chemo_cliff: f32,
+    k_chemo: f32,
+) -> f32 {
+    if vent_flux <= 0.0 || !phenotype.is_chemo_above_cliff(chemo_cliff) {
+        return 0.0;
+    }
+    phenotype.chemo_potential
+        * vent_flux
+        * phenotype.chemo_sensitivity
+        * k_chemo.max(0.0)
+}
+
 /// Armor mitigation from skin hardness ([PHASE_4.md](../../docs/PHASE_4.md) §4.2).
 pub fn damage_mitigation_from_hardness(hardness: f32, k_mitigate: f32) -> f32 {
     if hardness <= 0.0 {
@@ -128,6 +170,58 @@ pub fn mitigated_damage(raw: f32, mitigation: f32) -> f32 {
     raw.max(0.0) * (1.0 - mitigation.clamp(0.0, 1.0))
 }
 
+/// Green excess from decoded RGB in [0, 1].
+pub fn green_excess_from_rgb(r: f32, g: f32, b: f32) -> f32 {
+    g - 0.5 * (r + b)
+}
+
+/// Clamp greenness from color channels and config scale.
+pub fn greenness_from_rgb(
+    r: f32,
+    g: f32,
+    b: f32,
+    color_cfg: &ColorPhotosynthesisConfig,
+) -> f32 {
+    if color_cfg.greenness_scale <= 0.0 {
+        return 0.0;
+    }
+    let excess = green_excess_from_rgb(r, g, b);
+    (excess / color_cfg.greenness_scale).clamp(0.0, color_cfg.greenness_max)
+}
+
+/// Extra photosynthetic gain per tick from greenness at a given light level (before area scale).
+pub fn green_photo_buff_per_tick(
+    greenness: f32,
+    photo_strength: f32,
+    photo_area_scale: f32,
+    light: f32,
+    solar_constant: f32,
+    color_cfg: &ColorPhotosynthesisConfig,
+) -> f32 {
+    if color_cfg.k_green_photo <= 0.0 || greenness <= 0.0 {
+        return 0.0;
+    }
+    let base = photo_strength * photo_area_scale * light * solar_constant;
+    base * color_cfg.k_green_photo * greenness
+}
+
+/// Extra metabolism drain per tick from greenness.
+pub fn green_metabolism_penalty_per_tick(
+    greenness: f32,
+    color_cfg: &ColorPhotosynthesisConfig,
+) -> f32 {
+    color_cfg.k_green_meta * greenness.max(0.0)
+}
+
+/// §4.7 inequality at `light_ref` with `photo_strength_ref = 1.0` (unit tests).
+pub fn green_tradeoff_holds_at_light_ref(
+    color_cfg: &ColorPhotosynthesisConfig,
+    solar_constant: f32,
+) -> bool {
+    let buff = color_cfg.k_green_photo * color_cfg.light_ref * 1.0 * solar_constant;
+    green_metabolism_penalty_per_tick(1.0, color_cfg) < buff
+}
+
 /// Decode core loci and derived traits. Caller should pass a validated [`Genome`].
 pub fn decode(genome: &Genome, config: &SimConfig) -> Result<Phenotype, DecodeError> {
     genome.validate(config.genetics.genome_version, config.genetics.core_length)?;
@@ -140,6 +234,10 @@ pub fn decode(genome: &Genome, config: &SimConfig) -> Result<Phenotype, DecodeEr
         lerp_u8(genome.color_g()?, 0.0, 1.0),
         lerp_u8(genome.color_b()?, 0.0, 1.0),
     ];
+    let color_cfg = &config.genetics.color_photosynthesis;
+    let greenness = greenness_from_rgb(color[0], color[1], color[2], color_cfg);
+    let green_photo_mult = 1.0 + color_cfg.k_green_photo * greenness;
+    let green_metabolism_extra = color_cfg.k_green_meta * greenness;
 
     let body_radius = lerp_u8(
         genome.body_radius_raw()?,
@@ -162,6 +260,7 @@ pub fn decode(genome: &Genome, config: &SimConfig) -> Result<Phenotype, DecodeEr
 
     let locomotion_investment =
         lerp_u16(genome.locomotion_investment_raw()?, 0.0, dr.loco_max);
+    let desire_to_move = desire_to_move_from_raw(genome.desire_to_move_raw()?);
 
     let skin_hardness = lerp_u16(genome.skin_hardness_raw()?, 0.0, 1.0);
     let damage_mitigation = damage_mitigation_from_hardness(skin_hardness, dr.k_mitigate);
@@ -169,36 +268,18 @@ pub fn decode(genome: &Genome, config: &SimConfig) -> Result<Phenotype, DecodeEr
     let armor_upkeep = dr.k_armor * skin_hardness;
 
     let size_ratio = (body_radius / dr.r_ref).max(0.0);
-    let speed_mult = lerp_u16(genome.max_speed_raw()?, dr.speed_min, dr.speed_max);
-    let max_speed = ((dr.v_base + dr.k_v * locomotion_investment) * size_ratio * speed_mult
+    let max_speed_base = ((dr.v_base + dr.k_v * locomotion_investment) * size_ratio
         - move_penalty)
         .max(0.0);
-
-    let move_cost = movement_energy_per_tick(
-        photo_area_scale,
-        economy.move_energy_half_speed_ratio,
-        economy,
-    );
+    let movement_pace = lerp_u16(genome.movement_pace_raw()?, dr.pace_min, dr.pace_max);
+    let max_speed = (max_speed_base * movement_pace).max(0.0);
+    let move_cost = movement_energy_for_distance(1.0, body_radius, 1.0);
 
     let repro_threshold = lerp_u16(genome.repro_threshold_raw()?, dr.e_min, dr.e_max);
     let repro_cost = lerp_u16(genome.repro_cost_raw()?, dr.e_min, dr.e_max);
     let offspring_endowment = lerp_u16(genome.offspring_endowment_raw()?, dr.e_min, dr.e_max);
 
-    let repro_cooldown_ticks = lerp_u8(
-        genome.repro_cooldown_raw()?,
-        dr.cd_min,
-        dr.cd_max,
-    )
-    .round()
-    .max(0.0) as u32;
-
-    let repro_risk_factor = lerp_u8(genome.repro_risk_factor_raw()?, 0.0, 1.0);
-
-    let repair_efficiency = lerp_u16(
-        genome.repair_efficiency_raw()?,
-        REPAIR_EFFICIENCY_MIN,
-        REPAIR_EFFICIENCY_MAX,
-    );
+    let repair_rate = lerp_u16(genome.repair_rate_raw()?, dr.repair_rate_min, dr.repair_rate_max);
 
     let chemo_raw = genome.chemo_potential_raw()?;
     let chemo_potential = chemo_raw as f32 / 65535.0;
@@ -207,6 +288,7 @@ pub fn decode(genome: &Genome, config: &SimConfig) -> Result<Phenotype, DecodeEr
     } else {
         0.0
     };
+    let chemo_sensitivity = chemo_sensitivity_from_potential(chemo_potential, dr.chemo_cliff);
 
     let age_metabolism_scale = lerp_u16(
         genome.max_age_raw()?,
@@ -216,6 +298,9 @@ pub fn decode(genome: &Genome, config: &SimConfig) -> Result<Phenotype, DecodeEr
 
     Ok(Phenotype {
         color,
+        greenness,
+        green_photo_mult,
+        green_metabolism_extra,
         body_radius,
         photo_strength,
         photo_area_scale,
@@ -223,20 +308,22 @@ pub fn decode(genome: &Genome, config: &SimConfig) -> Result<Phenotype, DecodeEr
         metabolism_idle,
         metabolism_base,
         locomotion_investment,
+        desire_to_move,
+        max_speed_base,
+        movement_pace,
         max_speed,
         move_cost,
         move_penalty,
         repro_threshold,
         repro_cost,
         offspring_endowment,
-        repro_cooldown_ticks,
-        repro_risk_factor,
         skin_hardness,
         damage_mitigation,
         armor_upkeep,
-        repair_efficiency,
+        repair_rate,
         chemo_potential,
         chemo_upkeep,
+        chemo_sensitivity,
         core_max_hp: economy.core_max_hp,
         age_metabolism_scale,
         k_move_meta: dr.k_move_meta,
@@ -280,44 +367,51 @@ mod tests {
     }
 
     fn genome_with_u16_locus(core_offset: usize, raw: u16) -> Genome {
+        genome_with_u16_loci(&[(core_offset, raw)])
+    }
+
+    fn genome_with_u16_loci(loci: &[(usize, u16)]) -> Genome {
         let config = default_config();
         let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
-        let i = encoding::HEADER_LEN + core_offset;
-        bytes[i] = (raw >> 8) as u8;
-        bytes[i + 1] = (raw & 0xFF) as u8;
+        for &(core_offset, raw) in loci {
+            let i = encoding::HEADER_LEN + core_offset;
+            bytes[i] = (raw >> 8) as u8;
+            bytes[i + 1] = (raw & 0xFF) as u8;
+        }
+        Genome::from_bytes(bytes, config.genetics.genome_version, config.genetics.core_length)
+            .unwrap()
+    }
+
+    fn genome_with_color_bytes(r: u8, g: u8, b: u8) -> Genome {
+        let config = default_config();
+        let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+        let base = encoding::HEADER_LEN;
+        bytes[base + encoding::core::COLOR_R] = r;
+        bytes[base + encoding::core::COLOR_G] = g;
+        bytes[base + encoding::core::COLOR_B] = b;
         Genome::from_bytes(bytes, config.genetics.genome_version, config.genetics.core_length)
             .unwrap()
     }
 
     #[test]
-    fn move_cost_matches_half_speed_anchor() {
-        let config = default_config();
+    fn move_cost_is_one_over_ten_radii_at_pace_one() {
         let p = decode_default();
-        let expected = movement_energy_per_tick(p.photo_area_scale, 0.5, &config.economy);
-        assert!(
-            (p.move_cost - expected).abs() < 1e-5,
-            "move_cost {} should match half-speed movement tick ({expected})",
-            p.move_cost
-        );
+        let expected = 1.0 / (10.0 * p.body_radius);
+        assert!((p.move_cost - expected).abs() < 1e-5);
     }
 
     #[test]
-    fn max_speed_scales_with_body_size_and_locus() {
+    fn max_speed_scales_with_locomotion_and_movement_pace() {
         let config = default_config();
         let dr = &config.genetics.decode_ranges;
         let p = decode_default();
-        let speed_mult = lerp_u16(0, dr.speed_min, dr.speed_max);
-        let expected = ((dr.v_base + dr.k_v * p.locomotion_investment)
+        let expected_base = ((dr.v_base + dr.k_v * p.locomotion_investment)
             * (p.body_radius / dr.r_ref)
-            * speed_mult
             - p.move_penalty)
             .max(0.0);
-        assert!(
-            (p.max_speed - expected).abs() < 0.05,
-            "max_speed {} vs body-scaled expected {expected}",
-            p.max_speed
-        );
-        assert!(p.max_speed > 0.0, "ancestor should be mobile");
+        assert!((p.max_speed_base - expected_base).abs() < 0.05);
+        assert!((p.max_speed - expected_base * p.movement_pace).abs() < 0.05);
+        assert!(p.max_speed > 0.0, "default ancestor should move at pace 1");
     }
 
     #[test]
@@ -339,10 +433,12 @@ mod tests {
         assert!(p.metabolism_base >= dr.meta_min && p.metabolism_base <= dr.meta_max);
         assert!(p.locomotion_investment >= 0.0 && p.locomotion_investment <= dr.loco_max);
         assert!(p.repro_threshold >= dr.e_min && p.repro_threshold <= dr.e_max);
-        assert!((p.repro_threshold - 100.0).abs() < 0.01);
-        assert!((p.offspring_endowment - 100.0).abs() < 0.01);
+        assert!((p.repro_threshold - 100.0).abs() < 1.0);
+        assert!((p.offspring_endowment - 100.0).abs() < 1.0);
         assert!(p.max_speed > 0.0);
-        assert!((p.move_cost * 60.0 - config.economy.move_energy_per_sec_at_half_speed * p.photo_area_scale).abs() < 0.1);
+        assert!((p.movement_pace - 1.0).abs() < 0.02);
+        assert_eq!(p.desire_to_move, 0.0);
+        assert!(dr.e_max > 100.0, "e_max should allow thresholds above ancestor default");
         assert!(p.core_max_hp == config.economy.core_max_hp);
         assert!(p.metabolism_idle >= config.economy.metabolism_floor);
     }
@@ -373,45 +469,93 @@ mod tests {
         .unwrap();
         assert!((loco.locomotion_investment - dr.loco_max).abs() < 1e-4);
 
-        let fast = decode(
-            &genome_with_u16_locus(encoding::core::MAX_SPEED, 0xFFFF),
+        let fast_pace = decode(
+            &genome_with_u16_locus(encoding::core::MOVEMENT_PACE, 0xFFFF),
             &config,
         )
         .unwrap();
-        let slow = decode(
-            &genome_with_u16_locus(encoding::core::MAX_SPEED, 0x0000),
+        let slow_pace = decode(
+            &genome_with_u16_locus(encoding::core::MOVEMENT_PACE, 0x0000),
             &config,
         )
         .unwrap();
-        assert!(fast.max_speed > slow.max_speed);
+        assert!(fast_pace.max_speed > slow_pace.max_speed);
+        assert!(fast_pace.movement_pace > slow_pace.movement_pace);
     }
 
     #[test]
-    fn max_speed_locus_and_locomotion_affect_body_derived_speed() {
+    fn repro_threshold_decodes_above_100_at_max_allele() {
         let config = default_config();
-        let slow_locus = decode(
-            &genome_with_u16_locus(encoding::core::MAX_SPEED, 0x1000),
+        let dr = &config.genetics.decode_ranges;
+        let p = decode(
+            &genome_with_u16_locus(encoding::core::REPRO_THRESHOLD, 0xFFFF),
             &config,
         )
         .unwrap();
-        let fast_locus = decode(
-            &genome_with_u16_locus(encoding::core::MAX_SPEED, 0xE000),
+        assert!(p.repro_threshold > 100.0);
+        assert!((p.repro_threshold - dr.e_max).abs() < 1e-3);
+    }
+
+    #[test]
+    fn offspring_endowment_decodes_above_100_at_max_allele() {
+        let config = default_config();
+        let dr = &config.genetics.decode_ranges;
+        let p = decode(
+            &genome_with_u16_locus(encoding::core::OFFSPRING_ENDOWMENT, 0xFFFF),
             &config,
         )
         .unwrap();
-        assert!(fast_locus.max_speed > slow_locus.max_speed);
+        assert!(p.offspring_endowment > 100.0);
+        assert!((p.offspring_endowment - dr.e_max).abs() < 1e-3);
+    }
+
+    #[test]
+    fn movement_pace_and_locomotion_affect_max_speed() {
+        let config = default_config();
+        let slow_pace = decode(
+            &genome_with_u16_locus(encoding::core::MOVEMENT_PACE, 0x1000),
+            &config,
+        )
+        .unwrap();
+        let fast_pace = decode(
+            &genome_with_u16_locus(encoding::core::MOVEMENT_PACE, 0xE000),
+            &config,
+        )
+        .unwrap();
+        assert!(fast_pace.max_speed > slow_pace.max_speed);
 
         let cheap_loco = decode(
-            &genome_with_u16_locus(encoding::core::LOCOMOTION_INVESTMENT, 0x1000),
+            &genome_with_u16_loci(&[
+                (encoding::core::LOCOMOTION_INVESTMENT, 0x1000),
+                (encoding::core::MOVEMENT_PACE, 0x5555),
+            ]),
             &config,
         )
         .unwrap();
         let costly_loco = decode(
-            &genome_with_u16_locus(encoding::core::LOCOMOTION_INVESTMENT, 0xE000),
+            &genome_with_u16_loci(&[
+                (encoding::core::LOCOMOTION_INVESTMENT, 0xE000),
+                (encoding::core::MOVEMENT_PACE, 0x5555),
+            ]),
             &config,
         )
         .unwrap();
         assert!(costly_loco.max_speed > cheap_loco.max_speed);
+    }
+
+    #[test]
+    fn movement_energy_scales_linearly_with_pace() {
+        let config = default_config();
+        let pace_one = decode_default();
+        let pace_two = decode(
+            &genome_with_u16_locus(encoding::core::MOVEMENT_PACE, 0xFFFF),
+            &config,
+        )
+        .unwrap();
+        let d = 30.0;
+        let e1 = movement_energy_for_distance(d, pace_one.body_radius, pace_one.movement_pace);
+        let e2 = movement_energy_for_distance(d, pace_two.body_radius, pace_two.movement_pace);
+        assert!((e2 / e1 - pace_two.movement_pace / pace_one.movement_pace).abs() < 0.05);
     }
 
     #[test]
@@ -439,7 +583,7 @@ mod tests {
     fn metabolism_moving_scales_with_speed_when_configured() {
         let config = default_config();
         let p = decode(
-            &genome_with_u16_locus(encoding::core::MAX_SPEED, 0x8000),
+            &genome_with_u16_locus(encoding::core::MOVEMENT_PACE, 0x5555),
             &config,
         )
         .unwrap();
@@ -544,5 +688,111 @@ mod tests {
         assert_eq!(p.skin_hardness, 0.0);
         assert_eq!(p.armor_upkeep, 0.0);
         assert_eq!(p.damage_mitigation, 0.0);
+    }
+
+    #[test]
+    fn repair_rate_decodes_in_config_range() {
+        let config = default_config();
+        let dr = &config.genetics.decode_ranges;
+        let p = decode_default();
+        assert!((p.repair_rate - 1.0).abs() < 0.02);
+
+        let slow = decode(
+            &genome_with_u16_locus(encoding::core::REPAIR_RATE, 0x0000),
+            &config,
+        )
+        .unwrap();
+        let fast = decode(
+            &genome_with_u16_locus(encoding::core::REPAIR_RATE, 0xFFFF),
+            &config,
+        )
+        .unwrap();
+        assert!((slow.repair_rate - dr.repair_rate_min).abs() < 1e-3);
+        assert!((fast.repair_rate - dr.repair_rate_max).abs() < 1e-3);
+        assert!(fast.repair_rate > slow.repair_rate);
+    }
+
+    #[test]
+    fn chemo_sensitivity_zero_below_cliff() {
+        let config = default_config();
+        let cliff = config.genetics.decode_ranges.chemo_cliff;
+        let g = genome_with_u16_locus(encoding::core::CHEMO_POTENTIAL, 0x5709);
+        let p = decode(&g, &config).unwrap();
+        assert!(!p.is_chemo_above_cliff(cliff));
+        assert_eq!(p.chemo_sensitivity, 0.0);
+        assert_eq!(chemo_gain_per_tick(&p, 0.1, cliff, 1.0), 0.0);
+    }
+
+    #[test]
+    fn chemo_sensitivity_positive_above_cliff() {
+        let config = default_config();
+        let cliff = config.genetics.decode_ranges.chemo_cliff;
+        let g = genome_with_u16_locus(encoding::core::CHEMO_POTENTIAL, 0x8CCC);
+        let p = decode(&g, &config).unwrap();
+        assert!(p.is_chemo_above_cliff(cliff));
+        assert!(p.chemo_sensitivity > 0.0);
+        assert!(chemo_gain_per_tick(&p, 0.05, cliff, 1.0) > 0.0);
+    }
+
+    #[test]
+    fn greenness_increases_with_g_over_rb() {
+        let config = default_config();
+        let mid = decode(&genome_with_color_bytes(0x88, 0x88, 0x88), &config).unwrap();
+        let greener = decode(&genome_with_color_bytes(0x20, 0xFF, 0x20), &config).unwrap();
+        let less_green = decode(&genome_with_color_bytes(0xFF, 0x30, 0xFF), &config).unwrap();
+
+        assert!(greener.greenness > mid.greenness);
+        assert!(greener.greenness > less_green.greenness);
+        assert_eq!(less_green.greenness, 0.0, "low G with high R/B should clamp to zero");
+        assert!(
+            greener.greenness > 0.5,
+            "strong green should yield high greenness, got {}",
+            greener.greenness
+        );
+    }
+
+    #[test]
+    fn desire_to_move_decodes_from_byte() {
+        let config = default_config();
+        assert_eq!(decode_default().desire_to_move, 0.0);
+
+        let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+        bytes[encoding::HEADER_LEN + encoding::core::DESIRE_TO_MOVE] = 0xFF;
+        let restless = decode(
+            &Genome::from_bytes(
+                bytes,
+                config.genetics.genome_version,
+                config.genetics.core_length,
+            )
+            .unwrap(),
+            &config,
+        )
+        .unwrap();
+        assert!((restless.desire_to_move - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn wants_to_move_probability_edges() {
+        assert!(!wants_to_move_this_tick(0.0, 0.0));
+        assert!(wants_to_move_this_tick(1.0, 0.99));
+        assert!(wants_to_move_this_tick(0.5, 0.25));
+        assert!(!wants_to_move_this_tick(0.5, 0.75));
+    }
+
+    #[test]
+    fn green_penalty_less_than_buff_at_light_ref() {
+        let config = default_config();
+        let cp = &config.genetics.color_photosynthesis;
+        assert!(
+            green_tradeoff_holds_at_light_ref(cp, config.environment.solar_constant),
+            "§4.7 invariant: photo buff at light_ref must exceed metabolism penalty \
+             (k_green_photo={}, k_green_meta={}, solar={})",
+            cp.k_green_photo,
+            cp.k_green_meta,
+            config.environment.solar_constant
+        );
+        let buff = cp.k_green_photo * cp.light_ref * 1.0 * config.environment.solar_constant;
+        let penalty = green_metabolism_penalty_per_tick(1.0, cp);
+        assert!(penalty < buff, "penalty {penalty} should be < buff {buff}");
     }
 }

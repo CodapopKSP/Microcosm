@@ -132,14 +132,18 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                 part_hp: vec![],
             };
             let photo_light_multiplier = photo_light_mults.get(idx).copied().unwrap_or(1.0);
+            let vent_flux = super::vents::VentField::from_environment(&config.environment)
+                .flux_at(agent.position);
             apply_metabolism_tick(
                 &mut energy,
                 &mut health,
                 &agent.phenotype,
                 agent.age_ticks,
                 light,
+                vent_flux,
                 &config.environment,
                 &config.economy,
+                &config.genetics.decode_ranges,
                 photo_light_multiplier,
             );
             agent.energy = energy.internal_energy;
@@ -194,7 +198,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                     summary.repro_fatalities += 1;
                 }
                 ReproAttemptResult::Stillborn => {
-                    agent.repro_cooldown = agent.phenotype.repro_cooldown_ticks;
+                    agent.repro_cooldown = config.economy.repro_cooldown_ticks;
                     summary.stillborns += 1;
                 }
                 ReproAttemptResult::Child {
@@ -203,7 +207,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                     child_start_hp,
                 } => {
                     let child_id = next_id.next();
-                    agent.repro_cooldown = agent.phenotype.repro_cooldown_ticks;
+                    agent.repro_cooldown = config.economy.repro_cooldown_ticks;
                     summary.births += 1;
                     summary.child_genome_fold ^= fold_genome_bytes(&child_genome);
 

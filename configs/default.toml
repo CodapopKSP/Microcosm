@@ -1,4 +1,4 @@
-# Evolution Sim — default configuration (Phase 3)
+# Evolution Sim — default configuration (Phase 4)
 # Loaded at startup from configs/default.toml (see README).
 
 [world]
@@ -18,9 +18,8 @@ failsafe_policy = "stop_spawns"
 [genetics]
 genome_version = 1
 core_length = 32
-# Header EVO1 + default ancestor (no armor/chemo; photo ~3.0; repro/transfer 100) — docs/GENOME.md
-# max_speed locus (core 24–25) = 0x0000 → speed_min (0); offspring can mutate faster.
-ancestor_hex = "45564f3188cc446dffff30002800ffff4000ffff088000008000000000008000"
+# Header EVO1 + default ancestor (no armor/chemo; photo ~3.0; repro ~100; movement_pace 1.0) — docs/GENOME.md
+ancestor_hex = "45564f3188cc446dffff300028000af640000af6008000005555000055558000"
 p_bit_flip = 0.05
 p_point = 0.58
 p_resample = 0.02
@@ -37,15 +36,16 @@ k_photo = 0.008
 meta_min = 0.001
 meta_max = 0.03
 loco_max = 1.0
-# `max_speed` locus → multiplier on body-derived speed (ancestor raw 0 → speed_min).
-speed_min = 0.85
-speed_max = 1.15
+# `movement_pace` locus (bytes 24–25): scales speed and move energy together.
+pace_min = 0.5
+pace_max = 2.0
+# `repair_rate` locus (bytes 20–21): HP/tick throughput; energy per HP is `repair_energy_per_hp`.
+repair_rate_min = 0.5
+repair_rate_max = 2.0
 e_min = 15.0
-e_max = 100.0
-cd_min = 120.0
-cd_max = 2400.0
+e_max = 2000.0
 k_armor = 0.08
-k_move_hardness = 0.02
+k_move_hardness = 0.005
 chemo_cliff = 0.35
 v_base = 10.0
 k_v = 18.0
@@ -58,17 +58,28 @@ k_move_meta = 0.0
 age_metabolism_scale_min = 0.5
 age_metabolism_scale_max = 2.0
 k_mitigate = 0.5
+k_chemo = 1.0
+
+# Green photosynthesis niche (Phase 4G): greener agents gain more in bright light, small metabolism tax.
+[genetics.color_photosynthesis]
+greenness_scale = 0.5
+greenness_max = 1.0
+k_green_photo = 0.25
+k_green_meta = 0.004
+light_ref = 1.0
 
 [economy]
 metabolism_floor = 0.001
 spawn_energy = 50.0
 flat_energy_grant_per_tick = 0.0
-core_max_hp = 100.0
+core_max_hp = 2000.0
 repro_safety_margin = 0.25
+repro_cooldown_ticks = 192
 p_death_on_repro_base = 0.12
 p_damage_on_repro_base = 0.35
 repro_damage_fraction_of_max_hp = 0.12
 repair_energy_per_hp = 1.0
+repair_hp_per_tick_at_rate_1 = 50.0
 repair_policy = "core_first"
 collision_damage_scale = 0.15
 # At reference body size, half max speed costs 1 energy/s while moving.
@@ -81,8 +92,9 @@ age_metabolism_ref_ticks = 3600.0
 
 [environment]
 energy_model = "local"
-# gain/sec ≈ photo_strength * light * solar_constant * 60 (ancestor photo_strength ~3.0 at top → ~3/s)
-solar_constant = 0.022
+# gain/sec ≈ photo_strength * light * solar_constant * green_photo_mult * 60
+# (ancestor ~3.0 photo, green_mult ~1.2 at gradient_max → ~4/s)
+solar_constant = 0.01852
 light_mode = "gradient_y"
 gradient_axis = "y"
 gradient_min = 0.15
@@ -93,30 +105,37 @@ crowding_blocks_photosynthesis = false
 overlap_shades_photosynthesis = true
 overlap_shade_factor = 0.5
 
+# ~0.5 core HP/s at 60 ticks/s (damage applied per tick while overlapping).
 [[environment.hazards]]
 center = [200.0, 600.0]
 radius = 20.0
-damage_per_tick = 2.0
+damage_per_tick = 0.00833
 
 [[environment.hazards]]
 center = [300.0, 650.0]
 radius = 20.0
-damage_per_tick = 2.1
+damage_per_tick = 0.00875
 
 [[environment.hazards]]
 center = [400.0, 600.0]
 radius = 20.0
-damage_per_tick = 1.9
+damage_per_tick = 0.00792
 
 [[environment.hazards]]
 center = [300.0, 450.0]
 radius = 20.0
-damage_per_tick = 2.0
+damage_per_tick = 0.00833
 
 [[environment.hazards]]
 center = [400.0, 300.0]
 radius = 20.0
-damage_per_tick = 2.2
+damage_per_tick = 0.00917
+
+# Thermal vent in dim lower band (gradient bright at top); chemo gain in Phase 5B.
+[[environment.vents]]
+center = [0.0, -450.0]
+radius = 150.0
+vent_flux = 0.032
 
 [run]
 master_seed = 42

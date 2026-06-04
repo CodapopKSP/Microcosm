@@ -53,6 +53,7 @@ fn assert_valid_jsonl_lines(lines: &[String]) {
             "mean_skin_hardness",
             "mean_core_hp_frac",
             "repair_energy_spent",
+            "mean_greenness",
         ] {
             assert!(v.get(key).is_some(), "missing {key} in {line}");
         }

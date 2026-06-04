@@ -13,6 +13,7 @@ pub struct SimConfigResource(pub SimConfig);
 const STREAM_SPAWN: u64 = 0x5A50_4E5F;
 const STREAM_MUTATION: u64 = 0x4D55_5410;
 const STREAM_REPRO_RISK: u64 = 0x5250_524B;
+const STREAM_MOVEMENT: u64 = 0x4D4F_5645;
 
 /// World half-extents in sim units (1 unit = 1 pixel in visual mode).
 #[derive(Resource, Clone, Copy)]
@@ -109,6 +110,17 @@ impl SimRng {
             mix_seed(
                 master,
                 STREAM_REPRO_RISK ^ entity_id ^ tick.wrapping_mul(0x94D0_49BB_1331_11EB),
+            )
+        });
+        seed_from_opt_or_thread(seed)
+    }
+
+    /// Per-tick movement-intent rolls (`desire_to_move` gene).
+    pub fn stream_movement(&self, entity_id: u64, tick: u64) -> StdRng {
+        let seed = self.master_seed.map(|master| {
+            mix_seed(
+                master,
+                STREAM_MOVEMENT ^ entity_id ^ tick.wrapping_mul(0xC2B2_AE3D_27D4_EB4F),
             )
         });
         seed_from_opt_or_thread(seed)

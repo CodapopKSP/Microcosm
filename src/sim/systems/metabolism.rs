@@ -3,10 +3,10 @@
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 
-use crate::config::{EconomyConfig, EnergyModel, EnvironmentConfig};
-use crate::genome::Phenotype as PhenotypeData;
+use crate::config::{DecodeRanges, EconomyConfig, EnergyModel, EnvironmentConfig};
+use crate::genome::{chemo_gain_per_tick, Phenotype as PhenotypeData};
 
-use super::super::components::{Agent, Age, Energy, Health, LightExposure, Phenotype};
+use super::super::components::{Agent, Age, Energy, Health, LightExposure, Phenotype, VentExposure};
 use super::super::world::SimConfigResource;
 
 /// Logarithmic age metabolism per tick ([GENOME.md](../../../docs/GENOME.md)).
@@ -33,6 +33,7 @@ pub fn age_metabolism_per_tick(
 /// Per-tick energy drain from idle metabolism and trait upkeeps (see [PHASE_1.md](../../docs/PHASE_1.md)).
 pub fn metabolism_tick_cost(phenotype: &PhenotypeData, age_ticks: u32, economy: &EconomyConfig) -> f32 {
     phenotype.metabolism_idle
+        + phenotype.green_metabolism_extra
         + phenotype.photo_upkeep
         + phenotype.armor_upkeep
         + phenotype.chemo_upkeep
@@ -59,6 +60,7 @@ pub fn photosynthetic_gain_per_tick(
                 * phenotype.photo_area_scale
                 * light_sample
                 * environment.solar_constant
+                * phenotype.green_photo_mult
                 * light_mult
         }
         EnergyModel::LegacyFlat => {
@@ -72,13 +74,15 @@ pub fn photosynthetic_gain_per_tick(
     }
 }
 
-/// Net energy change for one metabolism tick (`photosynthetic gain - costs`).
+/// Net energy change for one metabolism tick (photo + chemo gains minus costs).
 pub fn metabolism_tick_delta(
     phenotype: &PhenotypeData,
     age_ticks: u32,
     light_sample: f32,
+    vent_flux: f32,
     environment: &EnvironmentConfig,
     economy: &EconomyConfig,
+    decode_ranges: &DecodeRanges,
     photo_light_multiplier: f32,
 ) -> f32 {
     photosynthetic_gain_per_tick(
@@ -87,6 +91,11 @@ pub fn metabolism_tick_delta(
         environment,
         economy,
         photo_light_multiplier,
+    ) + chemo_gain_per_tick(
+        phenotype,
+        vent_flux,
+        decode_ranges.chemo_cliff,
+        decode_ranges.k_chemo,
     ) - metabolism_tick_cost(phenotype, age_ticks, economy)
 }
 
@@ -100,16 +109,20 @@ pub fn apply_metabolism_tick(
     phenotype: &PhenotypeData,
     age_ticks: u32,
     light_sample: f32,
+    vent_flux: f32,
     environment: &EnvironmentConfig,
     economy: &EconomyConfig,
+    decode_ranges: &DecodeRanges,
     photo_light_multiplier: f32,
 ) {
     let delta = metabolism_tick_delta(
         phenotype,
         age_ticks,
         light_sample,
+        vent_flux,
         environment,
         economy,
+        decode_ranges,
         photo_light_multiplier,
     );
     energy.internal_energy += delta;
@@ -267,13 +280,14 @@ pub fn metabolism_and_gains(
         &Phenotype,
         &Age,
         &LightExposure,
+        &VentExposure,
         &mut Energy,
         &mut Health,
     )>,
 ) {
     let agents: Vec<_> = query
         .iter()
-        .map(|(entity, transform, agent, _, _, _, _, _)| {
+        .map(|(entity, transform, agent, _, _, _, _, _, _)| {
             (
                 entity,
                 transform.translation.truncate(),
@@ -284,6 +298,7 @@ pub fn metabolism_and_gains(
 
     let environment = &config.0.environment;
     let economy = &config.0.economy;
+    let decode_ranges = &config.0.genetics.decode_ranges;
     let light_mults = if environment.overlap_shades_photosynthesis {
         overlap_photo_light_multipliers_for_entities(&agents, environment.overlap_shade_factor)
     } else if environment.crowding_blocks_photosynthesis {
@@ -301,7 +316,7 @@ pub fn metabolism_and_gains(
         HashMap::new()
     };
 
-    for (entity, _, _, phenotype, age, exposure, mut energy, mut health) in &mut query {
+    for (entity, _, _, phenotype, age, exposure, vent_exp, mut energy, mut health) in &mut query {
         let photo_light_multiplier = light_mults.get(&entity).copied().unwrap_or(1.0);
         apply_metabolism_tick(
             &mut energy,
@@ -309,8 +324,10 @@ pub fn metabolism_and_gains(
             &phenotype.0,
             age.ticks,
             exposure.0,
+            vent_exp.vent_flux,
             environment,
             economy,
+            decode_ranges,
             photo_light_multiplier,
         );
     }
@@ -359,8 +376,9 @@ mod tests {
         let economy = &config.economy;
         let light = 1.0;
 
-        let open = metabolism_tick_delta(&phenotype, 0, light, environment, economy, 1.0);
-        let crowded = metabolism_tick_delta(&phenotype, 0, light, environment, economy, 0.0);
+        let dr = &config.genetics.decode_ranges;
+        let open = metabolism_tick_delta(&phenotype, 0, light, 0.0, environment, economy, dr, 1.0);
+        let crowded = metabolism_tick_delta(&phenotype, 0, light, 0.0, environment, economy, dr, 0.0);
         assert!(
             (open - crowded - economy.flat_energy_grant_per_tick).abs() < 1e-5,
             "blocked tick should differ only by the photosynthetic grant"
@@ -389,8 +407,9 @@ mod tests {
         assert!(open_gain > 0.0, "local gain should be positive in bright band");
         assert_eq!(blocked_gain, 0.0);
 
-        let open_delta = metabolism_tick_delta(&phenotype, 0, light, environment, economy, 1.0);
-        let crowded_delta = metabolism_tick_delta(&phenotype, 0, light, environment, economy, 0.0);
+        let dr = &config.genetics.decode_ranges;
+        let open_delta = metabolism_tick_delta(&phenotype, 0, light, 0.0, environment, economy, dr, 1.0);
+        let crowded_delta = metabolism_tick_delta(&phenotype, 0, light, 0.0, environment, economy, dr, 0.0);
         assert!(
             (open_delta - crowded_delta - open_gain).abs() < 1e-5,
             "blocked tick should differ only by photosynthetic gain under local model"
@@ -519,7 +538,8 @@ mod tests {
         let expected = phenotype.photo_strength
             * phenotype.photo_area_scale
             * light
-            * config.environment.solar_constant;
+            * config.environment.solar_constant
+            * phenotype.green_photo_mult;
         let gain = photosynthetic_gain_per_tick(
             &phenotype,
             light,
@@ -550,8 +570,10 @@ mod tests {
                 &phenotype,
                 0,
                 config.environment.gradient_max,
+                0.0,
                 &config.environment,
                 &config.economy,
+                &config.genetics.decode_ranges,
                 1.0,
             );
         }
@@ -589,8 +611,10 @@ mod tests {
                 &phenotype,
                 0,
                 1.0,
+                0.0,
                 &config.environment,
                 &economy,
+                &config.genetics.decode_ranges,
                 1.0,
             );
         }
@@ -624,8 +648,10 @@ mod tests {
             &phenotype,
             0,
             0.0,
+            0.0,
             &config.environment,
             &config.economy,
+            &config.genetics.decode_ranges,
             1.0,
         );
 
@@ -652,8 +678,10 @@ mod tests {
                 &phenotype,
                 0,
                 bright,
+                0.0,
                 &config.environment,
                 &config.economy,
+                &config.genetics.decode_ranges,
                 1.0,
             );
         }
@@ -668,7 +696,7 @@ mod tests {
     #[test]
     fn local_gain_independent_of_population_count() {
         use bevy::app::App;
-        use crate::sim::components::{LifeBundle, LightExposure, Velocity};
+        use crate::sim::components::{LifeBundle, LightExposure, VentExposure, Velocity};
         use crate::sim::world::SimConfigResource;
 
         let config = local_config();
@@ -692,6 +720,7 @@ mod tests {
             life,
             Velocity(Vec2::ZERO),
             LightExposure(bright),
+            VentExposure::default(),
             Transform::from_translation(Vec2::new(0.0, 600.0).extend(0.0)),
         ));
         solo.add_systems(Update, metabolism_and_gains);
@@ -719,6 +748,7 @@ mod tests {
                 life,
                 Velocity(Vec2::ZERO),
                 LightExposure(bright),
+                VentExposure::default(),
                 Transform::from_translation(Vec2::new(x, 600.0).extend(0.0)),
             ));
         }
@@ -765,8 +795,10 @@ mod tests {
                 &phenotype,
                 0,
                 shade,
+                0.0,
                 &config.environment,
                 &config.economy,
+                &config.genetics.decode_ranges,
                 1.0,
             );
         }
@@ -795,8 +827,10 @@ mod tests {
                 &phenotype,
                 0,
                 config.environment.gradient_max,
+                0.0,
                 &config.environment,
                 &config.economy,
+                &config.genetics.decode_ranges,
                 1.0,
             );
         }
@@ -806,6 +840,183 @@ mod tests {
             "energy {} should exceed repro threshold {} after 2500 ticks in bright band",
             energy.internal_energy,
             phenotype.repro_threshold
+        );
+    }
+
+    #[test]
+    fn chemo_gain_requires_cliff_and_vent() {
+        use crate::genome::core;
+        use crate::genome::chemo_gain_per_tick;
+
+        let config = local_config();
+        let dr = &config.genetics.decode_ranges;
+        let genome = Genome::from_bytes(
+            {
+                let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+                let i = crate::genome::HEADER_LEN + core::CHEMO_POTENTIAL;
+                let raw: u16 = 0x8CCC; // ~0.55, above cliff 0.35
+                bytes[i] = (raw >> 8) as u8;
+                bytes[i + 1] = (raw & 0xFF) as u8;
+                bytes
+            },
+            config.genetics.genome_version,
+            config.genetics.core_length,
+        )
+        .unwrap();
+        let phenotype = decode(&genome, &config).unwrap();
+        let vent_flux = 0.032;
+
+        assert!(phenotype.is_chemo_above_cliff(dr.chemo_cliff));
+        let gain = chemo_gain_per_tick(&phenotype, vent_flux, dr.chemo_cliff, dr.k_chemo);
+        assert!(gain > 0.0);
+
+        assert_eq!(chemo_gain_per_tick(&phenotype, 0.0, dr.chemo_cliff, dr.k_chemo), 0.0);
+        assert_eq!(
+            chemo_gain_per_tick(&phenotype, vent_flux, dr.chemo_cliff, 0.0),
+            0.0
+        );
+
+        let below_genome = Genome::from_bytes(
+            {
+                let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+                let i = crate::genome::HEADER_LEN + core::CHEMO_POTENTIAL;
+                let raw: u16 = 0x5709; // ~0.34, below cliff
+                bytes[i] = (raw >> 8) as u8;
+                bytes[i + 1] = (raw & 0xFF) as u8;
+                bytes
+            },
+            config.genetics.genome_version,
+            config.genetics.core_length,
+        )
+        .unwrap();
+        let below = decode(&below_genome, &config).unwrap();
+        assert!(!below.is_chemo_above_cliff(dr.chemo_cliff));
+        assert_eq!(
+            chemo_gain_per_tick(&below, vent_flux, dr.chemo_cliff, dr.k_chemo),
+            0.0
+        );
+    }
+
+    #[test]
+    fn chemo_upkeep_without_gain_below_cliff() {
+        use crate::genome::chemo_gain_per_tick;
+        use crate::genome::core;
+
+        let config = local_config();
+        let dr = &config.genetics.decode_ranges;
+        let genome = Genome::from_bytes(
+            {
+                let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+                let i = crate::genome::HEADER_LEN + core::CHEMO_POTENTIAL;
+                let raw: u16 = 0x5709;
+                bytes[i] = (raw >> 8) as u8;
+                bytes[i + 1] = (raw & 0xFF) as u8;
+                bytes
+            },
+            config.genetics.genome_version,
+            config.genetics.core_length,
+        )
+        .unwrap();
+        let phenotype = decode(&genome, &config).unwrap();
+        assert!(phenotype.chemo_upkeep > 0.0);
+        assert_eq!(
+            chemo_gain_per_tick(&phenotype, 0.05, dr.chemo_cliff, dr.k_chemo),
+            0.0
+        );
+    }
+
+    #[test]
+    fn chemo_gain_zero_when_vent_flux_zero() {
+        use crate::genome::chemo_gain_per_tick;
+
+        let config = local_config();
+        let dr = &config.genetics.decode_ranges;
+        let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+        let i = crate::genome::HEADER_LEN + crate::genome::core::CHEMO_POTENTIAL;
+        bytes[i] = 0x8C;
+        bytes[i + 1] = 0xCC;
+        let genome = Genome::from_bytes(
+            bytes,
+            config.genetics.genome_version,
+            config.genetics.core_length,
+        )
+        .unwrap();
+        let phenotype = decode(&genome, &config).unwrap();
+        assert!(phenotype.is_chemo_above_cliff(dr.chemo_cliff));
+        assert_eq!(
+            chemo_gain_per_tick(&phenotype, 0.0, dr.chemo_cliff, dr.k_chemo),
+            0.0
+        );
+    }
+
+    #[test]
+    fn chemo_gain_increases_net_energy_at_vent() {
+        use crate::genome::core;
+
+        let config = local_config();
+        let dr = &config.genetics.decode_ranges;
+        let vent_flux = 0.15;
+        let genome = Genome::from_bytes(
+            {
+                let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+                let i = crate::genome::HEADER_LEN + core::PHOTO_STRENGTH;
+                bytes[i] = 0x10;
+                bytes[i + 1] = 0x00;
+                let i = crate::genome::HEADER_LEN + core::CHEMO_POTENTIAL;
+                bytes[i] = 0x8C;
+                bytes[i + 1] = 0xCC;
+                bytes
+            },
+            config.genetics.genome_version,
+            config.genetics.core_length,
+        )
+        .unwrap();
+        let phenotype = decode(&genome, &config).unwrap();
+        let mut energy = Energy {
+            internal_energy: config.economy.spawn_energy,
+        };
+        let mut health = full_health(&config);
+        let start = energy.internal_energy;
+
+        for _ in 0..500 {
+            apply_metabolism_tick(
+                &mut energy,
+                &mut health,
+                &phenotype,
+                0,
+                0.0,
+                vent_flux,
+                &config.environment,
+                &config.economy,
+                dr,
+                1.0,
+            );
+        }
+
+        let mut control = Energy {
+            internal_energy: config.economy.spawn_energy,
+        };
+        let mut control_health = full_health(&config);
+        for _ in 0..500 {
+            apply_metabolism_tick(
+                &mut control,
+                &mut control_health,
+                &phenotype,
+                0,
+                0.0,
+                0.0,
+                &config.environment,
+                &config.economy,
+                dr,
+                1.0,
+            );
+        }
+
+        assert!(
+            energy.internal_energy > control.internal_energy,
+            "vent flux should raise net energy for high-chemo genotype (vent end={}, off vent={})",
+            energy.internal_energy,
+            control.internal_energy
         );
     }
 

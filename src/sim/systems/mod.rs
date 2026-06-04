@@ -1,6 +1,6 @@
 //! Simulation tick systems ([SIMULATION.md](../../docs/SIMULATION.md)).
 //!
-//! Phase 4 pipeline: `sense_exposure` → `metabolism_and_gains` → `behavior_movement` →
+//! Phase 4+ pipeline: `sense_exposure` (light, hazards, vents) → `metabolism_and_gains` → `behavior_movement` →
 //! `interactions` → `healing` → `reproduction` → `advance_age` → `death_and_despawn` →
 //! `performance_failsafe` → `metrics_sample`.
 //! Metabolism may skip photosynthetic gain on overlap when

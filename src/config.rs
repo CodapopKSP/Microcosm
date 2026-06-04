@@ -91,6 +91,93 @@ pub struct GeneticsConfig {
     #[serde(default = "default_delta_max")]
     pub delta_max: u8,
     pub decode_ranges: DecodeRanges,
+    /// Greenness niche: photosynthesis buff + metabolism penalty ([PHASE_4.md](../docs/PHASE_4.md) §4.7).
+    #[serde(default)]
+    pub color_photosynthesis: ColorPhotosynthesisConfig,
+}
+
+/// Color-driven photosynthesis tradeoff (Phase 4G).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ColorPhotosynthesisConfig {
+    #[serde(default = "default_greenness_scale")]
+    pub greenness_scale: f32,
+    #[serde(default = "default_greenness_max")]
+    pub greenness_max: f32,
+    #[serde(default)]
+    pub k_green_photo: f32,
+    #[serde(default)]
+    pub k_green_meta: f32,
+    #[serde(default = "default_light_ref")]
+    pub light_ref: f32,
+}
+
+fn default_greenness_scale() -> f32 {
+    0.5
+}
+
+fn default_greenness_max() -> f32 {
+    1.0
+}
+
+fn default_light_ref() -> f32 {
+    1.0
+}
+
+impl Default for ColorPhotosynthesisConfig {
+    fn default() -> Self {
+        Self {
+            greenness_scale: default_greenness_scale(),
+            greenness_max: default_greenness_max(),
+            k_green_photo: 0.0,
+            k_green_meta: 0.0,
+            light_ref: default_light_ref(),
+        }
+    }
+}
+
+impl ColorPhotosynthesisConfig {
+    /// §4.7 tradeoff: at `light_ref`, buff from `photo_strength_ref = 1.0` exceeds metabolism penalty.
+    pub fn validate_tradeoff(&self, solar_constant: f32) -> Result<(), ConfigError> {
+        if self.k_green_photo <= 0.0 && self.k_green_meta <= 0.0 {
+            return Ok(());
+        }
+        if !self.greenness_scale.is_finite() || self.greenness_scale <= 0.0 {
+            return Err(ConfigError::Validation(
+                "genetics.color_photosynthesis.greenness_scale must be positive and finite".into(),
+            ));
+        }
+        if !self.greenness_max.is_finite() || self.greenness_max < 0.0 {
+            return Err(ConfigError::Validation(
+                "genetics.color_photosynthesis.greenness_max must be non-negative and finite".into(),
+            ));
+        }
+        if self.k_green_photo < 0.0
+            || self.k_green_meta < 0.0
+            || !self.k_green_photo.is_finite()
+            || !self.k_green_meta.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "genetics.color_photosynthesis k_green_photo and k_green_meta must be non-negative and finite"
+                    .into(),
+            ));
+        }
+        if !self.light_ref.is_finite() || self.light_ref < 0.0 {
+            return Err(ConfigError::Validation(
+                "genetics.color_photosynthesis.light_ref must be non-negative and finite".into(),
+            ));
+        }
+        if self.k_green_meta > 0.0 {
+            let buff = self.k_green_photo * self.light_ref * 1.0 * solar_constant;
+            if buff <= self.k_green_meta {
+                return Err(ConfigError::Validation(format!(
+                    "genetics.color_photosynthesis: k_green_photo * light_ref * solar_constant ({buff:.6}) \
+                     must exceed k_green_meta ({})",
+                    self.k_green_meta
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn default_mutations_per_offspring() -> u32 {
@@ -109,12 +196,16 @@ pub struct DecodeRanges {
     pub meta_min: f32,
     pub meta_max: f32,
     pub loco_max: f32,
-    pub speed_min: f32,
-    pub speed_max: f32,
+    /// `movement_pace` locus decode range (bytes 24–25).
+    #[serde(alias = "speed_min")]
+    pub pace_min: f32,
+    #[serde(alias = "speed_max")]
+    pub pace_max: f32,
+    /// `repair_rate` locus decode range (bytes 20–21).
+    pub repair_rate_min: f32,
+    pub repair_rate_max: f32,
     pub e_min: f32,
     pub e_max: f32,
-    pub cd_min: f32,
-    pub cd_max: f32,
     pub k_armor: f32,
     pub k_move_hardness: f32,
     pub chemo_cliff: f32,
@@ -130,6 +221,13 @@ pub struct DecodeRanges {
     pub age_metabolism_scale_max: f32,
     /// Armor mitigation constant: `h / (h + k_mitigate)` (Phase 4B).
     pub k_mitigate: f32,
+    /// Scales chemosynthetic vent gain (Phase 5B).
+    #[serde(default = "default_k_chemo")]
+    pub k_chemo: f32,
+}
+
+fn default_k_chemo() -> f32 {
+    1.0
 }
 
 /// HP repair ordering when energy is available ([PHASE_4.md](../docs/PHASE_4.md) §4.4).
@@ -152,11 +250,16 @@ pub struct EconomyConfig {
     pub flat_energy_grant_per_tick: f32,
     pub core_max_hp: f32,
     pub repro_safety_margin: f32,
+    /// Ticks before another reproduction attempt after success or stillbirth (config-only; byte 16 reserved).
+    pub repro_cooldown_ticks: u32,
     pub p_death_on_repro_base: f32,
-    /// Fraction of `core_max_hp` applied when a repro damage roll succeeds.
     pub p_damage_on_repro_base: f32,
+    /// Fraction of [`Phenotype::repro_threshold`] applied when a repro damage roll succeeds.
     pub repro_damage_fraction_of_max_hp: f32,
     pub repair_energy_per_hp: f32,
+    /// Max HP restored per tick at `repair_rate = 1.0` (throughput cap; energy still `hp * repair_energy_per_hp`).
+    #[serde(default = "default_repair_hp_per_tick_at_rate_1")]
+    pub repair_hp_per_tick_at_rate_1: f32,
     /// Log-age metabolism reaches this rate (energy/s) at `age_metabolism_cap_ticks` (60 Hz).
     pub age_metabolism_cap_per_sec: f32,
     pub age_metabolism_cap_ticks: f32,
@@ -181,12 +284,24 @@ fn default_move_energy_half_speed_ratio() -> f32 {
     0.5
 }
 
+fn default_repair_hp_per_tick_at_rate_1() -> f32 {
+    50.0
+}
+
 /// Axis-aligned circular hazard zone ([PHASE_4.md](../docs/PHASE_4.md) §4.1).
 #[derive(Debug, Clone, Deserialize)]
 pub struct HazardZone {
     pub center: [f32; 2],
     pub radius: f32,
     pub damage_per_tick: f32,
+}
+
+/// Axis-aligned circular thermal vent ([PHASE_5.md](../docs/PHASE_5.md) §5.1).
+#[derive(Debug, Clone, Deserialize)]
+pub struct VentZone {
+    pub center: [f32; 2],
+    pub radius: f32,
+    pub vent_flux: f32,
 }
 
 /// World energy and light ([PHASE_2.md](../docs/PHASE_2.md) sub-phase 2A).
@@ -211,6 +326,9 @@ pub struct EnvironmentConfig {
     /// Circular hazard bands; empty ⇒ no zone damage (Phase 4A).
     #[serde(default)]
     pub hazards: Vec<HazardZone>,
+    /// Circular thermal vents; empty ⇒ no chemo flux sample (Phase 5A).
+    #[serde(default)]
+    pub vents: Vec<VentZone>,
 }
 
 fn default_overlap_shades_photosynthesis() -> bool {
@@ -319,6 +437,24 @@ impl EnvironmentConfig {
             if !zone.damage_per_tick.is_finite() || zone.damage_per_tick < 0.0 {
                 return Err(ConfigError::Validation(format!(
                     "environment.hazards[{i}].damage_per_tick must be finite and >= 0"
+                )));
+            }
+        }
+
+        for (i, zone) in self.vents.iter().enumerate() {
+            if !zone.center[0].is_finite() || !zone.center[1].is_finite() {
+                return Err(ConfigError::Validation(format!(
+                    "environment.vents[{i}].center must be finite"
+                )));
+            }
+            if !zone.radius.is_finite() || zone.radius <= 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "environment.vents[{i}].radius must be positive and finite"
+                )));
+            }
+            if !zone.vent_flux.is_finite() || zone.vent_flux < 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "environment.vents[{i}].vent_flux must be finite and >= 0"
                 )));
             }
         }
@@ -453,9 +589,21 @@ impl SimConfig {
             ));
         }
 
-        if dr.speed_max <= dr.speed_min {
+        if dr.pace_max <= dr.pace_min {
             return Err(ConfigError::Validation(
-                "genetics.decode_ranges.speed_max must exceed speed_min".into(),
+                "genetics.decode_ranges.pace_max must exceed pace_min".into(),
+            ));
+        }
+
+        if dr.repair_rate_max <= dr.repair_rate_min {
+            return Err(ConfigError::Validation(
+                "genetics.decode_ranges.repair_rate_max must exceed repair_rate_min".into(),
+            ));
+        }
+
+        if self.economy.repair_hp_per_tick_at_rate_1 <= 0.0 {
+            return Err(ConfigError::Validation(
+                "economy.repair_hp_per_tick_at_rate_1 must be positive".into(),
             ));
         }
 
@@ -471,9 +619,9 @@ impl SimConfig {
             ));
         }
 
-        if dr.cd_max <= dr.cd_min {
+        if self.economy.repro_cooldown_ticks == 0 {
             return Err(ConfigError::Validation(
-                "genetics.decode_ranges.cd_max must exceed cd_min".into(),
+                "economy.repro_cooldown_ticks must be positive".into(),
             ));
         }
 
@@ -531,6 +679,12 @@ impl SimConfig {
             ));
         }
 
+        if dr.k_chemo < 0.0 || !dr.k_chemo.is_finite() {
+            return Err(ConfigError::Validation(
+                "genetics.decode_ranges.k_chemo must be non-negative and finite".into(),
+            ));
+        }
+
         if self.economy.collision_damage_scale < 0.0
             || !self.economy.collision_damage_scale.is_finite()
         {
@@ -557,6 +711,9 @@ impl SimConfig {
         }
 
         self.environment.validate()?;
+        self.genetics
+            .color_photosynthesis
+            .validate_tradeoff(self.environment.solar_constant)?;
 
         Ok(())
     }
@@ -624,6 +781,20 @@ mod tests {
     }
 
     #[test]
+    fn vents_default_empty_when_key_missing() {
+        let toml = r#"
+            energy_model = "local"
+            solar_constant = 1.0
+            light_mode = "uniform"
+            gradient_min = 0.0
+            gradient_max = 1.0
+            gradient_bright_at = "top"
+        "#;
+        let env: EnvironmentConfig = toml::from_str(toml).unwrap();
+        assert!(env.vents.is_empty());
+    }
+
+    #[test]
     fn crowding_flag_off_by_default() {
         let config = SimConfig::load_default().expect("default.toml should load");
         assert!(
@@ -640,6 +811,7 @@ mod tests {
             flat_energy_grant_per_tick = 0.0
             core_max_hp = 100.0
             repro_safety_margin = 0.25
+            repro_cooldown_ticks = 192
             p_death_on_repro_base = 0.15
             p_damage_on_repro_base = 0.2
             repro_damage_fraction_of_max_hp = 0.1
@@ -654,6 +826,68 @@ mod tests {
     }
 
     #[test]
+    fn color_photosynthesis_defaults_when_section_missing() {
+        let toml = r#"
+            genome_version = 1
+            core_length = 32
+            ancestor_hex = "45564f3188cc446dffff300028000af640000af6008000005555000055558000"
+            [decode_ranges]
+            body_radius_min = 6.0
+            body_radius_max = 20.0
+            photo_max = 3.0
+            k_photo = 0.008
+            meta_min = 0.001
+            meta_max = 0.03
+            loco_max = 1.0
+            pace_min = 0.5
+            pace_max = 2.0
+            repair_rate_min = 0.5
+            repair_rate_max = 2.0
+            e_min = 15.0
+            e_max = 2000.0
+            k_armor = 0.08
+            k_move_hardness = 0.02
+            chemo_cliff = 0.35
+            v_base = 10.0
+            k_v = 18.0
+            m_base = 0.0
+            k_m = 0.0
+            k_drag = 0.0
+            r_ref = 12.0
+            k_move_meta = 0.0
+            age_metabolism_scale_min = 0.5
+            age_metabolism_scale_max = 2.0
+            k_mitigate = 0.5
+        "#;
+        let genetics: GeneticsConfig = toml::from_str(toml).unwrap();
+        assert_eq!(genetics.color_photosynthesis.k_green_photo, 0.0);
+        assert_eq!(genetics.color_photosynthesis.k_green_meta, 0.0);
+        assert_eq!(genetics.color_photosynthesis.greenness_scale, 0.5);
+    }
+
+    #[test]
+    fn hazard_lab_toml_loads() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/hazard_lab.toml");
+        let config = SimConfig::load_from_path(&path).expect("hazard_lab.toml should load");
+        assert_eq!(config.environment.hazards.len(), 1);
+        assert!(config.environment.hazards[0].damage_per_tick > 0.01);
+    }
+
+    #[test]
+    fn vent_lab_toml_loads() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/vent_lab.toml");
+        let config = SimConfig::load_from_path(&path).expect("vent_lab.toml should load");
+        assert_eq!(config.environment.vents.len(), 1);
+        assert!(config.environment.vents[0].vent_flux > 0.01);
+        let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
+        let phenotype = crate::genome::decode(&genome, &config).unwrap();
+        assert!(
+            phenotype.is_chemo_above_cliff(config.genetics.decode_ranges.chemo_cliff),
+            "vent_lab ancestor should be above chemo cliff"
+        );
+    }
+
+    #[test]
     fn load_default_toml() {
         let config = SimConfig::load_default().expect("default.toml should load");
         assert_eq!(config.genetics.genome_version, SUPPORTED_GENOME_VERSION);
@@ -665,6 +899,13 @@ mod tests {
         assert_eq!(config.economy.repair_policy, RepairPolicy::CoreFirst);
         assert_eq!(config.environment.light_mode, LightMode::GradientY);
         assert!(!config.environment.crowding_blocks_photosynthesis);
+        assert!(config.genetics.color_photosynthesis.k_green_photo > 0.0);
+        assert!(
+            config.genetics.color_photosynthesis.k_green_meta
+                < config.genetics.color_photosynthesis.k_green_photo
+                    * config.genetics.color_photosynthesis.light_ref
+                    * config.environment.solar_constant
+        );
     }
 
     #[test]

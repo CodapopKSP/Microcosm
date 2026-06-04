@@ -109,11 +109,11 @@ flowchart LR
 ### Repair
 
 ```text
-energy_spent = (hp_repaired / repair_efficiency) * repair_energy_per_hp
+energy_spent = hp_repaired * repair_energy_per_hp
 part_hp += hp_repaired
 ```
 
-Default tuning uses `repair_energy_per_hp = 1.0` with ancestor `repair_efficiency ≈ 1.0` → **~1 energy per HP** (~20 s to restore 10 HP at ~0.5 net energy/s surplus).
+Default tuning uses `repair_energy_per_hp = 1.0` with ancestor `repair_rate ≈ 1.0` → **~1 energy per HP**; higher `repair_rate` restores more HP per tick at the same energy-per-HP ratio (~20 s to restore 10 HP at ~0.5 net energy/s surplus when rate-limited).
 
 Policies (config):
 
@@ -141,7 +141,20 @@ Apply after gains, before movement.
 
 ### Movement energy
 
-Separate from idle metabolism (`k_move_meta` defaults to 0). Cost per second:
+Separate from idle metabolism (`k_move_meta` defaults to 0).
+
+**Design target** ([GENOME_REVISIONS.md](GENOME_REVISIONS.md#movement-calibration-target)):
+
+```text
+move_energy = distance_traveled / (10 * body_radius)
+```
+
+- **1 energy** pays for **10 body radii** of travel (e.g. `r = 2.5` → **25** world units; ancestor at `r ≈ 12` → **120** world units).
+- Cost is tied to **distance**, not time. **Smaller** bodies pay **more** energy per world unit; **1 energy** still buys `10 × body_radius` distance for any size.
+- **`locomotion_investment`** sets baseline speed at `movement_pace = 1`.
+- **`movement_pace`** (proposed locus, bytes 24–25) scales speed and move energy **linearly**: **2× pace → 2× speed and 2× energy per distance** ([GENOME_REVISIONS.md](GENOME_REVISIONS.md#7-movement-pace-modifier-speed--energy)).
+
+**Current implementation (until revised):** speed-based cost per second:
 
 ```text
 move_energy_per_sec = move_energy_per_sec_at_half_speed
@@ -149,7 +162,7 @@ move_energy_per_sec = move_energy_per_sec_at_half_speed
   * (speed_ratio / move_energy_half_speed_ratio)
 ```
 
-At reference size and `speed_ratio = 0.5` (default anchor), the ancestor spends **~1 energy/s** while moving. Smaller bodies pay proportionally less via `(radius/r_ref)²`; max speed scales with `(body_radius / r_ref)` and locomotion investment.
+Config still documents `move_energy_per_sec_at_half_speed` (default 1.0 at reference size, half `speed_ratio`). This is a **bridge** tuning knob; new work should align billing with the distance invariant above and give the default ancestor a non-zero `max_speed` locus so movement is testable.
 
 ## Light field
 
@@ -169,12 +182,12 @@ Circular zones: `{ center, radius, vent_flux }`.
 - **Barrier mode (optional):** high damage or outward force at vent rim.
 - **Threshold:** below cliff, `chemo_potential` gene pays upkeep but provides no vent gain—hill-climb required.
 
-## Hazards (Phase 4)
+## Hazards (implemented — Phase 4)
 
 | Type | Effect |
 |------|--------|
-| **Zone hazard** | `damage_per_tick` while overlapping; split across hit parts or core |
-| **Collision** | `damage ∝ relative_speed * (1 - mitigation(hardness))` |
+| **Zone hazard** | `damage_per_tick` while overlapping; mitigated by `skin_hardness`; routed to `core_hp` when `part_hp` empty |
+| **Collision** | `collision_damage_scale * relative_speed * (1 - mitigation(hardness))`; symmetric per pair; no despawn |
 
 Mitigation from `skin_hardness` with documented diminishing returns (e.g. `mitigation = hardness / (hardness + k)`).
 

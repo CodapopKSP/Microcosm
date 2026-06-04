@@ -2,7 +2,7 @@
 
 Evolution Sim is a 2D evolution sandbox built on [Bevy](https://bevyengine.org/). Entities have DNA, metabolize energy, move, reproduce with mutation, and are shaped by an environment with light, hazards, and (later) vents and resource fields.
 
-The current codebase implements **Phase 1** (genetics, metabolism, risky asexual reproduction), **Phase 2** (position-dependent photosynthesis, light field, spatial niches via `gradient_y`), and **Phase 3** (headless CLI, JSONL metrics, evolvable lifespan with `age_upkeep`). Phase 0 collision-despawn is removed; agents die from energy depletion, core HP, reproduction risk, or old age.
+The current codebase implements **Phases 1–4**: genetics and lifecycle, local photosynthesis and light gradients, headless JSONL metrics, hazard zones and collision damage, armor/repair tradeoffs, and a greenness-linked photosynthesis niche. Collision overlap applies damage (no instant despawn); agents die when `core_hp` reaches zero, reproduction risk kills, or metabolic deficit drains HP.
 
 ## Requirements
 
@@ -64,6 +64,28 @@ Per-tick photosynthetic gain: `photo_strength * light(pos) * solar_constant`. Wo
 
 Tune `solar_constant`, `gradient_min` / `gradient_max`, and `k_photo` together so ancestors thrive in mid–bright light and high-photo mutants pay for shade (see [PHASE_2.md](docs/PHASE_2.md)).
 
+#### Hazards and repair (Phase 4)
+
+Circular hazard bands apply damage each tick while agents overlap. `skin_hardness` mitigates hazard and collision damage; repair spends energy at `repair_energy_per_hp` with evolvable `repair_rate` throughput.
+
+```toml
+[[environment.hazards]]
+center = [300.0, 450.0]
+radius = 20.0
+damage_per_tick = 0.00833
+
+[economy]
+repair_policy = "core_first"
+repair_energy_per_hp = 1.0
+collision_damage_scale = 0.15
+
+[genetics.color_photosynthesis]
+k_green_photo = 0.25
+k_green_meta = 0.005
+```
+
+See [PHASE_4.md](docs/PHASE_4.md) for greenness formulas and acceptance tests.
+
 ### Headless batch run (Phase 3)
 
 ```bash
@@ -89,6 +111,8 @@ Design and planning docs live in `docs/`:
 - [docs/ROADMAP.md](docs/ROADMAP.md) — Phased implementation plan
 - [docs/PHASE_1.md](docs/PHASE_1.md) — Phase 1 checklist and acceptance criteria
 - [docs/PHASE_2.md](docs/PHASE_2.md) — Phase 2 light field and Model A gain
+- [docs/PHASE_3.md](docs/PHASE_3.md) — Headless CLI, metrics, age metabolism
+- [docs/PHASE_4.md](docs/PHASE_4.md) — Hazards, collision, armor, repair, green niche
 
 ### Tests
 

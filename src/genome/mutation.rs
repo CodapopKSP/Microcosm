@@ -56,11 +56,7 @@ const CORE_LOCI: &[CoreLocus] = &[
         len: 2,
     },
     CoreLocus {
-        offset: core::REPRO_COOLDOWN,
-        len: 1,
-    },
-    CoreLocus {
-        offset: core::REPRO_RISK_FACTOR,
+        offset: core::DESIRE_TO_MOVE,
         len: 1,
     },
     CoreLocus {
@@ -68,7 +64,7 @@ const CORE_LOCI: &[CoreLocus] = &[
         len: 2,
     },
     CoreLocus {
-        offset: core::REPAIR_EFFICIENCY,
+        offset: core::REPAIR_RATE,
         len: 2,
     },
     CoreLocus {
@@ -76,7 +72,7 @@ const CORE_LOCI: &[CoreLocus] = &[
         len: 2,
     },
     CoreLocus {
-        offset: core::MAX_SPEED,
+        offset: core::MOVEMENT_PACE,
         len: 2,
     },
     CoreLocus {
@@ -165,20 +161,20 @@ fn core_end(genome: &Genome) -> usize {
     genome.bytes.len().min(HEADER_LEN + encoding::CORE_SEGMENT_LEN)
 }
 
-/// Fixed chance `max_speed` is picked on point/resample passes (remaining mass split among other loci).
-const MAX_SPEED_LOCUS_PROB: f32 = 0.075;
+/// Fixed chance `movement_pace` is picked on point/resample passes (remaining mass split among other loci).
+const MOVEMENT_PACE_LOCUS_PROB: f32 = 0.075;
 const LOCUS_WEIGHT_DEFAULT: u32 = 1;
 const LOCUS_WEIGHT_BODY_RADIUS: u32 = 2;
 
-fn max_speed_locus() -> &'static CoreLocus {
+fn movement_pace_locus() -> &'static CoreLocus {
     CORE_LOCI
         .iter()
-        .find(|l| l.offset == core::MAX_SPEED)
-        .expect("MAX_SPEED locus present in CORE_LOCI")
+        .find(|l| l.offset == core::MOVEMENT_PACE)
+        .expect("MOVEMENT_PACE locus present in CORE_LOCI")
 }
 
 fn locus_selection_weight(locus: &CoreLocus) -> u32 {
-    debug_assert_ne!(locus.offset, core::MAX_SPEED);
+    debug_assert_ne!(locus.offset, core::MOVEMENT_PACE);
     match locus.offset {
         core::BODY_RADIUS => LOCUS_WEIGHT_BODY_RADIUS,
         _ => LOCUS_WEIGHT_DEFAULT,
@@ -188,12 +184,12 @@ fn locus_selection_weight(locus: &CoreLocus) -> u32 {
 fn random_mutable_locus_non_speed(rng: &mut impl Rng) -> &'static CoreLocus {
     let total: u32 = CORE_LOCI
         .iter()
-        .filter(|l| l.offset != core::MAX_SPEED)
+        .filter(|l| l.offset != core::MOVEMENT_PACE)
         .map(|l| locus_selection_weight(l))
         .sum();
     let mut pick = rng.gen_range(0..total);
     for locus in CORE_LOCI {
-        if locus.offset == core::MAX_SPEED {
+        if locus.offset == core::MOVEMENT_PACE {
             continue;
         }
         let w = locus_selection_weight(locus);
@@ -204,13 +200,13 @@ fn random_mutable_locus_non_speed(rng: &mut impl Rng) -> &'static CoreLocus {
     }
     CORE_LOCI
         .iter()
-        .find(|l| l.offset != core::MAX_SPEED)
+        .find(|l| l.offset != core::MOVEMENT_PACE)
         .expect("non-speed CORE_LOCI present")
 }
 
 fn random_mutable_locus(rng: &mut impl Rng) -> &'static CoreLocus {
-    if rng.gen::<f32>() < MAX_SPEED_LOCUS_PROB {
-        return max_speed_locus();
+    if rng.gen::<f32>() < MOVEMENT_PACE_LOCUS_PROB {
+        return movement_pace_locus();
     }
     random_mutable_locus_non_speed(rng)
 }
@@ -387,20 +383,21 @@ mod tests {
 
     #[test]
     fn max_speed_locus_pick_probability_is_seven_point_five_percent() {
-        assert_eq!(MAX_SPEED_LOCUS_PROB, 0.075);
+        assert_eq!(MOVEMENT_PACE_LOCUS_PROB, 0.075);
     }
 
     #[test]
-    fn skin_hardness_and_repair_efficiency_are_core_loci() {
+    fn skin_hardness_and_repair_rate_are_core_loci() {
         assert!(CORE_LOCI.iter().any(|l| l.offset == core::SKIN_HARDNESS));
-        assert!(CORE_LOCI.iter().any(|l| l.offset == core::REPAIR_EFFICIENCY));
+        assert!(CORE_LOCI.iter().any(|l| l.offset == core::REPAIR_RATE));
+        assert!(CORE_LOCI.iter().any(|l| l.offset == core::DESIRE_TO_MOVE));
     }
 
     #[test]
     fn body_locus_is_doubled_when_picking_non_speed() {
         let total: u32 = CORE_LOCI
             .iter()
-            .filter(|l| l.offset != core::MAX_SPEED)
+            .filter(|l| l.offset != core::MOVEMENT_PACE)
             .map(locus_selection_weight)
             .sum();
         let body = LOCUS_WEIGHT_BODY_RADIUS as f32 / total as f32;

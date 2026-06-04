@@ -33,26 +33,25 @@ Avoid naked “efficiency” genes that monotonically improve fitness when maxim
 
 | Tag | Meaning | Examples |
 |-----|---------|----------|
-| **Tradeoff** | Higher helps X, hurts Y via coupled formula | `body_radius`, `photo_strength`, `offspring_endowment` |
+| **Tradeoff** | Higher helps X, hurts Y via coupled formula | `body_radius`, `photo_strength`, `offspring_endowment`, `color_*` (greenness) |
 | **Cost** | Benefit requires ongoing or one-time energy / mobility tax | `skin_hardness`, sensor bandwidth on nodes |
 | **Threshold** | Benefit only after viability cliff | `chemo_potential` near vents |
-| **Neutral** | Context-dependent or cosmetic | `color_*`, `repro_cooldown` |
-| **Risk** | Stochastic failure under stress | `repro_risk_factor` at low energy |
 
 ### Reproduction risk
 
-Reproduction always carries inherent risk (config + genes):
+Reproduction carries config-only stochastic risk (no per-agent gene):
 
 ```
 energy_margin = internal_energy / repro_threshold   // after vitality transfer
-risk_mult = repro_risk_factor_decoded               // 0..1
-p_death = p_death_on_repro_base * risk_mult * max(0, 1 - energy_margin / repro_safety_margin)
-p_damage = p_damage_on_repro_base * risk_mult        // separate roll; may chip core HP
+p_death = p_death_on_repro_base * max(0, 1 - energy_margin / repro_safety_margin)
+p_damage = p_damage_on_repro_base                    // separate roll; may chip core HP
 ```
 
 Reproduction also pays **vitality transfer** (see below); low post-transfer energy increases `p_death`.
 
-Short `repro_cooldown` is not automatically optimal: frequent reproduction at low `energy_margin` increases exposure to `p_death`, failed spawns, and hazard windows while `repro_cost` is sunk.
+### Reproduction cooldown
+
+Fixed **`economy.repro_cooldown_ticks`** (default **192** ≈ 3.2 s at 60 Hz) blocks further attempts after success or stillbirth. Not evolvable — byte 16 reserved. Prevents low-`repro_threshold` spam when energy income is fast (vents, bright bands); `repro_threshold` remains the primary economic gate.
 
 ### Anti-convergence tuning
 
@@ -70,7 +69,7 @@ Byte offsets are relative to **start of core segment** (byte 0 = first byte afte
 
 | Offset | Locus | W | Tag | Decode & phenotype |
 |--------|-------|---|-----|------------------|
-| 0–2 | `color_r`, `color_g`, `color_b` | 1 each | Neutral | `channel / 255.0` → render color; no fitness v1 |
+| 0–2 | `color_r`, `color_g`, `color_b` | 1 each | Tradeoff | `channel / 255.0` → render color; **greenness** drives photosynthesis buff + metabolism penalty ([PHASE_4.md](PHASE_4.md) §4.7) |
 | 3 | `body_radius` | 1 | Tradeoff | `radius = r_min + (raw/255) * (r_max - r_min)`; metabolism scale `(radius/r_ref)²` |
 | 4–5 | `photo_strength` | 2 | Tradeoff | `u16 → [0, photo_max]`; uptake multiplier; gain also × `(body_radius/r_ref)²`; `photo_upkeep = k_photo * photo_strength` |
 | 6–7 | `metabolism_base` | 2 | Tradeoff | `u16 → [meta_min, meta_max]` idle drain per tick |
@@ -78,23 +77,28 @@ Byte offsets are relative to **start of core segment** (byte 0 = first byte afte
 | 10–11 | `repro_threshold` | 2 | Neutral/Risk | `u16 → [e_min, e_max]` energy required to attempt repro |
 | 12–13 | `repro_cost` | 2 | Legacy | Reserved in v1 layout; **not spent** — use `offspring_endowment` as transfer size |
 | 14–15 | `offspring_endowment` | 2 | Tradeoff | Child starting **core HP** from converted parent energy (capped by this gene); child spawns at **0 energy** |
-| 16 | `repro_cooldown` | 1 | Neutral | `ticks = cd_min + (raw/255) * (cd_max - cd_min)` |
-| 17 | `repro_risk_factor` | 1 | Risk | `raw/255` scales `p_death_on_repro` |
+| 16 | `desire_to_move` | 1 | Tradeoff | `raw / 255` → per-tick probability of attempting movement (0 = never, 255 = always); ancestor **`0x00`** |
+| 17 | *(reserved)* | 1 | — | Was `repro_risk_factor`; ignored on decode ([revision #5](GENOME_REVISIONS.md#5-remove-repro_risk_factor)) |
 | 18–19 | `skin_hardness` | 2 | Cost | Damage reduction; `armor_upkeep = k_armor * hardness`; `move_penalty = k_move * hardness` |
-| 20–21 | `repair_efficiency` | 2 | Tradeoff | Energy per HP repaired: `cost = base / efficiency` |
+| 20–21 | `repair_rate` | 2 | Tradeoff | `u16 → [repair_rate_min, repair_rate_max]`; max HP/tick = `rate * repair_hp_per_tick_at_rate_1`; cost = `hp * repair_energy_per_hp` ([revision #6](GENOME_REVISIONS.md#6-repair--direct-energyhp-add-repair-speed)) |
 | 22–23 | `chemo_potential` | 2 | Threshold | Active only if `raw/65535 > cliff` AND near vent; `chemo_upkeep` always if raw > 0 |
-| 24–25 | `max_speed` | 2 | Tradeoff | `u16 → [speed_min, speed_max]` multiplier on body-derived max speed |
+| 24–25 | `movement_pace` | 2 | Tradeoff | `u16 → [pace_min, pace_max]`; scales `max_speed` and move energy **together** (2× pace → 2× speed, 2× energy per distance); see [GENOME_REVISIONS.md](GENOME_REVISIONS.md#7-movement-pace-modifier-speed--energy) |
 | 26–27 | `age_metabolism_scale` | 2 | Tradeoff | `u16 → [age_metabolism_scale_min, age_metabolism_scale_max]`; scales logarithmic age metabolism (replaces old-age cap) |
 
 ### Derived traits (not stored in DNA)
 
 | Trait | Formula (conceptual) |
 |-------|----------------------|
-| `max_speed` | `(v_base + k_v * locomotion) * (body_radius / r_ref) * lerp(max_speed_raw) - move_penalty` |
-| `move_cost` | Cached half-speed movement tick: `move_energy_per_sec_at_half_speed * (body_radius/r_ref)² / 60` |
+| `max_speed` | `max_speed_base * movement_pace` where `max_speed_base = (v_base + k_v * locomotion) * (body_radius / r_ref) - move_penalty` |
+| `movement_pace` | From bytes 24–25; ancestor **`1.0`**. Linear tradeoff with speed and move cost — [§7](GENOME_REVISIONS.md#7-movement-pace-modifier-speed--energy). |
+| `desire_to_move` | From byte 16; `raw / 255` gates movement each tick; velocity cleared when idle (no collision drift). |
+| `move_cost` | Energy per world unit at pace 1: `1 / (10 * body_radius)`; tick spend = `(distance / (10 * body_radius)) * movement_pace` — [calibration](GENOME_REVISIONS.md#movement-calibration-target) |
 | `metabolism_moving` | `metabolism_idle * (1 + k_move_meta * speed_ratio)` (movement energy is separate) |
 | `age_metabolism_scale` | Gene multiplier on log-age metabolism (see below) |
 | `age_metabolism_per_tick` | `cap_per_tick * ln(1 + age/ref) / ln(1 + cap_ticks/ref) * scale` ([`economy`](../configs/default.toml)) |
+| `greenness` | `clamp((g - 0.5*(r+b)) / greenness_scale, 0, greenness_max)` from decoded RGB |
+| `green_photo_mult` | `1 + k_green_photo * greenness` — scales local photosynthetic gain |
+| `green_metabolism_extra` | `k_green_meta * greenness` — added to idle metabolism per tick |
 
 Decode helper:
 
@@ -117,14 +121,15 @@ Mid-range bytes for viability (hex of core payload after header):
 | photo_strength | `0xFFFF` | ~3.0 uptake (`photo_max = 3`) |
 | metabolism_base | `0x3000` | Moderate |
 | locomotion_investment | `0x2800` | Moderate speed/cost |
-| repro_threshold | `0xFFFF` | 100 energy to attempt repro (`e_max = 100`) |
-| offspring_endowment | `0xFFFF` | Child starts at 100 core HP (from 100 energy paid at repro) |
+| repro_threshold | `0x0AF6` | ~100 energy to attempt repro (`e_max = 2000`; `0xFFFF` → max) |
+| offspring_endowment | `0x0AF6` | Child starts at ~100 core HP (capped by threshold / `core_max_hp`) |
 | repro_cost | `0x4000` | Legacy locus (unused in v1 payment) |
-| max_speed | `0x0000` | Speed multiplier at `speed_min` on body-derived cap |
+| movement_pace | `0x5555` | **1.0** in `[0.5, 2.0]`; movable ancestor; **1 energy / 10 radii** at pace 1 ([calibration](GENOME_REVISIONS.md#movement-calibration-target)) |
 | age_metabolism_scale | `0x8000` | Mid scale on log-age penalty |
 | skin_hardness | `0` | No armor at worldgen; can evolve |
 | chemo_potential | `0` | Inactive until vents |
-| repro_risk_factor | `0x80` | ~50% of config death/damage rates |
+| `desire_to_move` | `0x00` | Sedentary ancestor (no movement rolls) |
+| byte 17 | `0x80` | Legacy ancestor value; **ignored** on decode (reserved) |
 
 Exact byte pattern: `configs/default.toml` → `[genetics.ancestor_hex]`.
 
@@ -234,6 +239,7 @@ Rebuild phenotype only when genome changes.
 
 ## Further reading
 
+- [GENOME_REVISIONS.md](GENOME_REVISIONS.md) — Open design backlog (repro caps, cooldown, risk, repair, locomotion)
 - [ENERGY_AND_ENVIRONMENT.md](ENERGY_AND_ENVIRONMENT.md) — How `photo_strength` and `chemo_potential` interact with the world
 - [ENTITIES.md](ENTITIES.md) — Spawn, reproduction, death
 - [ROADMAP.md](ROADMAP.md) — Phase boundaries for morphology and sensors

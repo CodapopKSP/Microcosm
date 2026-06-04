@@ -1,0 +1,103 @@
+# Phase 4 acceptance / CI: strong central hazard, short headless run.
+# evolution_sim --headless --config configs/hazard_lab.toml --seed 1
+
+[world]
+width = 1000.0
+height = 1500.0
+boundary = "bounce"
+initial_population = 20
+default_agent_radius = 12.0
+min_speed = 5.0
+max_speed = 50.0
+
+[performance]
+max_entities = 5000
+failsafe_policy = "stop_spawns"
+
+[genetics]
+genome_version = 1
+core_length = 32
+ancestor_hex = "45564f3188cc446dffff300028000af640000af6008000005555000055558000"
+p_bit_flip = 0.0
+p_point = 0.0
+p_resample = 0.0
+p_dup = 0.0
+p_del = 0.0
+mutations_per_offspring = 0
+delta_max = 1
+
+[genetics.decode_ranges]
+body_radius_min = 6.0
+body_radius_max = 20.0
+photo_max = 3.0
+k_photo = 0.008
+meta_min = 0.001
+meta_max = 0.03
+loco_max = 1.0
+pace_min = 0.5
+pace_max = 2.0
+repair_rate_min = 0.5
+repair_rate_max = 2.0
+e_min = 15.0
+e_max = 2000.0
+k_armor = 0.08
+k_move_hardness = 0.005
+chemo_cliff = 0.35
+v_base = 10.0
+k_v = 18.0
+m_base = 0.0
+k_m = 0.0
+k_drag = 0.0
+r_ref = 12.0
+k_move_meta = 0.0
+age_metabolism_scale_min = 0.5
+age_metabolism_scale_max = 2.0
+k_mitigate = 0.5
+
+[genetics.color_photosynthesis]
+greenness_scale = 0.5
+greenness_max = 1.0
+k_green_photo = 0.25
+k_green_meta = 0.004
+light_ref = 1.0
+
+[economy]
+metabolism_floor = 0.001
+spawn_energy = 200.0
+flat_energy_grant_per_tick = 0.0
+core_max_hp = 2000.0
+repro_safety_margin = 0.25
+repro_cooldown_ticks = 192
+p_death_on_repro_base = 0.12
+p_damage_on_repro_base = 0.35
+repro_damage_fraction_of_max_hp = 0.12
+repair_energy_per_hp = 1.0
+repair_policy = "core_first"
+collision_damage_scale = 0.15
+move_energy_per_sec_at_half_speed = 1.0
+move_energy_half_speed_ratio = 0.5
+age_metabolism_cap_per_sec = 1.0
+age_metabolism_cap_ticks = 18000.0
+age_metabolism_ref_ticks = 3600.0
+
+[environment]
+energy_model = "local"
+solar_constant = 0.01852
+light_mode = "gradient_y"
+gradient_axis = "y"
+gradient_min = 0.15
+gradient_max = 1.0
+gradient_bright_at = "top"
+crowding_blocks_photosynthesis = false
+overlap_shades_photosynthesis = false
+
+[[environment.hazards]]
+center = [0.0, 0.0]
+radius = 250.0
+damage_per_tick = 0.05
+
+[run]
+master_seed = 1
+max_ticks = 2000
+snapshot_interval = 100
+metrics_path = "metrics_hazard_lab.jsonl"

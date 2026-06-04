@@ -141,6 +141,8 @@ pub struct MetricsLine {
     pub mean_core_hp_frac: f32,
     #[serde(serialize_with = "serialize_rounded_f32")]
     pub repair_energy_spent: f32,
+    #[serde(serialize_with = "serialize_rounded_f32")]
+    pub mean_greenness: f32,
 }
 
 pub fn round_metric(x: f32) -> f64 {
@@ -203,6 +205,7 @@ pub fn build_metrics_line(
     skin_hardnesses: &[f32],
     core_hp_fracs: &[f32],
     repair_energy_spent: f32,
+    greennesses: &[f32],
 ) -> MetricsLine {
     let population = energies.len() as u32;
     let mean_energy = if population == 0 {
@@ -229,6 +232,12 @@ pub fn build_metrics_line(
         0.0
     } else {
         core_hp_fracs.iter().sum::<f32>() / core_hp_fracs.len() as f32
+    };
+
+    let mean_greenness = if greennesses.is_empty() {
+        0.0
+    } else {
+        greennesses.iter().sum::<f32>() / greennesses.len() as f32
     };
 
     let (mean_age_metabolism_scale, min_age_metabolism_scale, max_age_metabolism_scale) =
@@ -285,6 +294,7 @@ pub fn build_metrics_line(
         mean_skin_hardness,
         mean_core_hp_frac,
         repair_energy_spent,
+        mean_greenness,
     }
 }
 
@@ -314,6 +324,7 @@ pub fn metrics_sample(
     let mut genotype_keys = Vec::new();
     let mut skin_hardnesses = Vec::new();
     let mut core_hp_fracs = Vec::new();
+    let mut greennesses = Vec::new();
 
     for (energy, phenotype, genome, agent, health) in &query {
         energies.push(energy.internal_energy);
@@ -329,6 +340,7 @@ pub fn metrics_sample(
             0.0
         };
         core_hp_fracs.push(frac);
+        greennesses.push(phenotype.0.greenness);
     }
 
     let repair_spent = repair_stats.energy_spent_this_period;
@@ -344,6 +356,7 @@ pub fn metrics_sample(
         &skin_hardnesses,
         &core_hp_fracs,
         repair_spent,
+        &greennesses,
     );
 
     if let Err(err) = writer.write_line(&line) {
@@ -371,6 +384,7 @@ mod tests {
         counters.record_death(DeathReason::AgeExceeded);
         let line = build_metrics_line(
             60, &counters, &[1.0], &[0.5], &[3000.0], &[], &[12.0], &[], &[0.2], &[0.9], 1.5,
+            &[0.6],
         );
         assert_eq!(line.deaths, 3);
         assert_eq!(
@@ -397,6 +411,7 @@ mod tests {
             &[0.0, 0.5],
             &[1.0, 0.8],
             0.0,
+            &[0.5, 0.7],
         );
         let json = serde_json::to_string(&line).unwrap();
         for key in [
@@ -419,6 +434,7 @@ mod tests {
             "mean_skin_hardness",
             "mean_core_hp_frac",
             "repair_energy_spent",
+            "mean_greenness",
         ] {
             assert!(json.contains(key), "missing {key} in {json}");
         }
@@ -440,9 +456,11 @@ mod tests {
             &[0.25],
             &[0.75],
             2.5,
+            &[0.8],
         );
         assert_eq!(round_metric(line.mean_skin_hardness), 0.25);
         assert_eq!(round_metric(line.mean_core_hp_frac), 0.75);
         assert_eq!(round_metric(line.repair_energy_spent), 2.5);
+        assert_eq!(round_metric(line.mean_greenness), 0.8);
     }
 }

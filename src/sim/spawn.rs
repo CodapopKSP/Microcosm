@@ -7,7 +7,7 @@ use crate::config::{SimConfig, WorldConfig};
 use super::agent_material::AgentColorMaterial;
 use crate::genome::{decode, Genome as GenomeData, Phenotype as PhenotypeData};
 
-use super::components::{HazardExposure, LifeBundle, LightExposure, Velocity};
+use super::components::{HazardExposure, LifeBundle, LightExposure, VentExposure, Velocity};
 use super::world::{NextEntityId, SimRng, WorldBounds};
 
 /// Agent mesh Z (draw order comes from [`AgentColorMaterial::depth_bias`](super::agent_material::AgentColorMaterial)).
@@ -77,6 +77,7 @@ pub fn build_offspring_spawn_params(
 ) -> SpawnParams {
     let color = phenotype_to_color(&phenotype);
     let body_radius = phenotype.body_radius;
+    // Newborn vitality is a full pool at endowment — not the adult species cap (see GENOME.md).
     let life = LifeBundle::from_parts_with_vitals(
         genome,
         phenotype,
@@ -85,6 +86,7 @@ pub fn build_offspring_spawn_params(
         parent_id,
         generation,
         initial_energy,
+        initial_core_hp,
         initial_core_hp,
     );
 
@@ -203,6 +205,7 @@ pub fn spawn_agent_entity(
             Velocity(params.velocity),
             LightExposure(0.0),
             HazardExposure::default(),
+            VentExposure::default(),
             Mesh2d(meshes.add(Circle::new(params.body_radius))),
             MeshMaterial2d(materials.add(AgentColorMaterial::new(params.color, lineage_id))),
             Transform::from_translation(params.position.extend(AGENT_MESH_Z)),

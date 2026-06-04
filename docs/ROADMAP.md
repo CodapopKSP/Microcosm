@@ -2,7 +2,7 @@
 
 Phased implementation plan from the current proof of concept through sexual reproduction. Each phase lists scope, acceptance criteria, and explicit **out of scope** items to prevent creep.
 
-**Current state:** Phase 3 complete ([`src/main.rs`](../src/main.rs), [PHASE_1.md](PHASE_1.md), [PHASE_2.md](PHASE_2.md), [PHASE_3.md](PHASE_3.md)).
+**Current state:** Phase 4 complete ([`src/main.rs`](../src/main.rs), [PHASE_1.md](PHASE_1.md), [PHASE_2.md](PHASE_2.md), [PHASE_3.md](PHASE_3.md), [PHASE_4.md](PHASE_4.md)). Phase 5 plan: [PHASE_5.md](PHASE_5.md).
 
 ## Overview
 
@@ -12,7 +12,7 @@ Phased implementation plan from the current proof of concept through sexual repr
 | 1 | Genome, energy, health, risky repro | Done |
 | 2 | Light + photosynthesis (local energy) | Done |
 | 3 | Headless, metrics, evolvable lifespan | Done |
-| 4 | Hazards, damage, skin, green photosynthesis | Planned |
+| 4 | Hazards, damage, skin, green photosynthesis | Done |
 | 5 | Sensors, vents, chemo threshold | Planned |
 | 6 | Soup, spatial energy | Planned |
 | 7 | Appendage tree + rendering | Planned |
@@ -115,11 +115,11 @@ Phased implementation plan from the current proof of concept through sexual repr
 
 - Hazards, morphology, pool energy model.
 - Config-only max age without a heritable locus (unless added later as a hard ceiling).
-- Color-mediated photosynthesis tradeoff (lands in Phase 4).
+- Color-mediated photosynthesis tradeoff (done in Phase 4).
 
 ---
 
-## Phase 4 — Hazards, armor, per-part health, green photosynthesis
+## Phase 4 — Hazards, armor, per-part health, green photosynthesis (done)
 
 **Detailed plan:** [PHASE_4.md](PHASE_4.md) (checklist, sub-phases 4A–4G, hazard/collision/repair and green-niche design).
 
@@ -132,13 +132,13 @@ Phased implementation plan from the current proof of concept through sexual repr
 - Repair policies consuming energy.
 - **Green photosynthesis niche:** greenness from `color_r` / `color_g` / `color_b`; photosynthesis buff on local gain; smaller metabolism penalty on the same axis; config tuning (`[genetics.color_photosynthesis]` or decode ranges); color loci become **Tradeoff** in [GENOME.md](GENOME.md).
 
-**Acceptance**
+**Acceptance** (see `cargo test` — `sim::acceptance::`, `genome::phenotype::`, `sim::systems::interactions::`, `sim::systems::healing::`, `sim::metrics::`)
 
 - High-hardness entities survive hazard longer at equal energy but grow slower in safe zones (upkeep + move penalty).
-- Repair drains energy measurably in metrics.
+- Repair drains energy measurably (`repair_energy_spent` in JSONL when damage + repair run).
 - Headless A/B: high-G / low-RB ancestor gains more net energy in bright `gradient_y` than an otherwise-identical low-G control; pays measurably higher metabolism per tick.
-- Unit test: metabolism penalty from greenness is strictly less than photosynthesis buff at the same greenness (reference light level documented in [PHASE_4.md](PHASE_4.md#47--green-photosynthesis-niche-canonical)).
-- Metrics: `color_bins` and mean energy diverge when greenness differs across seeded 5k-tick runs.
+- Unit test: metabolism penalty from greenness is strictly less than photosynthesis buff at reference light ([PHASE_4.md §4.7](PHASE_4.md#47--green-photosynthesis-niche-canonical)).
+- Metrics: survivor `color_bins` diverge when ancestor color differs across seeded 5k-tick runs.
 
 **Out of scope**
 
@@ -148,6 +148,8 @@ Phased implementation plan from the current proof of concept through sexual repr
 ---
 
 ## Phase 5 — Sensors and thermal vents
+
+**Detailed plan:** [PHASE_5.md](PHASE_5.md) (checklist, sub-phases 5A–5F, vent/chemo/sensor/taxis design).
 
 **Scope**
 
@@ -272,6 +274,7 @@ When implementation diverges from docs, update the relevant `docs/*.md` in the s
 - [PHASE_2.md](PHASE_2.md) — Phase 2 light field, Model A gain (complete)
 - [PHASE_3.md](PHASE_3.md) — Phase 3 headless CLI, metrics, evolvable lifespan / old-age death
 - [PHASE_4.md](PHASE_4.md) — Phase 4 hazards, collision damage, armor, repair, green photosynthesis niche
+- [PHASE_5.md](PHASE_5.md) — Phase 5 thermal vents, chemo threshold, core sensors, light taxis
 - [PHASE_9.md](PHASE_9.md) — Phase 9 seasons, climate cycles, environment_tick modulation
 - [VISION.md](VISION.md) — Project goals
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Module targets per phase

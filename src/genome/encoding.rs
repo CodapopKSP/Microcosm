@@ -21,12 +21,20 @@ pub mod core {
     pub const REPRO_THRESHOLD: usize = 10;
     pub const REPRO_COST: usize = 12;
     pub const OFFSPRING_ENDOWMENT: usize = 14;
-    pub const REPRO_COOLDOWN: usize = 16;
-    pub const REPRO_RISK_FACTOR: usize = 17;
+    /// Per-tick movement intent: `raw / 255` = probability of moving (0 = never, 255 = always).
+    pub const DESIRE_TO_MOVE: usize = 16;
+    /// Legacy alias (was `repro_cooldown`; config-only cooldown since genome revision #4).
+    pub const RESERVED_16: usize = DESIRE_TO_MOVE;
+    /// Reserved (was `repro_risk_factor`; removed in genome revision #5).
+    pub const RESERVED_17: usize = 17;
     pub const SKIN_HARDNESS: usize = 18;
-    pub const REPAIR_EFFICIENCY: usize = 20;
+    pub const REPAIR_RATE: usize = 20;
+    /// Legacy alias for [`REPAIR_RATE`] (was `repair_efficiency`).
+    pub const REPAIR_EFFICIENCY: usize = REPAIR_RATE;
     pub const CHEMO_POTENTIAL: usize = 22;
-    pub const MAX_SPEED: usize = 24;
+    pub const MOVEMENT_PACE: usize = 24;
+    /// Legacy alias for [`MOVEMENT_PACE`].
+    pub const MAX_SPEED: usize = MOVEMENT_PACE;
     pub const MAX_AGE: usize = 26;
 }
 
@@ -229,28 +237,34 @@ impl Genome {
         self.read_u16_be_at_core(core::OFFSPRING_ENDOWMENT)
     }
 
-    pub fn repro_cooldown_raw(&self) -> Result<u8, GenomeError> {
-        self.read_u8_at_core(core::REPRO_COOLDOWN)
-    }
-
-    pub fn repro_risk_factor_raw(&self) -> Result<u8, GenomeError> {
-        self.read_u8_at_core(core::REPRO_RISK_FACTOR)
+    pub fn desire_to_move_raw(&self) -> Result<u8, GenomeError> {
+        self.read_u8_at_core(core::DESIRE_TO_MOVE)
     }
 
     pub fn skin_hardness_raw(&self) -> Result<u16, GenomeError> {
         self.read_u16_be_at_core(core::SKIN_HARDNESS)
     }
 
+    pub fn repair_rate_raw(&self) -> Result<u16, GenomeError> {
+        self.read_u16_be_at_core(core::REPAIR_RATE)
+    }
+
+    /// Legacy alias for [`repair_rate_raw`].
     pub fn repair_efficiency_raw(&self) -> Result<u16, GenomeError> {
-        self.read_u16_be_at_core(core::REPAIR_EFFICIENCY)
+        self.repair_rate_raw()
     }
 
     pub fn chemo_potential_raw(&self) -> Result<u16, GenomeError> {
         self.read_u16_be_at_core(core::CHEMO_POTENTIAL)
     }
 
+    pub fn movement_pace_raw(&self) -> Result<u16, GenomeError> {
+        self.read_u16_be_at_core(core::MOVEMENT_PACE)
+    }
+
+    /// Legacy alias for [`movement_pace_raw`].
     pub fn max_speed_raw(&self) -> Result<u16, GenomeError> {
-        self.read_u16_be_at_core(core::MAX_SPEED)
+        self.movement_pace_raw()
     }
 
     pub fn max_age_raw(&self) -> Result<u16, GenomeError> {
@@ -286,15 +300,15 @@ mod tests {
         assert_eq!(g.photo_strength_raw().unwrap(), 0xFFFF);
         assert_eq!(g.metabolism_base_raw().unwrap(), 0x3000);
         assert_eq!(g.locomotion_investment_raw().unwrap(), 0x2800);
-        assert_eq!(g.repro_threshold_raw().unwrap(), 0xFFFF);
+        assert_eq!(g.repro_threshold_raw().unwrap(), 0x0AF6);
         assert_eq!(g.repro_cost_raw().unwrap(), 0x4000);
-        assert_eq!(g.offspring_endowment_raw().unwrap(), 0xFFFF);
-        assert_eq!(g.repro_cooldown_raw().unwrap(), 8);
-        assert_eq!(g.repro_risk_factor_raw().unwrap(), 0x80);
+        assert_eq!(g.offspring_endowment_raw().unwrap(), 0x0AF6);
+        assert_eq!(g.desire_to_move_raw().unwrap(), 0);
+        assert_eq!(g.read_u8_at_core(core::RESERVED_17).unwrap(), 0x80);
         assert_eq!(g.skin_hardness_raw().unwrap(), 0);
-        assert_eq!(g.repair_efficiency_raw().unwrap(), 0x8000);
+        assert_eq!(g.repair_rate_raw().unwrap(), 0x5555);
         assert_eq!(g.chemo_potential_raw().unwrap(), 0);
-        assert_eq!(g.max_speed_raw().unwrap(), 0);
+        assert_eq!(g.movement_pace_raw().unwrap(), 0x5555);
         assert_eq!(g.max_age_raw().unwrap(), 0x8000);
     }
 

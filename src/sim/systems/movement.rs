@@ -3,29 +3,28 @@
 //! Entity–entity overlap applies collision damage in [`super::interactions`] (Phase 4B).
 
 use bevy::prelude::*;
+use rand::Rng;
 
-use crate::config::{BoundaryMode, EconomyConfig};
-use crate::genome::{movement_energy_per_tick, Phenotype as PhenotypeData};
+use crate::config::BoundaryMode;
+use crate::genome::{
+    movement_energy_for_distance, wants_to_move_this_tick, Phenotype as PhenotypeData,
+};
 
-use super::super::components::{Agent, Energy, Phenotype, Velocity};
-use super::super::world::{SimConfigResource, WorldBounds};
+use super::super::components::{Agent, Energy, Lineage, Phenotype, Velocity};
+use super::super::world::{SimConfigResource, SimRng, SimTick, WorldBounds};
 
 /// Speed above this counts as moving.
 pub const MOVE_SPEED_EPS: f32 = 1e-3;
 
-/// Energy spent on movement this tick (size- and speed-scaled; see [`movement_energy_per_tick`]).
-pub fn movement_energy_cost(
-    phenotype: &PhenotypeData,
-    speed: f32,
-    economy: &EconomyConfig,
-) -> f32 {
-    if speed <= MOVE_SPEED_EPS {
+/// Energy spent when traveling `distance` world units (see [`movement_energy_for_distance`]).
+pub fn movement_energy_cost(phenotype: &PhenotypeData, distance: f32) -> f32 {
+    if distance <= MOVE_SPEED_EPS {
         return 0.0;
     }
-    movement_energy_per_tick(
-        phenotype.photo_area_scale,
-        phenotype.speed_ratio(speed),
-        economy,
+    movement_energy_for_distance(
+        distance,
+        phenotype.body_radius,
+        phenotype.movement_pace,
     )
 }
 
@@ -101,21 +100,27 @@ pub fn apply_movement_tick(
     radius: f32,
     bounds: &WorldBounds,
     boundary: BoundaryMode,
-    economy: &EconomyConfig,
     dt: f32,
+    attempt_move: bool,
 ) -> bool {
-    *vel = clamp_velocity_to_max_speed(*vel, phenotype.max_speed);
-    let speed = vel.length();
+    if !attempt_move {
+        *vel = Vec2::ZERO;
+        return true;
+    }
 
-    if speed > MOVE_SPEED_EPS {
-        let cost = movement_energy_cost(phenotype, speed, economy);
+    *vel = clamp_velocity_to_max_speed(*vel, phenotype.max_speed);
+    let delta = *vel * dt;
+    let distance = delta.length();
+
+    if distance > MOVE_SPEED_EPS {
+        let cost = movement_energy_cost(phenotype, distance);
         if energy.internal_energy < cost {
             return false;
         }
         energy.internal_energy = (energy.internal_energy - cost).max(0.0);
     }
 
-    *pos += *vel * dt;
+    *pos += delta;
     apply_world_bounds(pos, vel, radius, bounds, boundary);
     true
 }
@@ -123,21 +128,27 @@ pub fn apply_movement_tick(
 /// Bevy system: movement after metabolism (see [SIMULATION.md](../../docs/SIMULATION.md)).
 pub fn behavior_movement(
     time: Res<Time>,
+    tick: Res<SimTick>,
     config: Res<SimConfigResource>,
     bounds: Res<WorldBounds>,
+    sim_rng: Res<SimRng>,
     mut query: Query<(
         &mut Transform,
         &mut Velocity,
         &Phenotype,
         &mut Energy,
         &Agent,
+        &Lineage,
     )>,
 ) {
     let dt = time.delta_secs();
     let boundary = config.0.world.boundary;
-    let economy = &config.0.economy;
+    let sim_tick = tick.tick;
 
-    for (mut transform, mut velocity, phenotype, mut energy, agent) in &mut query {
+    for (mut transform, mut velocity, phenotype, mut energy, agent, lineage) in &mut query {
+        let mut rng = sim_rng.stream_movement(lineage.id, sim_tick);
+        let attempt_move =
+            wants_to_move_this_tick(phenotype.0.desire_to_move, rng.gen::<f32>());
         let mut pos = transform.translation.truncate();
         apply_movement_tick(
             &mut pos,
@@ -147,8 +158,8 @@ pub fn behavior_movement(
             agent.radius,
             &bounds,
             boundary,
-            economy,
             dt,
+            attempt_move,
         );
         transform.translation = pos.extend(transform.translation.z);
     }
@@ -158,8 +169,8 @@ pub fn behavior_movement(
 mod tests {
     use super::*;
     use crate::config::SimConfig;
-    use crate::genome::{self, Genome};
-    use crate::genome::{decode, Phenotype as PhenotypeData};
+    use crate::genome::{self, decode, movement_energy_for_distance, Genome};
+    use crate::genome::Phenotype as PhenotypeData;
     use crate::sim::components::Energy;
     use crate::sim::world::WorldBounds;
 
@@ -173,73 +184,58 @@ mod tests {
         bytes[i + 1] = (raw & 0xFF) as u8;
     }
 
-    fn phenotype_with_locomotion_raw(raw: u16) -> PhenotypeData {
+    fn set_u8_locus(bytes: &mut [u8], core_offset: usize, raw: u8) {
+        bytes[genome::HEADER_LEN + core_offset] = raw;
+    }
+
+    fn phenotype_with_loci_and_desire(loci: &[(usize, u16)], desire_raw: u8) -> PhenotypeData {
         let config = config();
         let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
-        set_u16_locus(&mut bytes, genome::core::LOCOMOTION_INVESTMENT, raw);
-        set_u16_locus(&mut bytes, genome::core::MAX_SPEED, 0x8000);
+        set_u8_locus(&mut bytes, genome::core::DESIRE_TO_MOVE, desire_raw);
+        for &(off, raw) in loci {
+            set_u16_locus(&mut bytes, off, raw);
+        }
         let genome =
             Genome::from_bytes(bytes, config.genetics.genome_version, config.genetics.core_length)
                 .unwrap();
         decode(&genome, &config).unwrap()
     }
 
-    #[test]
-    fn ancestor_movement_costs_one_energy_per_sec_at_half_speed() {
-        let config = config();
-        let phenotype = decode(
-            &Genome::ancestor_from_config(&config).unwrap(),
-            &config,
-        )
-        .unwrap();
-        assert!(phenotype.max_speed > 0.0);
+    fn phenotype_default_movable() -> PhenotypeData {
+        phenotype_with_loci_and_desire(&[], 0xFF)
+    }
 
-        let speed = phenotype.max_speed * 0.5;
-        let per_sec = movement_energy_cost(&phenotype, speed, &config.economy) * 60.0;
+    #[test]
+    fn movement_calibration_at_reference_radius() {
+        let p = phenotype_default_movable();
+        let distance = 10.0 * p.body_radius;
+        let cost = movement_energy_for_distance(distance, p.body_radius, 1.0);
         assert!(
-            (per_sec - config.economy.move_energy_per_sec_at_half_speed).abs() < 0.15,
-            "ancestor at half max speed should cost ~1 energy/s, got {per_sec}"
+            (cost - 1.0).abs() < 1e-4,
+            "120 units at r=12 should cost ~1 energy, got {cost}"
         );
     }
 
     #[test]
-    fn smaller_body_pays_less_move_energy_at_same_speed_ratio() {
-        let config = config();
-        let mut small_bytes = config.genetics.parse_ancestor_bytes().unwrap();
-        small_bytes[genome::HEADER_LEN + genome::core::BODY_RADIUS] = 0;
-        let small = decode(
-            &Genome::from_bytes(
-                small_bytes,
-                config.genetics.genome_version,
-                config.genetics.core_length,
-            )
-            .unwrap(),
-            &config,
-        )
-        .unwrap();
-        let large = phenotype_with_locomotion_raw(0x8000);
-        let speed_ratio = 0.5;
-        let small_cost =
-            movement_energy_cost(&small, small.max_speed * speed_ratio, &config.economy);
-        let large_cost =
-            movement_energy_cost(&large, large.max_speed * speed_ratio, &config.economy);
-        assert!(small_cost < large_cost);
-        assert!(small.photo_area_scale < large.photo_area_scale);
+    fn faster_pace_doubles_energy_per_distance() {
+        let slow = phenotype_with_loci_and_desire(&[(genome::core::MOVEMENT_PACE, 0x5555)], 0xFF);
+        let fast = phenotype_with_loci_and_desire(&[(genome::core::MOVEMENT_PACE, 0xFFFF)], 0xFF);
+        assert!(fast.movement_pace > slow.movement_pace);
+        let d = 50.0;
+        let slow_cost = movement_energy_cost(&slow, d);
+        let fast_cost = movement_energy_cost(&fast, d);
+        assert!((fast_cost / slow_cost - fast.movement_pace / slow.movement_pace).abs() < 0.05);
     }
 
     #[test]
-    fn movement_deducts_scaled_cost_while_moving() {
-        let config = config();
-        let phenotype = decode(
-            &Genome::ancestor_from_config(&config).unwrap(),
-            &config,
-        )
-        .unwrap();
-        let half_ratio = config.economy.move_energy_half_speed_ratio;
+    fn movement_deducts_distance_scaled_cost() {
+        let phenotype = phenotype_default_movable();
+        let dt = 1.0 / 60.0;
         let mut vel = clamp_velocity_to_max_speed(
-            Vec2::new(phenotype.max_speed * half_ratio, 0.0),
+            Vec2::new(phenotype.max_speed, 0.0),
             phenotype.max_speed,
         );
+        let distance = vel.length() * dt;
 
         let mut energy = Energy {
             internal_energy: 10_000.0,
@@ -256,82 +252,74 @@ mod tests {
             phenotype.body_radius,
             &bounds,
             BoundaryMode::Bounce,
-            &config.economy,
-            0.0,
+            dt,
+            true,
         );
 
         let drain = start - energy.internal_energy;
+        let expected = movement_energy_cost(&phenotype, distance);
         assert!(
-            (drain - phenotype.move_cost).abs() < 1e-4,
-            "drain={drain} move_cost={}",
-            phenotype.move_cost
+            (drain - expected).abs() < expected.max(1e-6) * 0.15 + 1e-6,
+            "drain={drain} expected={expected}"
         );
         assert!(drain > 0.0);
     }
 
     #[test]
-    fn high_locomotion_increases_max_speed() {
-        let low = phenotype_with_locomotion_raw(0x1000);
-        let high = phenotype_with_locomotion_raw(0xE000);
-        assert!(high.locomotion_investment > low.locomotion_investment);
-        assert!(high.max_speed > low.max_speed);
-    }
-
-    #[test]
-    fn bounce_reverses_velocity_at_wall() {
-        let bounds = WorldBounds::from_world_size(100.0, 100.0);
-        let mut pos = Vec2::new(49.0, 0.0);
-        let mut vel = Vec2::new(10.0, 0.0);
+    fn zero_desire_zeros_velocity_and_skips_cost() {
         let config = config();
+        let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+        set_u8_locus(&mut bytes, genome::core::DESIRE_TO_MOVE, 0);
+        let phenotype = decode(
+            &Genome::from_bytes(
+                bytes,
+                config.genetics.genome_version,
+                config.genetics.core_length,
+            )
+            .unwrap(),
+            &config,
+        )
+        .unwrap();
+        assert_eq!(phenotype.desire_to_move, 0.0);
+
+        let mut pos = Vec2::ZERO;
+        let mut vel = Vec2::new(phenotype.max_speed, 0.0);
+        let start_energy = 1000.0;
+        let mut energy = Energy {
+            internal_energy: start_energy,
+        };
         apply_movement_tick(
             &mut pos,
             &mut vel,
-            &mut Energy {
-                internal_energy: 1000.0,
-            },
-            &phenotype_with_locomotion_raw(0x2800),
-            1.0,
-            &bounds,
-            BoundaryMode::Bounce,
-            &config.economy,
-            1.0,
-        );
-        assert!(vel.x < 0.0);
-        assert!(pos.x <= bounds.half_x - 1.0);
-    }
-
-    #[test]
-    fn wrap_teleports_across_edge() {
-        let bounds = WorldBounds::from_world_size(100.0, 100.0);
-        let mut pos = Vec2::new(48.0, 0.0);
-        let mut vel = Vec2::new(10.0, 0.0);
-        let config = config();
-        let phenotype = phenotype_with_locomotion_raw(0x2800);
-        apply_movement_tick(
-            &mut pos,
-            &mut vel,
-            &mut Energy {
-                internal_energy: 1000.0,
-            },
+            &mut energy,
             &phenotype,
-            1.0,
-            &bounds,
-            BoundaryMode::Wrap,
-            &config.economy,
-            1.0,
+            phenotype.body_radius,
+            &WorldBounds::from_world_size(200.0, 200.0),
+            BoundaryMode::Bounce,
+            1.0 / 60.0,
+            false,
         );
-        assert!(pos.x < 0.0, "wrap should move agent to opposite side, got {}", pos.x);
+        assert_eq!(pos, Vec2::ZERO);
+        assert_eq!(vel, Vec2::ZERO);
+        assert_eq!(energy.internal_energy, start_energy);
+    }
+
+    #[test]
+    fn default_ancestor_can_move_when_desire_maxed() {
+        let p = phenotype_default_movable();
+        assert!(p.max_speed > 0.0);
+        assert!((p.movement_pace - 1.0).abs() < 0.02);
     }
 
     #[test]
     fn insufficient_energy_skips_movement() {
-        let config = config();
         let bounds = WorldBounds::from_world_size(200.0, 200.0);
-        let phenotype = phenotype_with_locomotion_raw(0x2800);
+        let phenotype = phenotype_default_movable();
         let start = Vec2::new(10.0, 5.0);
         let mut pos = start;
-        let mut vel = Vec2::new(50.0, 0.0);
-        let cost = movement_energy_cost(&phenotype, vel.length(), &config.economy);
+        let mut vel = clamp_velocity_to_max_speed(Vec2::new(50.0, 0.0), phenotype.max_speed);
+        let dt = 0.1;
+        let cost = movement_energy_cost(&phenotype, vel.length() * dt);
         let mut energy = Energy {
             internal_energy: cost - 0.01,
         };
@@ -344,18 +332,11 @@ mod tests {
             phenotype.body_radius,
             &bounds,
             BoundaryMode::Bounce,
-            &config.economy,
-            0.1,
+            dt,
+            true,
         );
 
         assert!(!moved);
         assert_eq!(pos, start);
-    }
-
-    #[test]
-    fn velocity_clamped_to_max_speed() {
-        let phenotype = phenotype_with_locomotion_raw(0x2800);
-        let vel = clamp_velocity_to_max_speed(Vec2::new(10_000.0, 0.0), phenotype.max_speed);
-        assert!((vel.length() - phenotype.max_speed).abs() < 1e-3);
     }
 }

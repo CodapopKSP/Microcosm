@@ -30,7 +30,7 @@ Detailed implementation plan for **Phase 3** from [ROADMAP.md](ROADMAP.md). Phas
 
 | Item | Lands in |
 |------|----------|
-| Hazards, collision damage, per-part HP | Phase 4 |
+| Hazards, collision damage, per-part HP | Phase 4 (done — see [PHASE_4.md](PHASE_4.md)) |
 | Vents, soup, spatial pool | Phases 5–6 |
 | Morphology tree | Phase 7 |
 | Sexual reproduction | Phase 8 |
@@ -160,6 +160,19 @@ One JSON object per line. All fields **required** unless marked optional.
 | `color_bins` | object | Map `"r,g,b"` (quantized 0–255) → count; coarse diversity proxy |
 | `radius_bins` | object | Map `"6"`, `"12"`, … (rounded radius) → count |
 | `genotype_hash_histogram` | object | Optional; omit if empty. Coarse fold of genome bytes → count |
+
+### Phase 4 extensions (JSONL)
+
+Added in Phase 4; **required** in headless metrics output (see [`sim/metrics.rs`](../src/sim/metrics.rs)):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mean_skin_hardness` | f32 | Population mean decoded hardness (4 dp) |
+| `mean_core_hp_frac` | f32 | Mean `core_hp / core_max_hp` (4 dp) |
+| `repair_energy_spent` | f32 | Sum repair energy since previous snapshot (4 dp) |
+| `mean_greenness` | f32 | Population mean greenness (4 dp) |
+
+Phase 3 lifespan fields use `mean_age_metabolism_scale` / min / max (log-age gene), not `mean_max_age_ticks`.
 
 **Naming rule:** Rust `DeathReason::AgeExceeded` → JSON `deaths_age_exceeded` (snake_case, `deaths_` prefix). Same pattern for other death reasons.
 

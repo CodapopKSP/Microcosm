@@ -74,11 +74,11 @@ Order follows [SIMULATION.md](SIMULATION.md):
 **Steps:**
 
 1. Pay `repro_threshold` energy from parent; parent core HP unchanged ([GENOME.md](GENOME.md) energy→HP transfer).
-2. Roll `p_death` and `p_damage` from [GENOME.md](GENOME.md) (scaled by `repro_risk_factor`).
+2. Roll `p_death` and `p_damage` from [GENOME.md](GENOME.md) (config rates; death scales with post-transfer energy margin).
 3. On success: clone genome, apply `mutations_per_offspring`, decode child.
 4. Child spawns with `internal_energy = 0` and `core_hp` from converted energy (`offspring_endowment` cap).
 5. Place child near parent; set `Lineage.parent_id`, increment `generation`.
-6. Reset parent cooldown from `phenotype.repro_cooldown`.
+6. Reset parent cooldown from `economy.repro_cooldown_ticks`.
 
 **Failure modes:**
 
@@ -87,7 +87,7 @@ Order follows [SIMULATION.md](SIMULATION.md):
 - Stillborn — rolls passed but child genome invalid (parent survives, transfer already paid)
 - `p_damage` — parent survives but loses a fraction of `core_max_hp`
 
-Short cooldown increases reproduction attempts but amplifies risk when energy is chronically low.
+Fixed cooldown (`economy.repro_cooldown_ticks`) limits attempt rate when energy refills quickly; `repro_threshold` remains the main economic cost.
 
 ### Death
 
@@ -103,15 +103,15 @@ Old-age despawn was removed; aging adds logarithmic metabolism instead ([GENOME.
 
 `internal_energy == 0` is **not** fatal. Unpaid metabolic deficit (costs minus photosynthetic gain) drains `core_hp` each tick until the agent dies as `CoreDestroyed`.
 
-**Phase 0 note:** collision overlap currently despawns both entities. This is **removed** in Phase 1 default config; collisions become damage (Phase 4) or ignored.
+**Phase 0 note:** collision overlap used to despawn both entities. Default config applies **collision damage** in `interactions` (Phase 4); death only via `death_and_despawn`.
 
 ## Interactions
 
 | Interaction | Phase | Behavior |
 |-------------|-------|----------|
 | World bounds | 0+ | `bounce` or `wrap` per config |
-| Entity–entity collision | 4+ | Damage from relative speed; no instant despawn |
-| Hazard zones | 4+ | Damage per tick; hardness mitigates |
+| Entity–entity collision | 4 (live) | Damage from relative speed; no instant despawn |
+| Hazard zones | 4 (live) | Damage per tick; hardness mitigates |
 | Predation / absorption | future | Optional; out of v1 scope |
 
 ### Damage routing (Phase 4 vs 7)

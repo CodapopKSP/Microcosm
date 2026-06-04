@@ -1,7 +1,7 @@
 //! Energy-funded HP repair after damage (Phase 4D).
 //!
-//! Runs after [`super::interactions`](super::interactions); cost per HP:
-//! `(hp_repaired / repair_efficiency) * repair_energy_per_hp`.
+//! Cost per HP: `hp_repaired * repair_energy_per_hp`. Throughput per tick is capped by
+//! `repair_rate * economy.repair_hp_per_tick_at_rate_1` ([GENOME_REVISIONS.md](../../../docs/GENOME_REVISIONS.md) #6).
 
 use bevy::prelude::*;
 
@@ -20,17 +20,17 @@ struct RepairSlot {
     max: f32,
 }
 
-/// Energy cost to restore `hp_repaired` HP at given efficiency.
-pub fn repair_energy_cost(
-    hp_repaired: f32,
-    repair_efficiency: f32,
-    repair_energy_per_hp: f32,
-) -> f32 {
+/// Energy cost to restore `hp_repaired` HP at the fixed config exchange rate.
+pub fn repair_energy_cost(hp_repaired: f32, repair_energy_per_hp: f32) -> f32 {
     if hp_repaired <= 0.0 || repair_energy_per_hp <= 0.0 {
         return 0.0;
     }
-    let eff = repair_efficiency.max(1e-6);
-    (hp_repaired / eff) * repair_energy_per_hp
+    hp_repaired * repair_energy_per_hp
+}
+
+/// Max HP that can be restored this tick at the given repair rate.
+pub fn repair_hp_cap_per_tick(repair_rate: f32, economy: &EconomyConfig) -> f32 {
+    repair_rate.max(0.0) * economy.repair_hp_per_tick_at_rate_1
 }
 
 fn part_max_hp(core_max_hp: f32) -> f32 {
@@ -91,7 +91,7 @@ fn apply_hp_to_slot(health: &mut Health, part_index: Option<usize>, hp: f32) {
     }
 }
 
-/// Repair as much HP as energy allows this tick; returns energy spent.
+/// Repair as much HP as energy and `repair_rate` allow this tick; returns energy spent.
 pub fn apply_repair_tick(
     health: &mut Health,
     energy: &mut Energy,
@@ -104,10 +104,20 @@ pub fn apply_repair_tick(
         return 0.0;
     }
 
+    let hp_cap = repair_hp_cap_per_tick(phenotype.repair_rate, economy);
+    if hp_cap <= 1e-6 {
+        return 0.0;
+    }
+
     let mut spent = 0.0;
+    let mut hp_repaired_this_tick = 0.0;
     let mut cursor = symmetric_cursor;
 
     loop {
+        if hp_repaired_this_tick >= hp_cap - 1e-6 {
+            break;
+        }
+
         let slots = collect_damaged_slots(health);
         if slots.is_empty() || energy.internal_energy <= 1e-6 {
             break;
@@ -120,22 +130,19 @@ pub fn apply_repair_tick(
             break;
         }
 
-        let cost_per_hp =
-            economy.repair_energy_per_hp / phenotype.repair_efficiency.max(1e-6);
+        let hp_budget = (hp_cap - hp_repaired_this_tick).max(0.0);
+        let cost_per_hp = economy.repair_energy_per_hp;
         let affordable_hp = energy.internal_energy / cost_per_hp;
         if affordable_hp <= 1e-6 {
             break;
         }
 
-        let hp_repaired = affordable_hp.min(deficit);
-        let cost = repair_energy_cost(
-            hp_repaired,
-            phenotype.repair_efficiency,
-            economy.repair_energy_per_hp,
-        );
+        let hp_repaired = affordable_hp.min(deficit).min(hp_budget);
+        let cost = repair_energy_cost(hp_repaired, economy.repair_energy_per_hp);
         apply_hp_to_slot(health, slot.part_index, hp_repaired);
         energy.internal_energy = (energy.internal_energy - cost).max(0.0);
         spent += cost;
+        hp_repaired_this_tick += hp_repaired;
 
         if policy == RepairPolicy::Symmetric {
             cursor = cursor.wrapping_add(1);
@@ -180,10 +187,10 @@ mod tests {
         bytes[i + 1] = (raw & 0xFF) as u8;
     }
 
-    fn phenotype_with_repair_efficiency(raw: u16) -> (SimConfig, PhenotypeData) {
+    fn phenotype_with_repair_rate(raw: u16) -> (SimConfig, PhenotypeData) {
         let config = SimConfig::load_default().unwrap();
         let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
-        set_u16_locus(&mut bytes, core::REPAIR_EFFICIENCY, raw);
+        set_u16_locus(&mut bytes, core::REPAIR_RATE, raw);
         let genome = Genome::from_bytes(
             bytes,
             config.genetics.genome_version,
@@ -195,8 +202,14 @@ mod tests {
     }
 
     #[test]
+    fn repair_energy_cost_is_linear_in_hp() {
+        assert_eq!(repair_energy_cost(10.0, 1.0), 10.0);
+        assert_eq!(repair_energy_cost(0.0, 1.0), 0.0);
+    }
+
+    #[test]
     fn damaged_core_repairs_and_spends_energy() {
-        let (config, phenotype) = phenotype_with_repair_efficiency(0x8000);
+        let (config, phenotype) = phenotype_with_repair_rate(0x5555);
         let mut health = Health {
             core_hp: 70.0,
             core_max_hp: 100.0,
@@ -217,50 +230,61 @@ mod tests {
         assert!(health.core_hp > 70.0);
         assert!(spent > 0.0);
         assert!(energy.internal_energy < start_energy);
+        let hp_gained = health.core_hp - 70.0;
+        assert!((spent - hp_gained * config.economy.repair_energy_per_hp).abs() < 1e-4);
     }
 
     #[test]
-    fn high_repair_efficiency_costs_less_energy_for_same_hp() {
-        let (config, low_eff) = phenotype_with_repair_efficiency(0x2000);
-        let (_, high_eff) = phenotype_with_repair_efficiency(0xF000);
+    fn fast_repair_rate_drains_more_energy_per_tick() {
+        let (mut config, slow) = phenotype_with_repair_rate(0x1000);
+        let (_, fast) = phenotype_with_repair_rate(0xF000);
+        config.economy.repair_hp_per_tick_at_rate_1 = 5.0;
+        assert!(fast.repair_rate > slow.repair_rate);
 
-        let mut health_low = Health {
+        let mut health_slow = Health {
             core_hp: 50.0,
             core_max_hp: 100.0,
             part_hp: vec![],
         };
-        let mut health_high = health_low.clone();
-        let mut energy_low = Energy {
+        let mut health_fast = health_slow.clone();
+        let mut energy_slow = Energy {
             internal_energy: 100.0,
         };
-        let mut energy_high = energy_low.clone();
+        let mut energy_fast = energy_slow.clone();
 
-        let spent_low = apply_repair_tick(
-            &mut health_low,
-            &mut energy_low,
-            &low_eff,
+        let spent_slow = apply_repair_tick(
+            &mut health_slow,
+            &mut energy_slow,
+            &slow,
             RepairPolicy::CoreFirst,
             &config.economy,
             0,
         );
-        let spent_high = apply_repair_tick(
-            &mut health_high,
-            &mut energy_high,
-            &high_eff,
+        let spent_fast = apply_repair_tick(
+            &mut health_fast,
+            &mut energy_fast,
+            &fast,
             RepairPolicy::CoreFirst,
             &config.economy,
             0,
         );
 
-        let repaired_low = health_low.core_hp - 50.0;
-        let repaired_high = health_high.core_hp - 50.0;
+        let repaired_slow = health_slow.core_hp - 50.0;
+        let repaired_fast = health_fast.core_hp - 50.0;
         assert!(
-            repaired_high >= repaired_low * 0.9,
-            "high efficiency should repair at least as much HP"
+            repaired_fast > repaired_slow,
+            "fast repair_rate should restore more HP per tick (slow={repaired_slow}, fast={repaired_fast})"
         );
         assert!(
-            spent_high < spent_low || repaired_high > repaired_low + 0.5,
-            "high efficiency should cost less energy for comparable repair (low={spent_low}, high={spent_high})"
+            spent_fast > spent_slow,
+            "fast repair should spend more energy per tick (slow={spent_slow}, fast={spent_fast})"
+        );
+        let cost_per_hp_slow = spent_slow / repaired_slow.max(1e-6);
+        let cost_per_hp_fast = spent_fast / repaired_fast.max(1e-6);
+        assert!(
+            (cost_per_hp_slow - config.economy.repair_energy_per_hp).abs() < 1e-4
+                && (cost_per_hp_fast - config.economy.repair_energy_per_hp).abs() < 1e-4,
+            "energy per HP should match config, not vary with repair_rate"
         );
     }
 
@@ -291,7 +315,7 @@ mod tests {
 
     #[test]
     fn zero_repair_energy_per_hp_skips_repair() {
-        let (config, phenotype) = phenotype_with_repair_efficiency(0x8000);
+        let (config, phenotype) = phenotype_with_repair_rate(0x5555);
         let mut economy = config.economy.clone();
         economy.repair_energy_per_hp = 0.0;
         let mut health = Health {

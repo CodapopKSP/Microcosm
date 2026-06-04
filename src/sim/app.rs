@@ -2,6 +2,7 @@
 
 use std::sync::{mpsc, Arc, Mutex};
 
+use bevy::ecs::schedule::ScheduleLabel;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::CapturedScreenshots;
 use bevy::window::ExitCondition;
@@ -13,6 +14,7 @@ use crate::visual::VisualDebugPlugin;
 use super::agent_material::AgentColorMaterialPlugin;
 use super::hazards::HazardField;
 use super::light::LightField;
+use super::vents::VentField;
 use super::spawn::{spawn_initial_population, InitialPopulationStats};
 use super::metrics::{MetricsPeriodCounters, MetricsWriter, RepairStats};
 use super::systems::{
@@ -21,9 +23,14 @@ use super::systems::{
     sense_exposure,
     FailsafeWarnLatch,
 };
+use super::speed::SimSpeed;
 use super::world::{
     advance_sim_tick, NextEntityId, SimConfigResource, SimRng, SimTick, SpawnBlocked, WorldBounds,
 };
+
+/// Label for one full simulation pipeline pass (see [`add_sim_systems`]).
+#[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SimTickSchedule;
 
 /// Visual window or headless batch run ([PHASE_3.md](../../docs/PHASE_3.md) sub-phase 3B).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +59,7 @@ pub fn build_sim_app(sim_config: SimConfig, ancestor: Genome, mode: SimRunMode) 
                 ..default()
             }))
             .add_plugins((AgentColorMaterialPlugin, VisualDebugPlugin))
+            .init_resource::<SimSpeed>()
             .add_systems(Startup, startup_visual);
         }
         SimRunMode::Headless => {
@@ -62,7 +70,7 @@ pub fn build_sim_app(sim_config: SimConfig, ancestor: Genome, mode: SimRunMode) 
             }))
             .add_plugins(AgentColorMaterialPlugin)
             .add_systems(Startup, startup_headless)
-            .add_systems(Update, exit_headless_when_done.after(performance_failsafe));
+            .add_systems(Update, exit_headless_when_done.after(run_sim_tick_schedule));
         }
     }
 
@@ -79,6 +87,7 @@ pub fn insert_sim_resources(app: &mut App, sim_config: SimConfig, ancestor: Geno
     let world_bounds = WorldBounds::from_world_size(sim_config.world.width, sim_config.world.height);
     let light_field = LightField::from_environment(&sim_config.environment, &world_bounds);
     let hazard_field = HazardField::from_environment(&sim_config.environment);
+    let vent_field = VentField::from_environment(&sim_config.environment);
     let sim_rng = SimRng::from_config(&sim_config);
 
     app.insert_resource(SimConfigResource(sim_config))
@@ -86,6 +95,7 @@ pub fn insert_sim_resources(app: &mut App, sim_config: SimConfig, ancestor: Geno
         .insert_resource(world_bounds)
         .insert_resource(light_field)
         .insert_resource(hazard_field)
+        .insert_resource(vent_field)
         .insert_resource(SimTick::default())
         .insert_resource(NextEntityId::new(1))
         .insert_resource(sim_rng)
@@ -104,8 +114,9 @@ pub fn insert_sim_resources(app: &mut App, sim_config: SimConfig, ancestor: Geno
 
 /// Single registration site for the simulation tick chain.
 pub fn add_sim_systems(app: &mut App) {
+    app.init_schedule(SimTickSchedule);
     app.add_systems(
-        Update,
+        SimTickSchedule,
         (
             advance_sim_tick,
             sense_exposure,
@@ -121,6 +132,18 @@ pub fn add_sim_systems(app: &mut App) {
         )
             .chain(),
     );
+    app.add_systems(Update, run_sim_tick_schedule);
+}
+
+/// Run one or more simulation ticks per frame (`SimSpeed` in visual mode; 1× headless).
+pub fn run_sim_tick_schedule(world: &mut World) {
+    let steps = world
+        .get_resource::<SimSpeed>()
+        .map(SimSpeed::multiplier)
+        .unwrap_or(1);
+    for _ in 0..steps {
+        world.run_schedule(SimTickSchedule);
+    }
 }
 
 fn startup_visual(
@@ -144,7 +167,9 @@ fn startup_visual(
         &mut meshes,
         &mut materials,
     ));
-    eprintln!("debug: L=light gradient, H=hazard zones, click=select agent, Esc=clear");
+    eprintln!(
+        "debug: L=light, H=hazards, ↑↓=speed (1x–16x), click=select agent, Esc=clear"
+    );
 }
 
 fn startup_headless(
@@ -234,5 +259,6 @@ mod tests {
         assert!(app.world().contains_resource::<WorldBounds>());
         assert!(app.world().contains_resource::<LightField>());
         assert!(app.world().contains_resource::<HazardField>());
+        assert!(app.world().contains_resource::<VentField>());
     }
 }

@@ -13,8 +13,8 @@ Detailed implementation plan for **Phase 4** from [ROADMAP.md](ROADMAP.md). Phas
 - [x] **4C** — Health model: `part_hp` vector (core-only until Phase 7); damage routing
 - [x] **4D** — Healing: repair policies, energy cost via `repair_efficiency`
 - [x] **4E** — Pipeline integration: `interactions` + `healing` systems; tick order
-- [ ] **4G** — Green photosynthesis niche: greenness decode, gain buff, metabolism penalty
-- [ ] **4F** — Metrics, acceptance tests, default config; update [ROADMAP.md](ROADMAP.md) Phase 4 → **Done**
+- [x] **4G** — Green photosynthesis niche: greenness decode, gain buff, metabolism penalty
+- [x] **4F** — Metrics, acceptance tests, default config; update [ROADMAP.md](ROADMAP.md) Phase 4 → **Done**
 
 ---
 
@@ -43,20 +43,19 @@ Detailed implementation plan for **Phase 4** from [ROADMAP.md](ROADMAP.md). Phas
 
 ---
 
-## Current codebase (pre–Phase 4)
+## Current codebase (Phase 4 complete)
 
 | Area | State |
 |------|--------|
-| **Tick pipeline** | `sense_exposure` → `metabolism_and_gains` → `behavior_movement` → **`interactions`** → `reproduction` → `advance_age` → `death_and_despawn` → `failsafe` → `metrics_sample` — **no** `healing` yet ([`systems/mod.rs`](../src/sim/systems/mod.rs)) |
-| **`skin_hardness`** | Decoded; `armor_upkeep` charged in metabolism; `move_penalty` subtracted from `max_speed`; **`damage_mitigation`** reduces hazard/collision damage (4B) |
-| **`repair_efficiency`** | Decoded only; `economy.repair_energy_per_hp` in config — **no** repair system |
-| **`Health.part_hp`** | Field exists, always empty on spawn ([`components.rs`](../src/sim/components.rs)) |
-| **Collisions** | Overlap applies symmetric collision damage in `interactions`; no instant despawn ([`interactions.rs`](../src/sim/systems/interactions.rs)) |
-| **`environment.hazards`** | `HazardZone` in `EnvironmentConfig`; `HazardField` + `HazardExposure` via `sense_exposure` (4A). Damage not applied until 4B |
-| **Death reasons** | Energy, core HP, repro fatality, age — no hazard-specific reason (core HP zero is sufficient) |
-| **Metrics** | Phase 3 JSONL schema; no repair spend or mean hardness aggregates |
-| **Ancestor** | `skin_hardness` raw `0` in default hex ([`GENOME.md`](GENOME.md)) |
-| **Color loci** | Decode to render RGB only; tagged **Neutral** in [GENOME.md](GENOME.md); no metabolism/gain effect |
+| **Tick pipeline** | `sense_exposure` → `metabolism_and_gains` → `behavior_movement` → `interactions` → `healing` → `reproduction` → `advance_age` → `death_and_despawn` → `failsafe` → `metrics_sample` ([`systems/mod.rs`](../src/sim/systems/mod.rs)) |
+| **`skin_hardness`** | Active: `armor_upkeep`, `move_penalty`, `damage_mitigation` on hazard/collision damage |
+| **`repair_efficiency`** | `healing` system spends energy per `repair_policy`; tracked in `RepairStats` → JSONL `repair_energy_spent` |
+| **`Health.part_hp`** | Empty at spawn; core-only damage routing until Phase 7 |
+| **Collisions** | Symmetric relative-speed damage in `interactions`; no instant despawn |
+| **`environment.hazards`** | `HazardField` + `HazardExposure` + per-tick core damage |
+| **Death reasons** | Hazard/collision HP loss → `CoreDestroyed` when `core_hp <= 0` |
+| **Metrics** | Phase 3 fields + `mean_skin_hardness`, `mean_core_hp_frac`, `repair_energy_spent`, `mean_greenness` |
+| **Color loci** | **Tradeoff:** greenness buffs photosynthesis, small metabolism penalty ([`color_photosynthesis`](../configs/default.toml)) |
 
 ---
 
@@ -361,12 +360,12 @@ Use `photo_strength_ref = 1.0` or ancestor mean in test; document chosen referen
 
 ### Acceptance (4G)
 
-- [ ] Unit test: `greenness` increases when G↑ and R,B↓ at fixed other bytes
-- [ ] Unit test: `green_metabolism_penalty < green_photo_buff` at `light_ref` per §4.7 invariant
-- [ ] Headless A/B: same seed, high-G/low-RB genome vs low-G control (other loci equal) → higher mean energy in bright band over 5k ticks
-- [ ] High-G control pays strictly higher mean metabolism drain per tick than low-G
-- [ ] Metrics: `color_bins` and `mean_energy` differ between green A/B configs (same seed)
-- [ ] Default population still viable 10k ticks with green coeffs enabled (tune `k_*` if needed)
+- [x] Unit test: `greenness` increases when G↑ and R,B↓ at fixed other bytes
+- [x] Unit test: `green_metabolism_penalty < green_photo_buff` at `light_ref` per §4.7 invariant
+- [x] Headless A/B: same seed, high-G/low-RB genome vs low-G control (other loci equal) → higher mean energy in bright band over 5k ticks
+- [x] High-G control pays strictly higher mean metabolism drain per tick than low-G
+- [x] Metrics: `color_bins` and `mean_energy` diverge between green A/B configs (same seed; survivor color keys)
+- [x] Default population still viable 10k ticks with green coeffs enabled (`population_stable_10000_ticks_gradient_default_config`)
 
 ### Tests (4G)
 

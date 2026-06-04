@@ -15,6 +15,12 @@ pub struct HazardExposure {
     pub damage_raw: f32,
 }
 
+/// Raw vent flux from overlapping zones (before chemo scaling; Phase 5A).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct VentExposure {
+    pub vent_flux: f32,
+}
+
 /// Heritable DNA; mutated on reproduction.
 #[derive(Component, Clone)]
 pub struct Genome(pub GenomeData);
@@ -143,6 +149,7 @@ impl LifeBundle {
         initial_energy: f32,
     ) -> Self {
         let core_max_hp = phenotype.core_max_hp;
+        let max_hp = phenotype.core_max_hp;
         Self::from_parts_with_vitals(
             genome,
             phenotype,
@@ -151,11 +158,15 @@ impl LifeBundle {
             parent_id,
             generation,
             initial_energy,
-            core_max_hp,
+            max_hp,
+            max_hp,
         )
     }
 
-    /// Build lifecycle bundle with explicit energy and core HP.
+    /// Build lifecycle bundle with explicit energy, core HP, and per-entity max HP.
+    ///
+    /// Offspring use `initial_core_max_hp = initial_core_hp` (vitality endowment is their
+    /// starting pool). Adults use `phenotype.core_max_hp` (config species cap).
     pub fn from_parts_with_vitals(
         genome: GenomeData,
         phenotype: PhenotypeData,
@@ -165,12 +176,13 @@ impl LifeBundle {
         generation: u32,
         initial_energy: f32,
         initial_core_hp: f32,
+        initial_core_max_hp: f32,
     ) -> Self {
         let _ = config;
         let agent = Agent {
             radius: phenotype.body_radius,
         };
-        let max_hp = phenotype.core_max_hp;
+        let max_hp = initial_core_max_hp.max(0.0);
         let health = Health {
             core_hp: initial_core_hp.min(max_hp).max(0.0),
             core_max_hp: max_hp,

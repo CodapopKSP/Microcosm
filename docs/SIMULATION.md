@@ -63,7 +63,8 @@ Natural population limits come from energy, metabolism, and environment—not fr
 | `solar_influx`, `solar_cap` | f32 | Phase 6 | Pool recharge and cap (model B) |
 | `light_mode = "map"` | — | Phase 5+ | Image / procedural grid |
 | `vents` | array | Phase 5+ | Position, radius, flux |
-| `hazards` | array | Phase 4+ | Zones with damage rate |
+| `hazards` | array | **implemented** | Circular zones: `center`, `radius`, `damage_per_tick` ([`HazardField`](../src/sim/hazards.rs)) |
+| `[genetics.color_photosynthesis]` | table | **implemented** | Greenness niche: `k_green_photo`, `k_green_meta`, `greenness_scale` ([PHASE_4.md](PHASE_4.md) §4.7) |
 | `seasons_enabled` | bool | Phase 9 | Default `false`; cyclic environment modulation |
 | `seasons` | array | Phase 9 | Named keyframes: `duration_ticks`, optional overrides (`solar_constant`, `gradient_max`, scales) — [PHASE_9.md](PHASE_9.md) |
 
@@ -102,7 +103,8 @@ Baseline values used when decoding or as config floors; many are overridden or s
 | `flat_energy_grant_per_tick` | f32 | Used only when `environment.energy_model = "legacy_flat"`; default `0.0` under `local` |
 | `repro_safety_margin` | f32 | Fraction of `repro_threshold` below which repro risk rises |
 | `p_death_on_repro_base` | f32 | Base reproduction fatality chance at low energy |
-| `repair_energy_per_hp` | f32 | Base cost before `repair_efficiency` |
+| `repair_energy_per_hp` | f32 | Energy per HP restored |
+| `repair_hp_per_tick_at_rate_1` | f32 | Max HP/tick at `repair_rate = 1.0` |
 
 ### `[run]`
 
@@ -133,16 +135,16 @@ Optional `--seed U64` overrides `run.master_seed` after TOML load. Default confi
 Implement systems in this order (see [ARCHITECTURE.md](ARCHITECTURE.md)):
 
 1. **Environment tick** — **Phase 6+:** pool/soup regen; **Phase 9:** advance season clock and apply effective overrides ([PHASE_9.md](PHASE_9.md))
-2. **Sense / exposure** — **Implemented:** sample `LightField` at each agent position → `LightExposure` (vents/hazards/soup later)
-3. **Metabolism & gains** — **Implemented:** Model A photosynthetic gain minus `photo_upkeep`, trait upkeeps, idle metabolism
-4. **Behavior / movement** — Apply velocity intent; deduct movement energy from `move_cost` and moving metabolism
-5. **Interactions** — Collision damage, hazard damage, feeding placeholder (later)
-6. **Healing** — Spend energy to repair core and body parts per policy
+2. **Sense / exposure** — **Implemented:** `LightField` → `LightExposure`; `HazardField` → `HazardExposure` (vents/soup later)
+3. **Metabolism & gains** — **Implemented:** Model A gain (× greenness photo mult) minus upkeeps, green metabolism tax, idle metabolism
+4. **Behavior / movement** — **Implemented:** velocity, movement energy, `move_penalty` from hardness
+5. **Interactions** — **Implemented:** zone hazard + symmetric collision damage → `core_hp` ([`interactions`](../src/sim/systems/interactions.rs))
+6. **Healing** — **Implemented:** energy-funded repair per `repair_policy` ([`healing`](../src/sim/systems/healing.rs))
 7. **Reproduction** — Cooldown check, threshold, pay `repro_cost`, roll repro risk, spawn child with mutations and endowment
 8. **Advance age** — **Implemented:** `Age.ticks += 1` per living agent
 9. **Death & despawn** — **Implemented:** energy, core HP, `age_ticks >= max_age_ticks`, repro fatality
 10. **Performance failsafe** — If `population > max_entities`, apply emergency policy and log warning
-11. **Metrics sample** — **Implemented (headless):** if `tick > 0` and `tick % snapshot_interval == 0`, append JSONL (see [PHASE_3.md](PHASE_3.md#jsonl-schema-frozen-for-phase-3))
+11. **Metrics sample** — **Implemented (headless):** JSONL per [PHASE_3.md](PHASE_3.md#jsonl-schema-frozen-for-phase-3) + [Phase 4 extensions](PHASE_3.md#phase-4-extensions-jsonl)
 
 ```mermaid
 flowchart TD

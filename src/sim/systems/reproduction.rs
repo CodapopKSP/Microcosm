@@ -23,7 +23,6 @@ use super::super::world::{NextEntityId, SimConfigResource, SimRng, SimTick, Spaw
 
 /// Parent death probability on reproduce ([GENOME.md](../../docs/GENOME.md)).
 pub fn repro_death_probability(
-    repro_risk_factor: f32,
     p_death_on_repro_base: f32,
     repro_safety_margin: f32,
     energy_after_transfer: f32,
@@ -33,12 +32,12 @@ pub fn repro_death_probability(
     let margin = energy_after_transfer / threshold;
     let safety = repro_safety_margin.max(1e-6);
     let margin_term = (1.0 - margin / safety).max(0.0);
-    (p_death_on_repro_base * repro_risk_factor * margin_term).clamp(0.0, 1.0)
+    (p_death_on_repro_base * margin_term).clamp(0.0, 1.0)
 }
 
 /// Parent damage probability on reproduce (independent roll from death).
-pub fn repro_damage_probability(repro_risk_factor: f32, p_damage_on_repro_base: f32) -> f32 {
-    (p_damage_on_repro_base * repro_risk_factor).clamp(0.0, 1.0)
+pub fn repro_damage_probability(p_damage_on_repro_base: f32) -> f32 {
+    p_damage_on_repro_base.clamp(0.0, 1.0)
 }
 
 /// Result of one reproduction attempt (pure logic for tests).
@@ -101,7 +100,6 @@ pub fn attempt_reproduction(
 
     let economy = &config.economy;
     let p_death = repro_death_probability(
-        phenotype.repro_risk_factor,
         economy.p_death_on_repro_base,
         economy.repro_safety_margin,
         energy.internal_energy,
@@ -112,12 +110,12 @@ pub fn attempt_reproduction(
         return ReproAttemptResult::ParentFatal;
     }
 
-    let p_damage = repro_damage_probability(
-        phenotype.repro_risk_factor,
-        economy.p_damage_on_repro_base,
-    );
+    let p_damage = repro_damage_probability(economy.p_damage_on_repro_base);
     if repro_rng.gen::<f32>() < p_damage {
-        let dmg = health.core_max_hp * economy.repro_damage_fraction_of_max_hp;
+        // Scale with repro_threshold (energy economy), not core_max_hp. When core_max_hp was
+        // raised to 2000 (GENOME_REVISIONS #1–2), fraction × max_hp made damage ~240 HP while
+        // income and repair still run at ~100 energy scale — parents could not recover.
+        let dmg = phenotype.repro_threshold * economy.repro_damage_fraction_of_max_hp;
         health.core_hp -= dmg;
         if health.core_hp <= 0.0 {
             return ReproAttemptResult::ParentFatal;
@@ -207,7 +205,7 @@ pub fn reproduction(
                     .insert(PendingDeath(DeathReason::ReproFatality));
             }
             ReproAttemptResult::Stillborn => {
-                cooldowns.repro_ticks_remaining = phenotype.0.repro_cooldown_ticks;
+                cooldowns.repro_ticks_remaining = sim_config.economy.repro_cooldown_ticks;
             }
             ReproAttemptResult::Child {
                 genome: child_genome,
@@ -226,7 +224,7 @@ pub fn reproduction(
                     0.0,
                     child_start_hp,
                 );
-                cooldowns.repro_ticks_remaining = phenotype.0.repro_cooldown_ticks;
+                cooldowns.repro_ticks_remaining = sim_config.economy.repro_cooldown_ticks;
                 children_to_spawn.push((
                     transform.translation.truncate(),
                     parent_radius,
@@ -275,10 +273,9 @@ mod tests {
     }
 
     #[test]
-    fn repro_risk_higher_when_low_energy_after_transfer() {
+    fn repro_death_higher_when_low_energy_after_transfer() {
         let (config, phenotype, _genome) = setup();
         let high = repro_death_probability(
-            1.0,
             1.0,
             config.economy.repro_safety_margin,
             phenotype.repro_threshold * 2.0,
@@ -286,12 +283,43 @@ mod tests {
         );
         let low = repro_death_probability(
             1.0,
-            1.0,
             config.economy.repro_safety_margin,
             phenotype.repro_threshold * 0.1,
             phenotype.repro_threshold,
         );
         assert!(low > high);
+    }
+
+    #[test]
+    fn child_hp_capped_by_threshold_endowment_and_core_max() {
+        let (config, mut phenotype, genome) = setup();
+        phenotype.repro_threshold = 500.0;
+        phenotype.offspring_endowment = 400.0;
+        let mut energy = Energy {
+            internal_energy: 600.0,
+        };
+        let mut health = Health {
+            core_hp: config.economy.core_max_hp,
+            core_max_hp: config.economy.core_max_hp,
+            part_hp: vec![],
+        };
+        let mut repro_rng = StdRng::seed_from_u64(77);
+        let mut mutation_rng = StdRng::seed_from_u64(78);
+
+        if let ReproAttemptResult::Child { child_start_hp, .. } = attempt_reproduction(
+            &mut energy,
+            &mut health,
+            &phenotype,
+            &genome,
+            &config,
+            &mut repro_rng,
+            &mut mutation_rng,
+        ) {
+            assert!((child_start_hp - 400.0).abs() < 1e-3);
+            assert_eq!(energy.internal_energy, 100.0);
+        } else {
+            panic!("expected child");
+        }
     }
 
     #[test]
@@ -335,6 +363,62 @@ mod tests {
     }
 
     #[test]
+    fn child_spawn_params_use_endowment_as_max_hp() {
+        let (config, phenotype, genome) = setup();
+        let params = build_offspring_spawn_params(
+            genome.clone(),
+            phenotype.clone(),
+            &config,
+            2,
+            Some(1),
+            1,
+            0.0,
+            phenotype.offspring_endowment,
+        );
+        assert!((params.life.health.core_hp - phenotype.offspring_endowment).abs() < 1e-3);
+        assert!((params.life.health.core_max_hp - phenotype.offspring_endowment).abs() < 1e-3);
+        assert!(params.life.health.core_max_hp < config.economy.core_max_hp);
+    }
+
+    #[test]
+    fn repro_damage_scales_with_threshold_not_inflated_core_max_hp() {
+        let (mut config, phenotype, genome) = setup();
+        config.economy.core_max_hp = 2000.0;
+        config.economy.p_damage_on_repro_base = 1.0;
+        config.economy.p_death_on_repro_base = 0.0;
+
+        let mut energy = Energy {
+            internal_energy: phenotype.repro_threshold,
+        };
+        let mut health = Health {
+            core_hp: config.economy.core_max_hp,
+            core_max_hp: config.economy.core_max_hp,
+            part_hp: vec![],
+        };
+        let mut repro_rng = StdRng::seed_from_u64(5);
+        let mut mutation_rng = StdRng::seed_from_u64(6);
+
+        if let ReproAttemptResult::Child { .. } = attempt_reproduction(
+            &mut energy,
+            &mut health,
+            &phenotype,
+            &genome,
+            &config,
+            &mut repro_rng,
+            &mut mutation_rng,
+        ) {
+            let expected_dmg = phenotype.repro_threshold * config.economy.repro_damage_fraction_of_max_hp;
+            assert!(
+                (config.economy.core_max_hp - health.core_hp - expected_dmg).abs() < 1e-3,
+                "damage should be threshold-scaled (~{expected_dmg}), not core_max_hp-scaled (~{})",
+                config.economy.core_max_hp * config.economy.repro_damage_fraction_of_max_hp
+            );
+        } else {
+            panic!("expected child");
+        }
+    }
+
+    #[test]
     fn mutation_produces_different_child_genome() {
         let (config, phenotype, genome) = setup();
         let (mut energy, mut health) = full_parent_state(&config, &phenotype);
@@ -369,7 +453,6 @@ mod tests {
         config.economy.p_death_on_repro_base = 1.0;
         config.economy.p_damage_on_repro_base = 0.0;
         config.economy.repro_safety_margin = 0.25;
-        phenotype.repro_risk_factor = 1.0;
         phenotype.offspring_endowment = config.economy.core_max_hp;
 
         let mut saw_fatal = false;
@@ -471,7 +554,7 @@ mod tests {
                         agents.remove(i);
                     }
                     ReproAttemptResult::Stillborn => {
-                        agent.repro_cooldown = agent.phenotype.repro_cooldown_ticks;
+                        agent.repro_cooldown = config.economy.repro_cooldown_ticks;
                         i += 1;
                     }
                     ReproAttemptResult::Child {
@@ -480,7 +563,7 @@ mod tests {
                         child_start_hp,
                     } => {
                         let child_generation = agent.generation.saturating_add(1);
-                        agent.repro_cooldown = agent.phenotype.repro_cooldown_ticks;
+                        agent.repro_cooldown = config.economy.repro_cooldown_ticks;
                         agents.push(SimAgent {
                             genome: child_g,
                             phenotype: child_p,
@@ -489,7 +572,7 @@ mod tests {
                             },
                             health: Health {
                                 core_hp: child_start_hp,
-                                core_max_hp: config.economy.core_max_hp,
+                                core_max_hp: child_start_hp,
                                 part_hp: vec![],
                             },
                             repro_cooldown: 0,
@@ -508,8 +591,10 @@ mod tests {
                     &agent.phenotype,
                     tick as u32,
                     1.0,
+                    0.0,
                     &config.environment,
                     &config.economy,
+                    &config.genetics.decode_ranges,
                     1.0,
                 );
             }

@@ -101,7 +101,7 @@ Current [`src/main.rs`](../src/main.rs) monolith moves incrementally:
 | PoC code | Target |
 |---------|--------|
 | `Agent`, `Velocity`, movement, bounds | `sim::systems::movement` + `visual` |
-| Collision despawn | **Remove** default; replace with `sim::systems::death` + damage in Phase 4 |
+| Collision despawn | **Removed**; `sim::systems::interactions` applies collision damage, `death` despawns on `core_hp <= 0` |
 | Random colors | `genome` color loci + phenotype decode |
 | `WorldBounds` | `sim::world` |
 
@@ -170,14 +170,15 @@ Written every `snapshot_interval` ticks to `metrics_path` as **JSONL** (one JSON
 | `deaths_energy_depleted`, `deaths_core_destroyed`, `deaths_repro_fatality`, `deaths_age_exceeded` | u32 | Death sub-counts (sum to `deaths`) |
 | `mean_energy`, `median_energy` | f32 | Population stats (4 decimal places in file) |
 | `mean_photo_strength` | f32 | From phenotypes |
-| `mean_max_age_ticks`, `min_max_age_ticks`, `max_max_age_ticks` | f32 | Decoded lifespan spread (Phase 3) |
+| `mean_age_metabolism_scale`, `min_age_metabolism_scale`, `max_age_metabolism_scale` | f32 | Decoded age-metabolism gene spread |
 | `color_bins`, `radius_bins` | object | Coarse diversity histograms |
 | `genotype_hash_histogram` | object | Optional coarse diversity proxy |
+| `mean_skin_hardness`, `mean_core_hp_frac`, `repair_energy_spent`, `mean_greenness` | f32 | Phase 4 aggregates (4 dp) |
 
 ### Example JSONL line
 
 ```json
-{"tick":3600,"population":142,"births":8,"deaths":5,"deaths_energy_depleted":2,"deaths_core_destroyed":0,"deaths_repro_fatality":2,"deaths_age_exceeded":1,"mean_energy":24.5,"median_energy":21.0,"mean_photo_strength":0.42,"mean_max_age_ticks":41000.0,"min_max_age_ticks":2000.0,"max_max_age_ticks":80000.0,"color_bins":{"136,204,68":40},"radius_bins":{"12":142}}
+{"tick":3600,"population":142,"births":8,"deaths":5,"deaths_energy_depleted":2,"deaths_core_destroyed":1,"deaths_repro_fatality":2,"deaths_age_exceeded":0,"mean_energy":24.5,"median_energy":21.0,"mean_photo_strength":0.42,"mean_age_metabolism_scale":1.1,"min_age_metabolism_scale":0.5,"max_age_metabolism_scale":2.0,"color_bins":{"136,204,68":40},"radius_bins":{"12":142},"mean_skin_hardness":0.12,"mean_core_hp_frac":0.95,"repair_energy_spent":3.2,"mean_greenness":0.72}
 ```
 
 ## CLI (implemented — Phase 3)
