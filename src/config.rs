@@ -45,6 +45,65 @@ pub struct WorldConfig {
     pub min_speed: f32,
     #[serde(default = "default_max_speed")]
     pub max_speed: f32,
+    #[serde(default)]
+    pub physics: WorldPhysicsConfig,
+}
+
+/// Passive forces applied each tick from body size (Brownian vs gravity).
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorldPhysicsConfig {
+    /// Bodies below this radius jitter; at or above sink downward.
+    #[serde(default = "default_physics_radius_threshold")]
+    pub radius_threshold: f32,
+    /// Max random drift speed for small bodies (world units / sec).
+    #[serde(default = "default_brownian_speed")]
+    pub brownian_speed: f32,
+    /// Downward drift speed for large bodies (world units / sec).
+    #[serde(default = "default_gravity_speed")]
+    pub gravity_speed: f32,
+}
+
+impl Default for WorldPhysicsConfig {
+    fn default() -> Self {
+        Self {
+            radius_threshold: default_physics_radius_threshold(),
+            brownian_speed: default_brownian_speed(),
+            gravity_speed: default_gravity_speed(),
+        }
+    }
+}
+
+impl WorldPhysicsConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !self.radius_threshold.is_finite() || self.radius_threshold <= 0.0 {
+            return Err(ConfigError::Validation(
+                "world.physics.radius_threshold must be positive and finite".into(),
+            ));
+        }
+        if !self.brownian_speed.is_finite() || self.brownian_speed < 0.0 {
+            return Err(ConfigError::Validation(
+                "world.physics.brownian_speed must be non-negative and finite".into(),
+            ));
+        }
+        if !self.gravity_speed.is_finite() || self.gravity_speed < 0.0 {
+            return Err(ConfigError::Validation(
+                "world.physics.gravity_speed must be non-negative and finite".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn default_physics_radius_threshold() -> f32 {
+    5.0
+}
+
+fn default_brownian_speed() -> f32 {
+    1.2
+}
+
+fn default_gravity_speed() -> f32 {
+    10.0
 }
 
 fn default_agent_radius() -> f32 {
@@ -697,6 +756,8 @@ impl SimConfig {
                 "world.min_speed and world.max_speed must satisfy 0 <= min < max".into(),
             ));
         }
+
+        self.world.physics.validate()?;
 
         if self.economy.repair_hp_per_tick_at_rate_1 <= 0.0 {
             return Err(ConfigError::Validation(

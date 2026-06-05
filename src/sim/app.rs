@@ -22,8 +22,8 @@ use super::metrics::{MetricsPeriodCounters, MetricsWriter, RepairStats};
 use super::systems::{
     advance_age, behavior_movement_v2, behavior_v2, death_and_despawn,
     environment_tick, exit_headless_when_done, feeding_v2, healing_v2, sense_rays,
-    interactions, metabolism_and_gains, metrics_sample, performance_failsafe, reproduction,
-    sense_exposure,
+    interactions, metabolism_and_gains, metrics_sample, passive_physics, performance_failsafe,
+    reproduction, sense_exposure,
     FailsafeWarnLatch,
 };
 use super::speed::SimSpeed;
@@ -134,6 +134,7 @@ pub fn add_sim_systems(app: &mut App) {
             feeding_v2,
             metabolism_and_gains,
             behavior_movement_v2,
+            passive_physics,
             interactions,
             healing_v2,
             reproduction,
