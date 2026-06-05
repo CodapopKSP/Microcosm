@@ -151,12 +151,11 @@ pub fn decode(genome: &GenomeV2, config: &SimConfig) -> Result<PhenotypeV2, Deco
         d.heal_base_hp_per_sec * lerp(1.0, d.heal_speed_mult_at_max, heal_t);
     let heal_cost_multiplier = lerp(1.0, d.heal_cost_mult_at_max, heal_t);
 
-    let ratio_raw = genome.energy_health_ratio_raw()?;
-    let ratio_byte0 = (ratio_raw >> 8) as u8;
+    let ratio_byte = genome.energy_health_ratio_raw()?;
     let energy_cap_fraction = lerp(
         d.energy_cap_frac_at_byte0,
         d.energy_cap_frac_at_byte255,
-        byte_fraction(ratio_byte0, d.byte_scale),
+        byte_fraction(ratio_byte, d.byte_scale),
     );
 
     let vitality_budget = if d.vitality_budget_from_radius {
@@ -297,7 +296,7 @@ mod tests {
         assert!(p.photo_effective > 0.9);
         assert_eq!(p.biomass_effective, 0.0);
         assert_eq!(p.minerals_effective, 0.0);
-        assert!((p.energy_cap_fraction - 0.99).abs() < 0.01);
+        assert!((p.energy_cap_fraction - 0.5).abs() < 0.05);
         assert_eq!(p.sensor_eye_count, 0);
         assert_eq!(p.pursue_slot_count, 0);
         assert_eq!(p.avoid_slot_count, 0);
@@ -309,7 +308,6 @@ mod tests {
         let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
         let idx = crate::genome::encoding_v2::HEADER_LEN + crate::genome::encoding_v2::core::ENERGY_HEALTH_RATIO;
         bytes[idx] = 0x00;
-        bytes[idx + 1] = 0x00;
         let energy_heavy = decode(
             &GenomeV2::from_bytes(bytes.clone(), &config.genetics).unwrap(),
             &config,

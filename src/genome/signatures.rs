@@ -309,7 +309,7 @@ pub fn atom_matches(
             .unwrap_or(false),
         SIG_ENERGY_HEALTH_RATIO => target
             .energy_health_ratio_raw()
-            .map(|obs| u16_fuzzy_match(obs, atom.value as u16, fuzzy_delta))
+            .map(|obs| byte_fuzzy_match(obs, atom.value as u8, fuzzy_delta))
             .unwrap_or(false),
         SIG_REPRO_THRESHOLD => target
             .repro_threshold_raw()

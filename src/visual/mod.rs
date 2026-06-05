@@ -3,14 +3,17 @@
 //! - **L** — toggle light-field background gradient
 //! - **H** — toggle hazard zone circles
 //! - **↑ / ↓** — simulation speed (1×, 2×, 4×, 8×, 16×)
-//! - **Click** — select agent (energy bar + light ring)
+//! - **Click** — select agent (inspector panel + energy bar + light ring)
 //! - **Esc** — clear selection
 //!
 //! Damaged agents (`core_hp < core_max_hp`) show a red HP bar below the body.
 
 use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
+use bevy_egui::EguiPlugin;
 use std::collections::{HashMap, HashSet};
+
+mod inspector;
 
 use crate::sim::{
     run_sim_tick_schedule, Agent, Energy, HazardField, Health, LightExposure, LightField,
@@ -90,7 +93,8 @@ pub struct VisualDebugPlugin;
 
 impl Plugin for VisualDebugPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<DebugVisualState>()
+        app.add_plugins(EguiPlugin)
+            .init_resource::<DebugVisualState>()
             .init_resource::<ActiveHealthBars>()
             .init_resource::<ActiveSensorRays>()
             .add_systems(
@@ -113,6 +117,7 @@ impl Plugin for VisualDebugPlugin {
                     update_damaged_health_bars,
                     update_sensor_ray_overlays,
                     update_selection_overlay,
+                    inspector::draw_agent_inspector,
                 )
                     .after(run_sim_tick_schedule),
             );
@@ -338,6 +343,7 @@ fn cursor_world_2d(
 }
 
 fn select_agent_on_click(
+    mut contexts: bevy_egui::EguiContexts,
     mouse: Res<ButtonInput<MouseButton>>,
     mut state: ResMut<DebugVisualState>,
     window: Query<&Window>,
@@ -345,6 +351,9 @@ fn select_agent_on_click(
     agents: Query<(Entity, &Transform, &Agent)>,
 ) {
     if !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    if contexts.ctx_mut().is_pointer_over_area() {
         return;
     }
     let Some(world_pos) = cursor_world_2d(window, camera) else {

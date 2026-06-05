@@ -17,12 +17,12 @@ failsafe_policy = "stop_spawns"
 
 [genetics]
 genome_version = 2
-core_length = 28
+core_length = 27
 max_genome_bytes = 512
 max_pursue_slots = 8
 max_avoid_slots = 8
 # EVO2 + 24-byte sessile photo ancestor (docs/Genome_Definition.md)
-ancestor_hex = "45564f3200ff0500ff000000000080ff0f00000000ff000000000000"
+ancestor_hex = "45564f3200ff0500ff0000000080ff0f00000000ff000000000000"
 p_bit_flip = 0.05
 p_point = 0.58
 p_resample = 0.02

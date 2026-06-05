@@ -308,14 +308,12 @@ mod tests {
         let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
         let idx = crate::genome::V2_HEADER_LEN + crate::genome::v2_core::ENERGY_HEALTH_RATIO;
         bytes[idx] = 0x00;
-        bytes[idx + 1] = 0x00;
         let energy_heavy = decode_v2(
             &GenomeV2::from_bytes(bytes.clone(), &config.genetics).unwrap(),
             &config,
         )
         .unwrap();
         bytes[idx] = 0xFF;
-        bytes[idx + 1] = 0x00;
         let health_heavy = decode_v2(
             &GenomeV2::from_bytes(bytes, &config.genetics).unwrap(),
             &config,

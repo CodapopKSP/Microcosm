@@ -16,12 +16,12 @@ failsafe_policy = "stop_spawns"
 
 [genetics]
 genome_version = 2
-core_length = 28
+core_length = 27
 max_genome_bytes = 512
 max_pursue_slots = 8
 max_avoid_slots = 8
 # EVO2 + core; color 00FFF5 (B nibble F caps minerals); minerals byte FF; photo FF
-ancestor_hex = "45564f3200fff5000a000000000080ff0f000000000000ff00000000"
+ancestor_hex = "45564f3200fff5000a0000000080ff0f000000000000ff00000000"
 p_bit_flip = 0.05
 p_point = 0.58
 p_resample = 0.02

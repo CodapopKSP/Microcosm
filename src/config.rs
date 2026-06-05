@@ -1256,7 +1256,7 @@ mod tests {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/genome_v2.example.toml");
         let config = SimConfig::load_from_path(&path).expect("genome_v2.example.toml should load");
         assert_eq!(config.genetics.genome_version, GENOME_VERSION_V2);
-        assert_eq!(config.genetics.core_length, 28);
+        assert_eq!(config.genetics.core_length, 27);
         let genome = crate::genome::GenomeV2::ancestor_from_config(&config).unwrap();
         let phenotype = crate::genome::decode_v2(&genome, &config).unwrap();
         assert_eq!(phenotype.max_speed_effective, 0.0);
@@ -1269,7 +1269,7 @@ mod tests {
     fn load_default_toml() {
         let config = SimConfig::load_default().expect("default.toml should load");
         assert_eq!(config.genetics.genome_version, GENOME_VERSION_V2);
-        assert_eq!(config.genetics.core_length, 28);
+        assert_eq!(config.genetics.core_length, 27);
         assert_eq!(config.world.initial_population, 80);
         assert!(config.is_seeded());
         assert_eq!(config.environment.energy_model, EnergyModel::Local);

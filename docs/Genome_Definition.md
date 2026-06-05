@@ -21,7 +21,7 @@ Implementation status: the repo still runs **genome v1** (`EVO1`, 32-byte core).
 
 ## Fixed core byte map
 
-All offsets are relative to the first byte **after** a 4-byte header (`b"EVO2"`, `version` u8, `reserved` u8, `reserved` u8). Multi-byte integers are **big-endian**. Total fixed core = **24 bytes** (variable slots follow).
+All offsets are relative to the first byte **after** a 4-byte header (`b"EVO2"`, `version` u8, `reserved` u8, `reserved` u8). Multi-byte integers are **big-endian**. Total fixed core = **23 bytes** (variable slots follow).
 
 | Off | W | Chromosome |
 |-----|---|------------|
@@ -29,20 +29,20 @@ All offsets are relative to the first byte **after** a 4-byte header (`b"EVO2"`,
 | 3–4 | 2 | Body radius |
 | 5–6 | 2 | Armor |
 | 7–8 | 2 | Healing rate |
-| 9–10 | 2 | Energy / health ratio |
-| 11 | 1 | Reproduction threshold |
-| 12 | 1 | Offspring endowment |
-| 13 | 1 | Movement desire |
-| 14 | 1 | Turning desire |
-| 15 | 1 | Max speed |
-| 16 | 1 | Movement efficiency |
-| 17 | 1 | Photosynthesis efficiency |
-| 18 | 1 | Biomass digestion efficiency |
-| 19 | 1 | Minerals digestion efficiency |
-| 20–21 | 2 | Sensors |
-| 22 | 1 | Pursue list slot count |
-| 23 | 1 | Avoid list slot count |
-| 24+ | var | Pursue then avoid slots (see [Pursue and Avoid Lists](#pursue-and-avoid-lists)) |
+| 9 | 1 | Energy / health ratio |
+| 10 | 1 | Reproduction threshold |
+| 11 | 1 | Offspring endowment |
+| 12 | 1 | Movement desire |
+| 13 | 1 | Turning desire |
+| 14 | 1 | Max speed |
+| 15 | 1 | Movement efficiency |
+| 16 | 1 | Photosynthesis efficiency |
+| 17 | 1 | Biomass digestion efficiency |
+| 18 | 1 | Minerals digestion efficiency |
+| 19–20 | 2 | Sensors |
+| 21 | 1 | Pursue list slot count |
+| 22 | 1 | Avoid list slot count |
+| 23+ | var | Pursue then avoid slots (see [Pursue and Avoid Lists](#pursue-and-avoid-lists)) |
 
 ---
 
@@ -74,9 +74,9 @@ Healing Rate
 - Base healing rate is 1/s
 
 Energy/Health Ratio
-- 2 bytes (`u16` raw; **first byte** is authoritative, second byte reserved for future use)
-- First byte `00` → **99%** of combined vitality budget to **max energy**, **1%** to **max health**
-- First byte `FF` → **1%** max energy, **99%** max health
+- 1 bytes
+- `00` → **99%** of combined vitality budget to **max energy**, **1%** to **max health**
+- `FF` → **1%** max energy, **99%** max health
 - Combined budget scales from body radius (see Body Radius); current pools cannot exceed decoded caps
 
 Reproduction Threshold
@@ -139,9 +139,9 @@ Pursue/Avoid list counts
 Fixed core only (no pursue/avoid slot payload). Hex groups match [fixed core byte map](#fixed-core-byte-map):
 
 ```text
-Color   Body  Armr  Heal  Ratio  Repr  Move×4   Photo×3  Sense  Lists
-|-----| |---| |---| |---| |---| |---| |------| |------| |----| |----|
-00FF05  000A  0000  0000  0080   FF0F  00000000 FF0000   0000   0000
+Color   Body  Armr  Heal    Repr  Movement  Energy  Sens  Inter
+|----|  |--|  |--|  |----|  |--|  |------|  |----|  |--|  |---|
+00FF05  000A  0000  000080  FF0F  00000000  FF0000  0000  0000
 ```
 
 | Field | Bytes | Ancestor | Notes |
@@ -150,7 +150,7 @@ Color   Body  Armr  Heal  Ratio  Repr  Move×4   Photo×3  Sense  Lists
 | Body | `00 0A` | raw 10 | Small radius (~4 + linear term); sets storage & metabolism baseline |
 | Armor | `00 00` | none | No stroke, no armor tax |
 | Healing | `00 00` | base rate | 1 HP/s baseline, base cost |
-| E/H ratio | `00 80` | mid | First byte `0x80` → mixed energy/health caps |
+| E/H ratio | `80` | mid | Byte `0x80` → mixed energy/health caps |
 | Repro threshold | `FF` | 100% | Reproduce when current energy ≥ 100% of **max energy** |
 | Offspring endowment | `0F` | ~6% | Transfer up to ~6% of **max energy + max health** combined |
 | Movement ×4 | `00 00 00 00` | sedentary | No move/turn/speed/eff — **sessile** ancestor |
@@ -159,7 +159,7 @@ Color   Body  Armr  Heal  Ratio  Repr  Move×4   Photo×3  Sense  Lists
 
 **Intentional sessile ancestor:** `max_speed = 00` means no locomotion; lineage is viable via photosynthesis only until mutation adds movement bytes.
 
-Pursue/avoid payload (when counts > 0) is appended **after** byte 23: all pursue slots first, then all avoid slots.
+Pursue/avoid payload (when counts > 0) is appended **after** byte 22: all pursue slots first, then all avoid slots.
 
 ### Pursue and Avoid Lists
 
@@ -185,7 +185,7 @@ Each **simple slot** (one OR branch) is **6 bytes**: `type u16` (big-endian) + `
 | `0x0001` | Body radius | Low 16 bits = radius raw (`u16`); `0xFFFF` = largest | Observed body radius raw |
 | `0x0002` | Armor | Low 16 bits = armor raw (`u16`) | Observed armor raw |
 | `0x0003` | Healing rate | Low 16 bits = healing raw (`u16`) | Observed healing raw |
-| `0x0004` | Energy / health ratio | Low 16 bits = ratio raw (`u16`) | Observed ratio raw |
+| `0x0004` | Energy / health ratio | Low 8 bits = ratio byte (`u8`) | Observed ratio byte |
 | `0x0005` | Reproduction threshold | Low 8 bits = `%` byte (`u8`) | Observed repro-threshold byte |
 | `0x0006` | Offspring endowment | Low 8 bits = `%` byte (`u8`) | Observed endowment byte |
 | `0x0007` | Movement desire | Low 8 bits = `%` byte (`u8`) | Observed movement-desire byte |

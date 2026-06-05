@@ -6,7 +6,7 @@ use crate::genome::signatures::{expected_genome_len, slot_payload_len};
 
 pub const MAGIC: &[u8; 4] = b"EVO2";
 pub const HEADER_LEN: usize = 4;
-pub const CORE_FIXED_LEN: usize = 24;
+pub const CORE_FIXED_LEN: usize = 23;
 pub const MIN_GENOME_LEN: usize = HEADER_LEN + CORE_FIXED_LEN;
 
 /// Core-segment byte offsets (relative to first byte after the header).
@@ -18,19 +18,19 @@ pub mod core {
     pub const ARMOR: usize = 5;
     pub const HEALING_RATE: usize = 7;
     pub const ENERGY_HEALTH_RATIO: usize = 9;
-    pub const REPRO_THRESHOLD: usize = 11;
-    pub const OFFSPRING_ENDOWMENT: usize = 12;
-    pub const MOVEMENT_DESIRE: usize = 13;
-    pub const TURNING_DESIRE: usize = 14;
-    pub const MAX_SPEED: usize = 15;
-    pub const MOVEMENT_EFFICIENCY: usize = 16;
-    pub const PHOTO_EFFICIENCY: usize = 17;
-    pub const BIOMASS_EFFICIENCY: usize = 18;
-    pub const MINERALS_EFFICIENCY: usize = 19;
-    pub const SENSOR_MASK: usize = 20;
-    pub const SENSOR_STRENGTH: usize = 21;
-    pub const PURSUE_SLOT_COUNT: usize = 22;
-    pub const AVOID_SLOT_COUNT: usize = 23;
+    pub const REPRO_THRESHOLD: usize = 10;
+    pub const OFFSPRING_ENDOWMENT: usize = 11;
+    pub const MOVEMENT_DESIRE: usize = 12;
+    pub const TURNING_DESIRE: usize = 13;
+    pub const MAX_SPEED: usize = 14;
+    pub const MOVEMENT_EFFICIENCY: usize = 15;
+    pub const PHOTO_EFFICIENCY: usize = 16;
+    pub const BIOMASS_EFFICIENCY: usize = 17;
+    pub const MINERALS_EFFICIENCY: usize = 18;
+    pub const SENSOR_MASK: usize = 19;
+    pub const SENSOR_STRENGTH: usize = 20;
+    pub const PURSUE_SLOT_COUNT: usize = 21;
+    pub const AVOID_SLOT_COUNT: usize = 22;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +134,64 @@ impl GenomeV2 {
         self.bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
+    /// Fixed-core display groups ([Genome_Definition.md](../../../docs/Genome_Definition.md) example layout).
+    pub fn core_chromosome_groups() -> &'static [(&'static str, usize)] {
+        &[
+            ("C", 3), // Color
+            ("B", 2), // Body
+            ("A", 2), // Armor
+            ("H", 3), // Healing rate (2 B) + energy/health ratio (1 B)
+            ("R", 2), // Reproduction threshold + offspring endowment
+            ("M", 4), // Movement desire, turning, max speed, move efficiency
+            ("E", 3), // Photo / biomass / mineral efficiency
+            ("S", 2), // Sensors
+            ("I", 2), // Pursue + avoid slot counts
+        ]
+    }
+
+    fn hex_chunk(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Core bytes grouped by chromosome label (`C B A H R M E S I`).
+    pub fn core_chromosomes_hex(&self) -> Vec<(String, String)> {
+        let core = self
+            .bytes
+            .get(HEADER_LEN..HEADER_LEN + CORE_FIXED_LEN)
+            .unwrap_or(&[]);
+        let mut offset = 0;
+        Self::core_chromosome_groups()
+            .iter()
+            .map(|(label, len)| {
+                let chunk = &core[offset..offset + len];
+                offset += len;
+                (label.to_string(), Self::hex_chunk(chunk))
+            })
+            .collect()
+    }
+
+    /// Header + grouped core + trailing pursue/avoid payload (if any).
+    pub fn chromosomes_display_lines(&self) -> Vec<(String, String)> {
+        let mut lines = vec![("Hdr".to_string(), Self::hex_chunk(&self.bytes[..HEADER_LEN]))];
+        lines.extend(self.core_chromosomes_hex());
+        let payload_start = HEADER_LEN + CORE_FIXED_LEN;
+        if self.bytes.len() > payload_start {
+            lines.push((
+                "Slots".to_string(),
+                Self::hex_chunk(&self.bytes[payload_start..]),
+            ));
+        }
+        lines
+    }
+
+    pub fn chromosomes_display_text(&self) -> String {
+        self.chromosomes_display_lines()
+            .into_iter()
+            .map(|(label, hex)| format!("{label} {hex}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn absolute_core_index(&self, core_offset: usize) -> Result<usize, GenomeError> {
         if core_offset >= CORE_FIXED_LEN {
             return Err(GenomeError::LocusOutOfBounds {
@@ -184,8 +242,8 @@ impl GenomeV2 {
         self.read_u16_be_at_core(core::HEALING_RATE)
     }
 
-    pub fn energy_health_ratio_raw(&self) -> Result<u16, GenomeError> {
-        self.read_u16_be_at_core(core::ENERGY_HEALTH_RATIO)
+    pub fn energy_health_ratio_raw(&self) -> Result<u8, GenomeError> {
+        self.read_u8_at_core(core::ENERGY_HEALTH_RATIO)
     }
 
     pub fn repro_threshold_raw(&self) -> Result<u8, GenomeError> {
@@ -259,7 +317,7 @@ mod tests {
         let genome = GenomeV2::ancestor_from_config(&config).unwrap();
         assert!(genome.is_valid(&config.genetics));
         assert_eq!(&genome.bytes[0..4], MAGIC);
-        assert_eq!(genome.bytes.len(), 28);
+        assert_eq!(genome.bytes.len(), 27);
     }
 
     #[test]
@@ -271,7 +329,7 @@ mod tests {
         assert_eq!(genome.body_radius_raw().unwrap(), 0x000A);
         assert_eq!(genome.armor_raw().unwrap(), 0);
         assert_eq!(genome.healing_rate_raw().unwrap(), 0);
-        assert_eq!(genome.energy_health_ratio_raw().unwrap(), 0x0080);
+        assert_eq!(genome.energy_health_ratio_raw().unwrap(), 0x80);
         assert_eq!(genome.repro_threshold_raw().unwrap(), 0xFF);
         assert_eq!(genome.offspring_endowment_raw().unwrap(), 0x0F);
         assert_eq!(genome.max_speed_raw().unwrap(), 0);
@@ -280,5 +338,29 @@ mod tests {
         assert_eq!(genome.minerals_efficiency_raw().unwrap(), 0);
         assert_eq!(genome.pursue_slot_count().unwrap(), 0);
         assert_eq!(genome.avoid_slot_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn core_chromosomes_match_doc_grouping() {
+        let genome = GenomeV2::ancestor_from_config(&v2_config()).unwrap();
+        let groups: Vec<_> = genome
+            .core_chromosomes_hex()
+            .into_iter()
+            .map(|(label, hex)| format!("{label} {hex}"))
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                "C 00ff05",
+                "B 000a",
+                "A 0000",
+                "H 000080",
+                "R ff0f",
+                "M 00000000",
+                "E ff0000",
+                "S 0000",
+                "I 0000",
+            ]
+        );
     }
 }

@@ -182,7 +182,7 @@ fn startup_visual(
         &mut materials,
     ));
     eprintln!(
-        "debug: L=light, H=hazards, S=sensor rays, ↑↓=speed (1x–16x), click=select, Esc=clear"
+        "debug: L=light, H=hazards, S=sensor rays, ↑↓=speed (1x–16x), click=select+inspect, Esc=clear"
     );
 }
 
