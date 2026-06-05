@@ -5,19 +5,17 @@
 //! - **↑ / ↓** — simulation speed (1×, 2×, 4×, 8×, 16×)
 //! - **Click** — select agent (inspector panel + energy bar + light ring)
 //! - **Esc** — clear selection
-//!
-//! Damaged agents (`core_hp < core_max_hp`) show a red HP bar below the body.
 
 use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
 use bevy_egui::EguiPlugin;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 mod inspector;
 
 use crate::sim::{
-    run_sim_tick_schedule, Agent, Energy, HazardField, Health, LightExposure, LightField,
-    Phenotype, SensePerception, SimConfigResource, SimSpeed, WorldBounds,
+    run_sim_tick_schedule, Agent, Energy, HazardField, LightExposure, LightField, Phenotype,
+    SensePerception, SimConfigResource, SimSpeed, WorldBounds,
 };
 
 /// Child mesh behind the agent fill showing decoded armor stroke width (genome v2).
@@ -60,23 +58,6 @@ struct DebugEnergyBarBg;
 struct DebugEnergyBarFill;
 
 #[derive(Component)]
-struct HealthBarBg;
-
-#[derive(Component)]
-struct HealthBarFill;
-
-/// Shared mesh/material handles for per-agent HP bars.
-#[derive(Resource)]
-struct HealthBarAssets {
-    unit_rect: Handle<Mesh>,
-    bg_material: Handle<ColorMaterial>,
-    fill_material: Handle<ColorMaterial>,
-}
-
-#[derive(Resource, Default)]
-struct ActiveHealthBars(HashMap<Entity, (Entity, Entity)>);
-
-#[derive(Component)]
 struct SensorRayOverlay;
 
 #[derive(Resource, Default)]
@@ -95,14 +76,12 @@ impl Plugin for VisualDebugPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin)
             .init_resource::<DebugVisualState>()
-            .init_resource::<ActiveHealthBars>()
             .init_resource::<ActiveSensorRays>()
             .add_systems(
                 Startup,
                 (
                     spawn_light_gradient,
                     spawn_hazard_overlays,
-                    init_health_bar_assets,
                     init_sensor_ray_assets,
                     spawn_selection_overlays,
                 ),
@@ -114,7 +93,6 @@ impl Plugin for VisualDebugPlugin {
                     select_agent_on_click,
                     sync_light_gradient_visibility,
                     sync_hazard_overlay_visibility,
-                    update_damaged_health_bars,
                     update_sensor_ray_overlays,
                     update_selection_overlay,
                     inspector::draw_agent_inspector,
@@ -140,27 +118,12 @@ pub fn light_sample_to_display_color(light: f32, gradient_min: f32, gradient_max
 const GRADIENT_BANDS: u32 = 48;
 const ENERGY_BAR_HEIGHT: f32 = 6.0;
 const ENERGY_BAR_GAP: f32 = 8.0;
-const HP_BAR_HEIGHT: f32 = 4.0;
-const HP_BAR_GAP: f32 = 5.0;
 const SENSOR_RAY_THICKNESS: f32 = 2.0;
 const SENSOR_RAY_Z: f32 = 4.0;
 const OVERLAY_Z: f32 = 5.0;
 const GRADIENT_Z: f32 = -10.0;
 const HAZARD_Z: f32 = -9.0;
 const HAZARD_FILL: Color = Color::srgba(0.92, 0.18, 0.12, 0.22);
-
-/// Core HP fraction in `[0, 1]`.
-pub fn hp_fraction(health: &Health) -> f32 {
-    if health.core_max_hp <= 0.0 {
-        return 0.0;
-    }
-    (health.core_hp / health.core_max_hp).clamp(0.0, 1.0)
-}
-
-/// True when agent should show an HP bar (`core_hp` strictly below max).
-pub fn shows_hp_bar(health: &Health) -> bool {
-    health.core_max_hp > 0.0 && health.core_hp < health.core_max_hp
-}
 
 fn init_sensor_ray_assets(
     mut commands: Commands,
@@ -170,18 +133,6 @@ fn init_sensor_ray_assets(
     commands.insert_resource(SensorRayAssets {
         unit_rect: meshes.add(Rectangle::new(1.0, 1.0)),
         material: materials.add(ColorMaterial::from(Color::srgba(0.35, 0.9, 1.0, 0.65))),
-    });
-}
-
-fn init_health_bar_assets(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-) {
-    commands.insert_resource(HealthBarAssets {
-        unit_rect: meshes.add(Rectangle::new(1.0, 1.0)),
-        bg_material: materials.add(ColorMaterial::from(Color::srgba(0.08, 0.08, 0.08, 0.8))),
-        fill_material: materials.add(ColorMaterial::from(Color::srgb(0.92, 0.22, 0.18))),
     });
 }
 
@@ -374,95 +325,6 @@ fn select_agent_on_click(
     state.selected = best.map(|(entity, _)| entity);
 }
 
-fn update_damaged_health_bars(
-    mut commands: Commands,
-    assets: Res<HealthBarAssets>,
-    mut active: ResMut<ActiveHealthBars>,
-    mut queries: ParamSet<(
-        Query<(Entity, &Transform, &Agent, &Health)>,
-        Query<(&mut Transform, &mut Visibility), With<HealthBarBg>>,
-        Query<(&mut Transform, &mut Visibility), With<HealthBarFill>>,
-    )>,
-) {
-    let damaged: HashMap<Entity, (Vec2, f32, f32)> = queries
-        .p0()
-        .iter()
-        .filter(|(_, _, _, health)| shows_hp_bar(health))
-        .map(|(entity, transform, agent, health)| {
-            (
-                entity,
-                (
-                    transform.translation.truncate(),
-                    agent.radius,
-                    hp_fraction(health),
-                ),
-            )
-        })
-        .collect();
-
-    let damaged_set: HashSet<Entity> = damaged.keys().copied().collect();
-
-    active.0.retain(|agent, (bg, fill)| {
-        if damaged_set.contains(agent) {
-            return true;
-        }
-        commands.entity(*bg).despawn();
-        commands.entity(*fill).despawn();
-        false
-    });
-
-    for (agent, (pos, radius, frac)) in &damaged {
-        let bar_width = radius * 2.0;
-        let bar_y = pos.y - radius - HP_BAR_GAP;
-        let fill_width = bar_width * frac;
-
-        let (bg_entity, fill_entity) = if let Some(pair) = active.0.get(agent) {
-            *pair
-        } else {
-            let bg = commands
-                .spawn((
-                    HealthBarBg,
-                    Mesh2d(assets.unit_rect.clone()),
-                    MeshMaterial2d(assets.bg_material.clone()),
-                    Transform::from_xyz(pos.x, bar_y, OVERLAY_Z),
-                    Visibility::Visible,
-                ))
-                .id();
-            let fill = commands
-                .spawn((
-                    HealthBarFill,
-                    Mesh2d(assets.unit_rect.clone()),
-                    MeshMaterial2d(assets.fill_material.clone()),
-                    Transform::from_xyz(pos.x, bar_y, OVERLAY_Z + 0.05),
-                    Visibility::Visible,
-                ))
-                .id();
-            active.0.insert(*agent, (bg, fill));
-            (bg, fill)
-        };
-
-        if let Ok((mut tf, mut vis)) = queries.p1().get_mut(bg_entity) {
-            *vis = Visibility::Visible;
-            tf.translation = Vec3::new(pos.x, bar_y, OVERLAY_Z);
-            tf.scale = Vec3::new(bar_width, HP_BAR_HEIGHT, 1.0);
-        }
-
-        if let Ok((mut tf, mut vis)) = queries.p2().get_mut(fill_entity) {
-            if fill_width > 0.0 {
-                *vis = Visibility::Visible;
-                tf.translation = Vec3::new(
-                    pos.x - bar_width / 2.0 + fill_width / 2.0,
-                    bar_y,
-                    OVERLAY_Z + 0.05,
-                );
-                tf.scale = Vec3::new(fill_width, HP_BAR_HEIGHT, 1.0);
-            } else {
-                *vis = Visibility::Hidden;
-            }
-        }
-    }
-}
-
 fn update_sensor_ray_overlays(
     mut commands: Commands,
     state: Res<DebugVisualState>,
@@ -548,8 +410,6 @@ type RingOverlayQuery<'w, 's> = Query<
         Without<Agent>,
         Without<DebugEnergyBarBg>,
         Without<DebugEnergyBarFill>,
-        Without<HealthBarBg>,
-        Without<HealthBarFill>,
     ),
 >;
 
@@ -562,8 +422,6 @@ type BarBgOverlayQuery<'w, 's> = Query<
         Without<Agent>,
         Without<DebugSelectionRing>,
         Without<DebugEnergyBarFill>,
-        Without<HealthBarBg>,
-        Without<HealthBarFill>,
     ),
 >;
 
@@ -576,8 +434,6 @@ type BarFillOverlayQuery<'w, 's> = Query<
         Without<Agent>,
         Without<DebugSelectionRing>,
         Without<DebugEnergyBarBg>,
-        Without<HealthBarBg>,
-        Without<HealthBarFill>,
     ),
 >;
 
@@ -597,8 +453,6 @@ fn update_selection_overlay(
             Without<DebugSelectionRing>,
             Without<DebugEnergyBarBg>,
             Without<DebugEnergyBarFill>,
-            Without<HealthBarBg>,
-            Without<HealthBarFill>,
         ),
     >,
 ) {
@@ -683,7 +537,7 @@ mod tests {
 
     #[test]
     fn display_color_increases_with_light_sample() {
-        let config = SimConfig::load_v1_regression().unwrap();
+        let config = SimConfig::load_default().unwrap();
         let min = config.environment.gradient_min;
         let max = config.environment.gradient_max;
         let dark = light_sample_to_display_color(min, min, max);
@@ -696,26 +550,8 @@ mod tests {
     }
 
     #[test]
-    fn shows_hp_bar_when_damaged() {
-        let full = Health {
-            core_hp: 100.0,
-            core_max_hp: 100.0,
-            part_hp: vec![],
-        };
-        assert!(!shows_hp_bar(&full));
-
-        let hurt = Health {
-            core_hp: 99.9,
-            core_max_hp: 100.0,
-            part_hp: vec![],
-        };
-        assert!(shows_hp_bar(&hurt));
-        assert!((hp_fraction(&hurt) - 0.999).abs() < 1e-4);
-    }
-
-    #[test]
     fn default_config_has_hazard_zones_for_overlay() {
-        let config = SimConfig::load_v1_regression().unwrap();
+        let config = SimConfig::load_default().unwrap();
         let field = crate::sim::HazardField::from_environment(&config.environment);
         assert!(
             !field.zones().is_empty(),
@@ -725,7 +561,7 @@ mod tests {
 
     #[test]
     fn gradient_bands_cover_world_height() {
-        let config = SimConfig::load_v1_regression().unwrap();
+        let config = SimConfig::load_default().unwrap();
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let field = LightField::from_environment(&config.environment, &bounds);
         let height = bounds.half_y * 2.0;

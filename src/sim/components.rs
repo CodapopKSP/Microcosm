@@ -4,8 +4,8 @@ use bevy::prelude::*;
 
 use crate::config::SimConfig;
 use crate::genome::{
-    decode, decode_phenotype, genome_from_bytes, AnyGenome, AnyPhenotype,
-    Genome as GenomeData, Phenotype as PhenotypeData, PhenotypeV2,
+    decode_phenotype, genome_from_bytes, phenotype_body_radius, phenotype_color,
+    phenotype_max_speed, phenotype_repro_threshold_energy, AnyGenome, AnyPhenotype,
 };
 
 /// Scalar light multiplier at entity position (updated each tick by [`super::systems::sense_exposure`](crate::sim::sense_exposure)).
@@ -53,32 +53,24 @@ impl Genome {
 }
 
 impl Phenotype {
-    pub fn v1(&self) -> Option<&PhenotypeData> {
-        self.0.v1()
-    }
-
-    pub fn v2(&self) -> Option<&PhenotypeV2> {
-        self.0.v2()
-    }
-
     pub fn body_radius(&self) -> f32 {
-        self.0.body_radius()
+        phenotype_body_radius(&self.0)
     }
 
     pub fn max_speed(&self) -> f32 {
-        self.0.max_speed()
+        phenotype_max_speed(&self.0)
     }
 
     pub fn color_rgb(&self) -> [f32; 3] {
-        self.0.color()
+        phenotype_color(&self.0)
     }
 
     pub fn repro_threshold_energy(&self) -> f32 {
-        self.0.repro_threshold_energy()
+        phenotype_repro_threshold_energy(&self.0)
     }
 }
 
-/// Ticks since spawn; drives logarithmic age metabolism ([GENOME.md](../../docs/GENOME.md)).
+/// Ticks since spawn; drives logarithmic age metabolism.
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct Age {
     pub ticks: u32,
@@ -88,18 +80,11 @@ pub struct Age {
 #[derive(Component, Clone)]
 pub struct Energy {
     pub internal_energy: f32,
-    /// Upper cap from decoded genome (v2); v1 uses [`f32::INFINITY`] (no cap).
+    /// Upper cap from decoded genome.
     pub max_internal_energy: f32,
 }
 
 impl Energy {
-    pub fn new_v1(initial: f32) -> Self {
-        Self {
-            internal_energy: initial.max(0.0),
-            max_internal_energy: f32::INFINITY,
-        }
-    }
-
     pub fn new_v2(initial: f32, max_energy: f32) -> Self {
         let cap = max_energy.max(0.0);
         Self {
@@ -111,7 +96,7 @@ impl Energy {
 
 /// Core and appendage hit points.
 ///
-/// Phase 4: `part_hp` is always empty at spawn; hazard and collision damage route to
+/// Phase 4: `part_hp` is always empty at spawn; hazard damage routes to
 /// `core_hp` only. Phase 7 fills `part_hp` from morphology nodes and enables
 /// exposure-based routing (see [ENTITIES.md](../../docs/ENTITIES.md)).
 #[derive(Component, Clone)]
@@ -206,79 +191,9 @@ pub struct LifeBundle {
 }
 
 impl LifeBundle {
-    /// Build a new agent from an already-validated genome and decoded phenotype.
-    pub fn from_parts(
-        genome: GenomeData,
-        phenotype: PhenotypeData,
-        config: &SimConfig,
-        id: u64,
-        parent_id: Option<u64>,
-        generation: u32,
-    ) -> Self {
-        Self::from_parts_with_energy(
-            genome,
-            phenotype,
-            config,
-            id,
-            parent_id,
-            generation,
-            config.economy.spawn_energy,
-        )
-    }
-
-    /// Build lifecycle bundle with explicit starting energy and core HP (e.g. offspring vitality).
-    pub fn from_parts_with_energy(
-        genome: GenomeData,
-        phenotype: PhenotypeData,
-        config: &SimConfig,
-        id: u64,
-        parent_id: Option<u64>,
-        generation: u32,
-        initial_energy: f32,
-    ) -> Self {
-        let max_hp = phenotype.core_max_hp;
-        Self::from_parts_with_vitals(
-            genome,
-            phenotype,
-            config,
-            id,
-            parent_id,
-            generation,
-            initial_energy,
-            max_hp,
-            max_hp,
-        )
-    }
-
-    /// Build lifecycle bundle with explicit energy, core HP, and per-entity max HP.
-    ///
-    /// Offspring use `initial_core_max_hp = initial_core_hp` (vitality endowment is their
-    /// starting pool). Adults use `phenotype.core_max_hp` (config species cap).
-    pub fn from_parts_with_vitals(
-        genome: GenomeData,
-        phenotype: PhenotypeData,
-        config: &SimConfig,
-        id: u64,
-        parent_id: Option<u64>,
-        generation: u32,
-        initial_energy: f32,
-        initial_core_hp: f32,
-        initial_core_max_hp: f32,
-    ) -> Self {
-        Self::from_any_parts_with_vitals(
-            AnyGenome::V1(genome),
-            AnyPhenotype::V1(phenotype),
-            config,
-            id,
-            parent_id,
-            generation,
-            initial_energy,
-            initial_core_hp,
-            initial_core_max_hp,
-        )
-    }
-
-    /// Build lifecycle bundle from version-dispatched genome and phenotype.
+    /// Build lifecycle bundle from genome and phenotype.
+    /// Initial-spawn helper only (`spawn_energy` defaults). Offspring must use
+    /// [`from_any_parts_with_vitals`](Self::from_any_parts_with_vitals) with parent endowment.
     pub fn from_any_parts(
         genome: AnyGenome,
         phenotype: AnyPhenotype,
@@ -287,6 +202,10 @@ impl LifeBundle {
         parent_id: Option<u64>,
         generation: u32,
     ) -> Self {
+        debug_assert!(
+            parent_id.is_none(),
+            "from_any_parts uses spawn_energy; use from_any_parts_with_vitals for offspring"
+        );
         Self::from_any_parts_with_energy(
             genome,
             phenotype,
@@ -334,7 +253,7 @@ impl LifeBundle {
     ) -> Self {
         let _ = config;
         let agent = Agent {
-            radius: phenotype.body_radius(),
+            radius: phenotype_body_radius(&phenotype),
         };
         let max_hp = initial_core_max_hp.max(0.0);
         let health = Health {
@@ -342,10 +261,7 @@ impl LifeBundle {
             core_max_hp: max_hp,
             part_hp: Vec::new(),
         };
-        let energy = match &phenotype {
-            AnyPhenotype::V2(p) => Energy::new_v2(initial_energy, p.max_energy),
-            AnyPhenotype::V1(_) => Energy::new_v1(initial_energy),
-        };
+        let energy = Energy::new_v2(initial_energy, phenotype.max_energy);
         let lineage = Lineage {
             id,
             parent_id,
@@ -379,70 +295,51 @@ impl LifeBundle {
         let phenotype = decode_phenotype(&genome, config).ok()?;
         Some(Self::from_any_parts(genome, phenotype, config, id, parent_id, generation))
     }
-
-    /// Decode v1 genome and build a lifecycle bundle; returns `None` if invalid or decode fails (stillborn).
-    pub fn try_from_genome(
-        genome: GenomeData,
-        config: &SimConfig,
-        id: u64,
-        parent_id: Option<u64>,
-        generation: u32,
-    ) -> Option<Self> {
-        let genetics = &config.genetics;
-        if !genome.is_valid(genetics.genome_version, genetics.core_length) {
-            return None;
-        }
-        let phenotype = decode(&genome, config).ok()?;
-        Some(Self::from_parts(genome, phenotype, config, id, parent_id, generation))
-    }
 }
 
 /// Spawn pools for energy and health from decoded phenotype.
 pub fn vitality_spawn_pools_for(phenotype: &AnyPhenotype, config: &SimConfig) -> (f32, f32) {
-    match phenotype {
-        AnyPhenotype::V2(p) => {
-            let hp_frac = config.economy.spawn_health_frac.clamp(0.0, 1.0);
-            (p.max_health * hp_frac, p.max_health)
-        }
-        AnyPhenotype::V1(p) => (p.core_max_hp, p.core_max_hp),
-    }
+    let hp_frac = config.economy.spawn_health_frac.clamp(0.0, 1.0);
+    (phenotype.max_health * hp_frac, phenotype.max_health)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::genome::Genome;
+    use crate::genome::{ancestor_any_from_config, decode_v2};
 
     #[test]
     fn agent_radius_matches_phenotype() {
-        let config = SimConfig::load_v1_regression().unwrap();
-        let genome = Genome::ancestor_from_config(&config).unwrap();
-        let phenotype = decode(&genome, &config).unwrap();
-        let bundle = LifeBundle::from_parts(genome, phenotype.clone(), &config, 1, None, 0);
+        let config = SimConfig::load_default().unwrap();
+        let genome = ancestor_any_from_config(&config).unwrap();
+        let phenotype = decode_v2(&genome, &config).unwrap();
+        let bundle = LifeBundle::from_any_parts(genome, phenotype.clone(), &config, 1, None, 0);
         assert_eq!(bundle.agent.radius, phenotype.body_radius);
     }
 
     #[test]
-    fn try_from_genome_rejects_invalid_header() {
-        let config = SimConfig::load_v1_regression().unwrap();
-        let mut genome = Genome::ancestor_from_config(&config).unwrap();
-        genome.bytes[0] = b'X';
-        assert!(LifeBundle::try_from_genome(genome, &config, 1, None, 0).is_none());
+    fn try_from_genome_bytes_rejects_invalid_header() {
+        let config = SimConfig::load_default().unwrap();
+        let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+        bytes[0] = b'X';
+        assert!(LifeBundle::try_from_genome_bytes(bytes, &config, 1, None, 0).is_none());
     }
 
     #[test]
     fn life_bundle_has_all_marker_components() {
-        let config = SimConfig::load_v1_regression().unwrap();
-        let genome = Genome::ancestor_from_config(&config).unwrap();
-        let bundle = LifeBundle::try_from_genome(genome, &config, 42, None, 0).unwrap();
+        let config = SimConfig::load_default().unwrap();
+        let bytes = config.genetics.parse_ancestor_bytes().unwrap();
+        let bundle = LifeBundle::try_from_genome_bytes(bytes, &config, 42, None, 0).unwrap();
         assert_eq!(bundle.lineage.id, 42);
         assert_eq!(bundle.health.part_hp.len(), 0);
-        assert_eq!(bundle.energy.internal_energy, config.economy.spawn_energy);
+        let expected_energy = config
+            .economy
+            .spawn_energy
+            .min(bundle.energy.max_internal_energy);
+        assert_eq!(bundle.energy.internal_energy, expected_energy);
     }
 
     /// Phase 4C stub: manual `part_hp` does not receive interaction damage until Phase 7.
-    /// Repair policies in 4D (`core_first`, `cheapest`, `symmetric`) operate on core + parts
-    /// when parts exist; hazard/collision damage stays core-only in Phase 4.
     #[test]
     fn phase4_damage_routes_to_core_when_parts_present_stub() {
         let mut health = Health {

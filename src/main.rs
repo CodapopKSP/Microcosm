@@ -56,24 +56,10 @@ fn log_config_loaded(
     } else {
         eprintln!("loaded {} (nondeterministic)", config_path.display());
     }
-    let (bytes_len, version, radius, photo) = match (ancestor, ancestor_phenotype) {
-        (AnyGenome::V1(g), AnyPhenotype::V1(p)) => (
-            g.bytes.len(),
-            g.version,
-            p.body_radius,
-            p.photo_strength,
-        ),
-        (AnyGenome::V2(g), AnyPhenotype::V2(p)) => (
-            g.bytes.len(),
-            g.version,
-            p.body_radius,
-            p.photo_effective,
-        ),
-        _ => {
-            eprintln!("ancestor genome/phenotype version mismatch");
-            return;
-        }
-    };
+    let bytes_len = ancestor.bytes.len();
+    let version = ancestor.version;
+    let radius = ancestor_phenotype.body_radius;
+    let photo = ancestor_phenotype.photo_effective;
     eprintln!(
         "ancestor ok ({} bytes, v{}, radius {:.1}, photo {:.2})",
         bytes_len, version, radius, photo
@@ -122,11 +108,12 @@ mod tests {
             query.single(app.world());
         assert_eq!(exposure.0, 0.0);
         assert_eq!(agent.radius, pheno.body_radius());
-        assert_eq!(energy.internal_energy, config.economy.spawn_energy);
-        assert_eq!(
-            health.core_hp,
-            pheno.v1().map(|p| p.core_max_hp).unwrap_or(health.core_max_hp)
-        );
+        let spawn_energy = config.economy.spawn_energy;
+        let expected_energy = spawn_energy.min(pheno.0.max_energy);
+        assert_eq!(energy.internal_energy, expected_energy);
+        let frac = config.economy.spawn_health_frac.clamp(0.0, 1.0);
+        let expected_hp = (pheno.0.max_health * frac).min(pheno.0.max_health);
+        assert_eq!(health.core_hp, expected_hp);
         assert!(health.part_hp.is_empty());
         assert_eq!(lineage.generation, 0);
         assert_eq!(cooldowns.repro_ticks_remaining, 0);

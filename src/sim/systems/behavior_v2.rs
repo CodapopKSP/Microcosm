@@ -27,9 +27,7 @@ pub fn behavior_v2(
     let flee_offset = behavior_cfg.avoid_flee_heading_offset_deg;
 
     for (phenotype, perception, energy, mut state) in &mut query {
-        let Some(phenotype_v2) = phenotype.v2() else {
-            continue;
-        };
+        let phenotype_v2 = &phenotype.0;
         update_behavior_intent(
             &mut state,
             perception,

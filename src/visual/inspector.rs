@@ -24,24 +24,15 @@ pub fn format_genome_hex(bytes: &[u8]) -> String {
 }
 
 pub fn genome_hex(genome: &AnyGenome) -> String {
-    match genome {
-        AnyGenome::V1(g) => g.to_hex(),
-        AnyGenome::V2(g) => g.to_hex(),
-    }
+    genome.to_hex()
 }
 
 pub fn genome_byte_len(genome: &AnyGenome) -> usize {
-    match genome {
-        AnyGenome::V1(g) => g.bytes.len(),
-        AnyGenome::V2(g) => g.bytes.len(),
-    }
+    genome.bytes.len()
 }
 
-pub fn genome_version_label(genome: &AnyGenome) -> &'static str {
-    match genome {
-        AnyGenome::V1(_) => "EVO1",
-        AnyGenome::V2(_) => "EVO2",
-    }
+pub fn genome_version_label(_genome: &AnyGenome) -> &'static str {
+    "EVO2"
 }
 
 fn stat_row(ui: &mut egui::Ui, label: &str, value: impl std::fmt::Display) {
@@ -142,18 +133,9 @@ pub fn draw_agent_inspector(
 
     let decode_v2 = config.0.genetics.decode_v2.as_ref();
     let hex_raw = genome_hex(&genome.0);
-    let hex_spaced = format_genome_hex(match &genome.0 {
-        AnyGenome::V1(g) => &g.bytes,
-        AnyGenome::V2(g) => &g.bytes,
-    });
-    let chromosome_lines = match &genome.0 {
-        AnyGenome::V2(g) => g.chromosomes_display_lines(),
-        AnyGenome::V1(_) => Vec::new(),
-    };
-    let chromosome_text = match &genome.0 {
-        AnyGenome::V2(g) => g.chromosomes_display_text(),
-        AnyGenome::V1(_) => hex_spaced.clone(),
-    };
+    let hex_spaced = format_genome_hex(&genome.0.bytes);
+    let chromosome_lines = genome.0.chromosomes_display_lines();
+    let chromosome_text = genome.0.chromosomes_display_text();
     let pos = transform.translation.truncate();
     let speed = velocity.0.length();
     let age_secs = age.ticks as f32 / TICKS_PER_SEC;
@@ -223,7 +205,8 @@ pub fn draw_agent_inspector(
             stat_row(ui, "Minerals", format!("{:.4}", minerals.concentration));
             stat_row(ui, "Sensor rays", sensor_rays);
 
-            if let AnyPhenotype::V2(p) = &phenotype.0 {
+            {
+                let p = &phenotype.0;
                 section_heading(ui, "Phenotype");
                 let color = p.color;
                 ui.horizontal(|ui| {
@@ -263,26 +246,6 @@ pub fn draw_agent_inspector(
                 stat_row(ui, "Sensor eyes", p.sensor_eye_count);
                 stat_row(ui, "Pursue slots", p.pursue_slot_count);
                 stat_row(ui, "Avoid slots", p.avoid_slot_count);
-            } else if let Some(p) = phenotype.v1() {
-                section_heading(ui, "Phenotype");
-                let color = p.color;
-                ui.horizontal(|ui| {
-                    ui.label("Color");
-                    rgb_preview(ui, color);
-                    ui.label(format!(
-                        "R {:.0}%  G {:.0}%  B {:.0}%",
-                        color[0] * 100.0,
-                        color[1] * 100.0,
-                        color[2] * 100.0
-                    ));
-                });
-                stat_row(ui, "Body radius", format!("{:.2}", p.body_radius));
-                stat_row(ui, "Max speed", format!("{:.2}", p.max_speed));
-                stat_row(ui, "Photo strength", format!("{:.3}", p.photo_strength));
-                stat_row(ui, "Metabolism / tick", format!("{:.4}", p.metabolism_idle));
-                stat_row(ui, "Repro threshold", format!("{:.2}", p.repro_threshold));
-                stat_row(ui, "Move desire", format!("{:.1}%", p.desire_to_move * 100.0));
-                stat_row(ui, "Greenness", format!("{:.3}", p.greenness));
             }
 
             section_heading(ui, "Genome");

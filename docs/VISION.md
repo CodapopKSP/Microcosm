@@ -48,7 +48,7 @@ Appendage trees, soup compounds, vents, and sensory spectra are **specified earl
 
 ## Relationship to current codebase
 
-The repo currently contains **Phase 0**: a Bevy 2D proof of concept ([`src/main.rs`](../src/main.rs)) with colored circles, wall bounce, and despawn-on-collision. That collision behavior is a placeholder, not ecological death. Future phases replace it with energy- and health-based lifecycle systems described in [ENTITIES.md](ENTITIES.md).
+The repo runs **genome v2** by default ([`configs/default.toml`](../configs/default.toml)): energy/health vitality, hazards, reproduction with mutation. Early PoC used despawn-on-collision; that placeholder is gone. Entity overlap does not damage HP (revision 2026-06). Lifecycle is described in [ENTITIES.md](ENTITIES.md) and [Genome_Definition.md](Genome_Definition.md).
 
 ## Glossary
 

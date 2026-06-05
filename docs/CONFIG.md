@@ -21,7 +21,8 @@ Example template: [`configs/genome_v2.example.toml`](../configs/genome_v2.exampl
 |---------|---------|
 | `[world]` | Size, boundary, initial population |
 | `[performance]` | Failsafe cap (not ecological) |
-| `[genetics]` | Version, ancestor hex, mutation RNG |
+| `[genetics]` | Version, ancestor hex, slot limits |
+| `[genetics.mutation_v2]` | v2 offspring mutation (gene-level ±increment) |
 | `[genetics.decode_v2]` | Scale every **genome byte → phenotype** formula |
 | `[genetics.behavior]` | Pursue/avoid limits, fuzzy match, sensor upkeep |
 | `[genetics.triad]` | Photo / biomass / minerals inverse coupling |
@@ -42,7 +43,20 @@ v1 configs keep `[genetics.decode_ranges]` and `[genetics.color_photosynthesis]`
 | `ancestor_hex` | worldgen | Full EVO2 genome including header |
 | `max_genome_bytes` | validation | Hard cap on variable pursue/avoid growth |
 | `max_pursue_slots` / `max_avoid_slots` | mutation | Slot count limits |
-| `p_bit_flip`, `p_point`, … | reproduction | Mutation operators ([GENOME.md](GENOME.md) legacy names) |
+
+### `[genetics.mutation_v2]` — offspring mutation (v2 only)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `passes_min` | 0 | Minimum mutation passes per child |
+| `passes_max` | 4 | Maximum mutation passes per child |
+| `p_large_step` | 0.10 | Probability of ±3–4 step instead of ±1 |
+| `large_step_min` | 3 | Large-step magnitude lower bound |
+| `large_step_max` | 4 | Large-step magnitude upper bound |
+
+Required when `genome_version = 2`. See [Genome_Definition.md](Genome_Definition.md#mutation-v2).
+
+Only `genome_version = 2` is supported. Legacy v1 mutation keys (`p_bit_flip`, `decode_ranges`, etc.) were removed in Phase G.
 
 ---
 
@@ -54,7 +68,7 @@ Each row maps prose in [Genome_Definition.md](Genome_Definition.md) to config ke
 
 | Key | Default (spec prose) | Use |
 |-----|----------------------|-----|
-| `nibble_levels` | 16 | Divisor for high-nibble caps (`nibble / 15`) |
+| `nibble_levels` | 16 | Turning/sensor nibble decode only (**not** efficiency caps) |
 | `channel_max` | 255 | RGB decode to [0,1] for render/smell |
 
 ### Body radius (bytes 3–4, u16)
@@ -111,7 +125,7 @@ Each row maps prose in [Genome_Definition.md](Genome_Definition.md) to config ke
 
 | Key | Default | Use |
 |-----|---------|-----|
-| `digest_eff_from_byte` | linear 0..1 | Base efficiency before triad + nibble cap |
+| `digest_eff_from_byte` | linear 0..1 | Base efficiency before triad coupling |
 
 ### Sensors (bytes 20–21)
 
@@ -134,7 +148,7 @@ See `[genetics.triad]` — coupling function and weights are **config**, not DNA
 | `coupling_mode` | `max_other`, `mean_other`, or `product_other` (pick one; document in repo) |
 | `coupling_strength` | 0..1 scaler on cross-term |
 
-Effective efficiency = `gene_eff × (1 - strength × f(other genes))`, capped by color nibble for that pathway.
+Effective efficiency = `gene_eff × (1 - strength × f(other genes))`. Color bytes do not cap pathways (revision 2026-06).
 
 ---
 
@@ -156,8 +170,8 @@ Effective efficiency = `gene_eff × (1 - strength × f(other genes))`, capped by
 
 | Key | v1 exists | v2 notes |
 |-----|-----------|----------|
-| `spawn_energy` | yes | Initial `internal_energy` |
-| `spawn_health_frac` | new | Optional fraction of decoded max health at birth |
+| `spawn_energy` | yes | **Generation-0 only** — initial `internal_energy` |
+| `spawn_health_frac` | new | **Generation-0 only** — fraction of decoded max health at birth |
 | `metabolism_floor` | yes | Minimum idle drain after decode |
 | `repro_payment_order` | new | `health_first` / `energy_first` / `proportional` for endowment spend |
 
@@ -194,11 +208,9 @@ Effective efficiency = `gene_eff × (1 - strength × f(other genes))`, capped by
 | `repair_energy_per_hp` | yes | Base exchange rate; gene only scales speed/cost mult |
 | `repair_policy` | yes | `core_first`, etc. |
 
-### Collision & failsafe
+### Failsafe
 
-| Key | v1 exists |
-|-----|-----------|
-| `collision_damage_scale` | yes |
+Entity–entity collision damage was removed in the evolution model revision (2026-06). Hazards remain under `[environment]`.
 
 ---
 
@@ -229,8 +241,10 @@ Effective efficiency = `gene_eff × (1 - strength × f(other genes))`, capped by
 |----|-----------|
 | `[genetics.decode_ranges]` | Replace with `[genetics.decode_v2]` when `genome_version = 2` |
 | `age_metabolism_scale_min/max` | **Remove** — age is global-only |
-| `color_photosynthesis` | **Remove** — replaced by color nibble caps |
+| `color_photosynthesis` | **Remove in v2** — v1 greenness niche only; v2 color is cosmetic |
+| `p_bit_flip`, `mutations_per_offspring`, … | **v1 only** — v2 uses `[genetics.mutation_v2]` |
+| `collision_damage_scale` | **Removed** — no entity–entity collision damage |
 | `chemo_cliff`, `k_chemo` | Minerals digestion + environment; tune under `decode_v2` / vents |
 | `core_max_hp` | May become derived from radius + ratio; or cap in `decode_v2` |
 
-**G8 cutover:** [`configs/default.toml`](../configs/default.toml) is v2; v1 regression is [`configs/v1_regression.toml`](../configs/v1_regression.toml). Load v1 in tests via `SimConfig::load_v1_regression()`.
+**Cutover complete:** [`configs/default.toml`](../configs/default.toml) is the only supported genetics profile.

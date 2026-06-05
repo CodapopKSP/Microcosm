@@ -1,14 +1,12 @@
 //! JSONL metrics export for headless runs (Phase 3C).
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use bevy::prelude::*;
 use serde::Serialize;
-
-use crate::genome::Genome as GenomeData;
 
 use super::behavior::{BehaviorMode, BehaviorState};
 use super::components::{Agent, DeathReason, Energy, Genome, Health, Phenotype};
@@ -132,10 +130,10 @@ pub struct MetricsLine {
     pub min_age_metabolism_scale: f32,
     #[serde(serialize_with = "serialize_rounded_f32")]
     pub max_age_metabolism_scale: f32,
-    pub color_bins: HashMap<String, u32>,
-    pub radius_bins: HashMap<String, u32>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub genotype_hash_histogram: HashMap<String, u32>,
+    pub color_bins: BTreeMap<String, u32>,
+    pub radius_bins: BTreeMap<String, u32>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub genotype_hash_histogram: BTreeMap<String, u32>,
     #[serde(serialize_with = "serialize_rounded_f32")]
     pub mean_skin_hardness: f32,
     #[serde(serialize_with = "serialize_rounded_f32")]
@@ -168,14 +166,6 @@ where
     S: serde::Serializer,
 {
     serializer.serialize_f64(round_metric(*value))
-}
-
-fn fold_genome_key(genome: &GenomeData) -> String {
-    let fold = genome
-        .bytes
-        .iter()
-        .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(u64::from(b)));
-    format!("{fold:016x}")
 }
 
 fn fold_genome_key_v2(genome: &crate::genome::GenomeV2) -> String {
@@ -280,18 +270,18 @@ pub fn build_metrics_line(
             (mean, min, max)
         };
 
-    let mut color_bins = HashMap::new();
+    let mut color_bins = BTreeMap::new();
     for key in color_keys {
         *color_bins.entry(key.clone()).or_insert(0) += 1;
     }
 
-    let mut radius_bins = HashMap::new();
+    let mut radius_bins = BTreeMap::new();
     for &r in radii {
         let key = radius_bin_key(r);
         *radius_bins.entry(key).or_insert(0) += 1;
     }
 
-    let mut genotype_hash_histogram = HashMap::new();
+    let mut genotype_hash_histogram = BTreeMap::new();
     for key in genotype_keys {
         *genotype_hash_histogram.entry(key.clone()).or_insert(0) += 1;
     }
@@ -399,25 +389,14 @@ pub fn metrics_sample(
             }
         }
 
-        match (&phenotype.0, &genome.0) {
-            (crate::genome::AnyPhenotype::V1(p), crate::genome::AnyGenome::V1(g)) => {
-                photo_strengths.push(p.photo_strength);
-                age_metabolism_scales.push(p.age_metabolism_scale);
-                color_keys.push(color_bin_key(p.color));
-                genotype_keys.push(fold_genome_key(g));
-                skin_hardnesses.push(p.skin_hardness);
-                greennesses.push(p.greenness);
-            }
-            (crate::genome::AnyPhenotype::V2(p), crate::genome::AnyGenome::V2(g)) => {
-                photo_strengths.push(p.photo_effective);
-                age_metabolism_scales.push(0.0);
-                color_keys.push(color_bin_key(p.color));
-                genotype_keys.push(fold_genome_key_v2(g));
-                skin_hardnesses.push(p.armor_stroke);
-                greennesses.push(p.color[1]);
-            }
-            _ => {}
-        }
+        let p = &phenotype.0;
+        let g = &genome.0;
+        photo_strengths.push(p.photo_effective);
+        age_metabolism_scales.push(0.0);
+        color_keys.push(color_bin_key(p.color));
+        genotype_keys.push(fold_genome_key_v2(g));
+        skin_hardnesses.push(p.armor_stroke);
+        greennesses.push(p.color[1]);
     }
 
     let repair_spent = repair_stats.energy_spent_this_period;

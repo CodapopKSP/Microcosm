@@ -4,15 +4,12 @@ use std::fmt;
 
 use crate::config::{GeneticsDecodeV2, GeneticsTriadConfig, SimConfig, TriadCouplingMode};
 use crate::genome::encoding_v2::GenomeV2;
-use crate::genome::encoding::GenomeError;
+use crate::genome::error::GenomeError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhenotypeV2 {
     pub color: [f32; 3],
     pub color_rgb: [u8; 3],
-    pub photo_nibble_cap: f32,
-    pub biomass_nibble_cap: f32,
-    pub minerals_nibble_cap: f32,
     pub body_radius: f32,
     pub radius_metabolism_bonus: f32,
     pub vitality_budget: f32,
@@ -76,12 +73,6 @@ pub fn byte_fraction(raw: u8, scale: f32) -> f32 {
     raw as f32 / scale
 }
 
-pub fn high_nibble_cap(channel: u8, nibble_levels: u32) -> f32 {
-    let levels = nibble_levels.max(2);
-    let nibble = channel >> 4;
-    nibble as f32 / (levels - 1) as f32
-}
-
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t.clamp(0.0, 1.0)
 }
@@ -99,13 +90,11 @@ pub fn triad_coupling(others: &[f32], mode: TriadCouplingMode) -> f32 {
 
 pub fn apply_triad(
     gene_eff: f32,
-    cap: f32,
     others: &[f32],
     triad: &GeneticsTriadConfig,
 ) -> f32 {
-    let base = gene_eff.min(cap);
     let cross = triad_coupling(others, triad.coupling_mode);
-    (base * (1.0 - triad.coupling_strength * cross)).clamp(0.0, 1.0)
+    (gene_eff * (1.0 - triad.coupling_strength * cross)).clamp(0.0, 1.0)
 }
 
 pub fn sensor_eye_count(mask: u8) -> u32 {
@@ -131,10 +120,6 @@ pub fn decode(genome: &GenomeV2, config: &SimConfig) -> Result<PhenotypeV2, Deco
         g as f32 / d.channel_max,
         b as f32 / d.channel_max,
     ];
-
-    let photo_cap = high_nibble_cap(g, d.nibble_levels);
-    let biomass_cap = high_nibble_cap(r, d.nibble_levels);
-    let minerals_cap = high_nibble_cap(b, d.nibble_levels);
 
     let body_t = u16_fraction(genome.body_radius_raw()?);
     let body_radius = lerp(d.radius_at_zero, d.radius_at_max, body_t);
@@ -192,19 +177,16 @@ pub fn decode(genome: &GenomeV2, config: &SimConfig) -> Result<PhenotypeV2, Deco
 
     let photo_effective = apply_triad(
         photo_gene_eff,
-        photo_cap,
         &[biomass_gene_eff, minerals_gene_eff],
         triad,
     );
     let biomass_effective = apply_triad(
         biomass_gene_eff,
-        biomass_cap,
         &[photo_gene_eff, minerals_gene_eff],
         triad,
     );
     let minerals_effective = apply_triad(
         minerals_gene_eff,
-        minerals_cap,
         &[photo_gene_eff, biomass_gene_eff],
         triad,
     );
@@ -225,9 +207,6 @@ pub fn decode(genome: &GenomeV2, config: &SimConfig) -> Result<PhenotypeV2, Deco
     Ok(PhenotypeV2 {
         color,
         color_rgb,
-        photo_nibble_cap: photo_cap,
-        biomass_nibble_cap: biomass_cap,
-        minerals_nibble_cap: minerals_cap,
         body_radius,
         radius_metabolism_bonus,
         vitality_budget,
@@ -335,5 +314,22 @@ mod tests {
         bytes[biomass_idx] = 0xFF;
         let coupled = decode(&GenomeV2::from_bytes(bytes, &config.genetics).unwrap(), &config).unwrap();
         assert!(coupled.photo_effective < solo.photo_effective);
+    }
+
+    #[test]
+    fn color_does_not_cap_photo_gene_efficiency() {
+        let config = v2_config();
+        let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+        let g_idx =
+            crate::genome::encoding_v2::HEADER_LEN + crate::genome::encoding_v2::core::COLOR_G;
+        let photo_idx =
+            crate::genome::encoding_v2::HEADER_LEN + crate::genome::encoding_v2::core::PHOTO_EFFICIENCY;
+        bytes[g_idx] = 0x00;
+        bytes[photo_idx] = 0xFF;
+        let p = decode(&GenomeV2::from_bytes(bytes, &config.genetics).unwrap(), &config).unwrap();
+        assert!(
+            (p.photo_gene_eff - 1.0).abs() < 1e-5,
+            "photo gene eff should be full range regardless of color_g nibble"
+        );
     }
 }

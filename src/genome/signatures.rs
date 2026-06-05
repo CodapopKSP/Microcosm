@@ -1,6 +1,6 @@
 //! Pursue/avoid signature slots, type registry, and fuzzy matching ([Genome_Definition.md](../../docs/Genome_Definition.md)).
 
-use crate::genome::encoding::GenomeError;
+use crate::genome::error::GenomeError;
 use crate::genome::encoding_v2::GenomeV2;
 
 pub const SIMPLE_SLOT_LEN: usize = 6;
@@ -397,7 +397,7 @@ mod tests {
         let config = v2_config();
         let genome = GenomeV2::ancestor_from_config(&config).unwrap();
         assert_eq!(variable_payload_len(&genome).unwrap(), 0);
-        assert_eq!(expected_genome_len(&genome).unwrap(), 28);
+        assert_eq!(expected_genome_len(&genome).unwrap(), 27);
     }
 
     #[test]

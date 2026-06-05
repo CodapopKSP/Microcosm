@@ -5,10 +5,7 @@ use rand::Rng;
 
 use crate::config::{SimConfig, WorldConfig};
 use super::agent_material::AgentColorMaterial;
-use crate::genome::{
-    decode, decode_phenotype, AnyGenome, AnyPhenotype,
-    Genome as GenomeData, Phenotype as PhenotypeData,
-};
+use crate::genome::{decode_phenotype, phenotype_color, AnyGenome, AnyPhenotype};
 
 use super::behavior::BehaviorState;
 use super::components::{
@@ -47,20 +44,29 @@ pub fn try_prepare_spawn(
     Some((genome, phenotype))
 }
 
-/// Validate v1 genome and decode phenotype; returns `None` on stillborn.
-pub fn try_prepare_spawn_v1(
-    genome: GenomeData,
+/// Build spawn params for generation-0 population (uses `spawn_energy` + `spawn_health_frac`).
+pub fn build_initial_spawn_params(
+    genome: AnyGenome,
+    phenotype: AnyPhenotype,
     config: &SimConfig,
-) -> Option<(GenomeData, PhenotypeData)> {
-    let genetics = &config.genetics;
-    if !genome.is_valid(genetics.genome_version, genetics.core_length) {
-        return None;
-    }
-    let phenotype = decode(&genome, config).ok()?;
-    Some((genome, phenotype))
+    id: u64,
+    generation: u32,
+) -> SpawnParams {
+    debug_assert!(generation == 0);
+    let (initial_hp, _) = vitality_spawn_pools(&phenotype, config);
+    build_spawn_params_with_vitals(
+        genome,
+        phenotype,
+        config,
+        id,
+        None,
+        generation,
+        config.economy.spawn_energy,
+        initial_hp,
+    )
 }
 
-/// Build spawn params after validation (caller assigns lineage id).
+/// Build spawn params for initial population (alias for [`build_initial_spawn_params`]).
 pub fn build_spawn_params(
     genome: AnyGenome,
     phenotype: AnyPhenotype,
@@ -69,17 +75,8 @@ pub fn build_spawn_params(
     parent_id: Option<u64>,
     generation: u32,
 ) -> SpawnParams {
-    let (initial_hp, _) = vitality_spawn_pools(&phenotype, config);
-    build_offspring_spawn_params(
-        genome,
-        phenotype,
-        config,
-        id,
-        parent_id,
-        generation,
-        config.economy.spawn_energy,
-        initial_hp,
-    )
+    let _ = parent_id;
+    build_initial_spawn_params(genome, phenotype, config, id, generation)
 }
 
 /// Build spawn params for a child with explicit starting energy (offspring endowment).
@@ -93,15 +90,36 @@ pub fn build_offspring_spawn_params(
     initial_energy: f32,
     initial_core_hp: f32,
 ) -> SpawnParams {
+    debug_assert!(
+        parent_id.is_some(),
+        "offspring spawn must have a parent; use build_initial_spawn_params for generation 0"
+    );
+    build_spawn_params_with_vitals(
+        genome,
+        phenotype,
+        config,
+        id,
+        parent_id,
+        generation,
+        initial_energy,
+        initial_core_hp,
+    )
+}
+
+fn build_spawn_params_with_vitals(
+    genome: AnyGenome,
+    phenotype: AnyPhenotype,
+    config: &SimConfig,
+    id: u64,
+    parent_id: Option<u64>,
+    generation: u32,
+    initial_energy: f32,
+    initial_core_hp: f32,
+) -> SpawnParams {
     let color = phenotype_to_color(&phenotype);
-    let body_radius = phenotype.body_radius();
-    let (initial_hp, initial_max_hp) = match &phenotype {
-        AnyPhenotype::V2(p) => (
-            initial_core_hp.min(p.max_health.max(0.0)),
-            p.max_health.max(0.0),
-        ),
-        AnyPhenotype::V1(_) => (initial_core_hp, initial_core_hp),
-    };
+    let body_radius = phenotype.body_radius;
+    let initial_max_hp = phenotype.max_health.max(0.0);
+    let initial_hp = initial_core_hp.min(initial_max_hp);
     let life = LifeBundle::from_any_parts_with_vitals(
         genome,
         phenotype,
@@ -144,7 +162,7 @@ pub fn try_build_spawn(
 }
 
 pub fn phenotype_to_color(phenotype: &AnyPhenotype) -> Color {
-    let c = phenotype.color();
+    let c = phenotype_color(phenotype);
     Color::srgb(c[0], c[1], c[2])
 }
 
@@ -239,7 +257,7 @@ pub fn spawn_agent_entity(
         body_radius,
     } = params;
     let lineage_id = life.lineage.id;
-    let armor_stroke = life.phenotype.v2().map(|p| p.armor_stroke);
+    let armor_stroke = Some(life.phenotype.0.armor_stroke);
     let mut entity_cmd = commands.spawn((
         life,
         heading,
@@ -307,7 +325,7 @@ pub fn spawn_initial_population(
         };
 
         let id = next_id.next();
-        let mut params = build_spawn_params(genome, phenotype, config, id, None, 0);
+        let mut params = build_initial_spawn_params(genome, phenotype, config, id, 0);
         randomize_placement(&mut params, rng, bounds, &config.world);
         debug_assert_eq!(params.life.agent.radius, params.body_radius);
 
@@ -321,84 +339,61 @@ pub fn spawn_initial_population(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::genome::{AnyGenome, Genome};
-
-    fn v1(genome: Genome) -> AnyGenome {
-        AnyGenome::V1(genome)
-    }
+    use crate::genome::{ancestor_any_from_config, phenotype_color};
 
     #[test]
     fn invalid_genome_is_stillborn() {
-        let config = SimConfig::load_v1_regression().unwrap();
-        let mut genome = Genome::ancestor_from_config(&config).unwrap();
-        genome.bytes[0] = b'X';
-        assert!(try_prepare_spawn(v1(genome), &config).is_none());
+        let config = SimConfig::load_default().unwrap();
+        let mut bad = ancestor_any_from_config(&config).unwrap();
+        bad.bytes[0] = b'X';
+        assert!(try_prepare_spawn(bad, &config).is_none());
         assert!(try_build_spawn(
-            v1(Genome::ancestor_from_config(&config).unwrap()),
+            ancestor_any_from_config(&config).unwrap(),
             &config,
             1,
             None,
             0,
         )
         .is_some());
-
-        let mut bad = Genome::ancestor_from_config(&config).unwrap();
-        bad.bytes[0] = b'X';
-        assert!(try_build_spawn(v1(bad), &config, 1, None, 0).is_none());
     }
 
     #[test]
     fn spawn_uses_phenotype_color_and_radius() {
-        let config = SimConfig::load_v1_regression().unwrap();
-        let genome = Genome::ancestor_from_config(&config).unwrap();
-        let (_, phenotype) = try_prepare_spawn(v1(genome), &config).unwrap();
-        let params = build_spawn_params(
-            v1(Genome::ancestor_from_config(&config).unwrap()),
-            phenotype.clone(),
-            &config,
-            1,
-            None,
-            0,
-        );
-        assert_eq!(params.body_radius, phenotype.body_radius());
-        assert_eq!(params.life.agent.radius, phenotype.body_radius());
+        let config = SimConfig::load_default().unwrap();
+        let genome = ancestor_any_from_config(&config).unwrap();
+        let (_, phenotype) = try_prepare_spawn(genome.clone(), &config).unwrap();
+        let params = build_spawn_params(genome, phenotype.clone(), &config, 1, None, 0);
+        assert_eq!(params.body_radius, phenotype.body_radius);
+        assert_eq!(params.life.agent.radius, phenotype.body_radius);
         let c = params.color.to_srgba();
-        let color = phenotype.color();
+        let color = phenotype_color(&phenotype);
         assert!((c.red - color[0]).abs() < 1e-5);
     }
 
     #[test]
-    fn stillborn_skips_id_assignment_in_prepare_path() {
-        let config = SimConfig::load_v1_regression().unwrap();
-        let mut bad = Genome::ancestor_from_config(&config).unwrap();
-        bad.bytes[0] = b'X';
-        assert!(try_prepare_spawn(v1(bad), &config).is_none());
-    }
-
-    #[test]
     fn offspring_spawn_has_empty_part_hp() {
-        let config = SimConfig::load_v1_regression().unwrap();
-        let genome = Genome::ancestor_from_config(&config).unwrap();
-        let (_, phenotype) = try_prepare_spawn(v1(genome.clone()), &config).unwrap();
+        let config = SimConfig::load_default().unwrap();
+        let genome = ancestor_any_from_config(&config).unwrap();
+        let (_, phenotype) = try_prepare_spawn(genome.clone(), &config).unwrap();
         let params = build_offspring_spawn_params(
-            v1(genome),
+            genome,
             phenotype,
             &config,
             2,
             Some(1),
             1,
-            config.economy.spawn_energy,
-            config.economy.spawn_energy,
+            25.0,
+            80.0,
         );
         assert!(params.life.health.part_hp.is_empty());
     }
 
     #[test]
     fn initial_population_prepare_succeeds_for_ancestor() {
-        let config = SimConfig::load_v1_regression().unwrap();
-        let ancestor = Genome::ancestor_from_config(&config).unwrap();
+        let config = SimConfig::load_default().unwrap();
+        let ancestor = ancestor_any_from_config(&config).unwrap();
         for _ in 0..config.world.initial_population {
-            assert!(try_prepare_spawn(v1(ancestor.clone_genome()), &config).is_some());
+            assert!(try_prepare_spawn(ancestor.clone_genome(), &config).is_some());
         }
     }
 }

@@ -106,7 +106,6 @@ pub fn apply_movement_tick_v2(
 
 /// Bevy system: v2 agents use heading-based movement (wander / pursue / avoid).
 pub fn behavior_movement_v2(
-    time: Res<Time>,
     tick: Res<SimTick>,
     config: Res<SimConfigResource>,
     bounds: Res<WorldBounds>,
@@ -122,7 +121,7 @@ pub fn behavior_movement_v2(
         &Lineage,
     )>,
 ) {
-    let dt = time.delta_secs();
+    let dt = super::super::world::SIM_DT;
     let boundary = config.0.world.boundary;
     let economy = &config.0.economy;
     let sim_tick = tick.tick;
@@ -130,9 +129,7 @@ pub fn behavior_movement_v2(
     for (mut transform, mut heading, mut velocity, phenotype, mut energy, mut behavior, agent, lineage) in
         &mut query
     {
-        let Some(phenotype_v2) = phenotype.v2() else {
-            continue;
-        };
+        let phenotype_v2 = &phenotype.0;
         let mut rng = sim_rng.stream_movement(lineage.id, sim_tick);
         let max_turn_rad = phenotype_v2.turn_degrees_max.to_radians() * dt;
 

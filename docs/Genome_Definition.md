@@ -2,9 +2,9 @@
 
 **This document is the authoritative design for the Evolution Simulator** — not only DNA layout, but also vitality (energy + health), metabolism, movement, sensing, behavior, reproduction, feeding, and how agents interact with environmental fields (light, minerals, corpses, future hazards).
 
-Older docs ([GENOME.md](GENOME.md), [GENOME_REVISIONS.md](GENOME_REVISIONS.md), phase plans that assume `EVO1` core v1) describe the **legacy implementation** until the codebase is migrated. When anything conflicts, **this file wins**.
+Older docs ([GENOME.md](GENOME.md), [GENOME_REVISIONS.md](GENOME_REVISIONS.md), phase plans that assume `EVO1`) are **archived legacy** specs in [`docs/archive/`](archive/). When anything conflicts, **this file wins**.
 
-Implementation status: the repo still runs **genome v1** (`EVO1`, 32-byte core). The layout below is the **target** binary format (`EVO2` header + fixed core + variable pursue/avoid payload).
+Implementation status: **genome v2 only** (`EVO2`, 27-byte core + pursue/avoid slots). v1 (`EVO1`) was removed in Phase G; historical specs live in [`docs/archive/`](../docs/archive/).
 
 ### Genome vs global config
 
@@ -13,7 +13,7 @@ Implementation status: the repo still runs **genome v1** (`EVO1`, 32-byte core).
 | **Genome bytes** | Per-organism **heritable** variation only — the chromosomes and pursue/avoid slots listed in this document. |
 | **`configs/*.toml`** | **Everything else**, including all numeric constants used to **decode** genome bytes into phenotypes. Same config values apply to **every** organism in a run. |
 
-**Rule:** If a mechanic is **not** represented by a chromosome or signature slot in this file (e.g. age metabolism, reproduction death/damage risk, reproduction cooldown, spawn energy, collision damage scale, solar constant, hazard zones), it is **not evolvable** — it is a **global** parameter only. Do not read per-agent bytes for those mechanics in v2.
+**Rule:** If a mechanic is **not** represented by a chromosome or signature slot in this file (e.g. age metabolism, reproduction death/damage risk, reproduction cooldown, initial spawn energy, solar constant, hazard zones), it is **not evolvable** — it is a **global** parameter only. Do not read per-agent bytes for those mechanics in v2.
 
 **Rule:** Numbers appearing in prose below (6553.5, 0.1 photo rate, 52% move discount, ±1 fuzzy nibble, …) are **design defaults** for documentation. Implementation must load them from config ([CONFIG.md](CONFIG.md), `[genetics.decode_v2]` and related tables), not hard-code literals in Rust.
 
@@ -49,10 +49,9 @@ All offsets are relative to the first byte **after** a 4-byte header (`b"EVO2"`,
 ## Chromosomes
 
 Color
-- 3 bytes
-- R/G/B
-- **High nibble** (most significant hex digit) of each channel caps the matching efficiency gene: `cap ≈ (nibble / 15) × 100%` of the chromosome’s `FF` maximum (e.g. R nibble `F` → biomass digestion cannot exceed full gene; R nibble `0` → biomass digestion forced to 0 regardless of biomass byte)
-- Low nibble affects render color / smell signature (`0x0000` color type uses full 24-bit RGB)
+- 3 bytes — R/G/B (`u8` each)
+- **Cosmetic / smell only** — render color and `0x0000` signature matching; **does not cap** photosynthesis, biomass, or minerals efficiency genes (revision 2026-06; see [EVOLUTION_MODEL_REVISION.md](EVOLUTION_MODEL_REVISION.md))
+- Triad inverse coupling between photo / biomass / minerals efficiency bytes remains
 
 Body Radius
 - 2 bytes
@@ -146,7 +145,7 @@ Color   Body  Armr  Heal    Repr  Movement  Energy  Sens  Inter
 
 | Field | Bytes | Ancestor | Notes |
 |-------|-------|----------|-------|
-| Color | `00 FF 05` | green-heavy | G nibble `F` → high photo cap; R/B low → low biomass/minerals caps |
+| Color | `00 FF 05` | green-heavy | Cosmetic green; photo/biomass/mineral genes independent of color nibbles |
 | Body | `00 0A` | raw 10 | Small radius (~4 + linear term); sets storage & metabolism baseline |
 | Armor | `00 00` | none | No stroke, no armor tax |
 | Healing | `00 00` | base rate | 1 HP/s baseline, base cost |
@@ -239,8 +238,8 @@ Rules implied by this spec that extend beyond the genome crate:
 
 - Each agent has **`internal_energy`** and **`core_hp`**, each with decoded **maximum** from body radius and the energy/health ratio locus.
 - Metabolism and upkeep drain **energy first**; any deficit at `internal_energy == 0` drains **health** (starvation death at `core_hp <= 0`).
-- **Photosynthesis:** `gain_per_sec = 0.1 × body_radius × photo_effective` (convert to per-tick with `Δt`). `photo_effective` includes triad inverse scaling and color G-nibble cap.
-- **Digestion:** biomass/minerals gains apply at ingest time using digestion bytes, triad scaling, and color R/B nibble caps.
+- **Photosynthesis:** `gain_per_sec = photo_rate_per_sec_per_radius × body_radius × photo_effective` (convert to per-tick with `Δt`). `photo_effective` includes triad inverse scaling only (no color cap).
+- **Digestion:** biomass/minerals gains apply at ingest time using digestion bytes and triad scaling.
 
 ### Movement & heading
 
@@ -253,7 +252,7 @@ Rules implied by this spec that extend beyond the genome crate:
 
 ### Reproduction
 
-- Trigger when `internal_energy ≥ (repro_threshold_byte / 255) × max_energy` and **`economy.repro_cooldown_ticks`** elapsed (global; not a gene).
+- Trigger when `internal_energy ≥ (repro_threshold_byte / 255) × max_energy` and **`economy.repro_cooldown_ticks`** elapsed (global; not a gene). Default **192** ticks ≈ **3.2 s** at 60 Hz — anti-spam brake when energy refills quickly; not evolvable.
 - **Endowment:** spend up to `(endowment_byte / 255) × (max_energy + max_health)` from parent’s **current** energy+health pools; convert spent amount into child **health first**, overflow to child **energy**. Parent payment order: config `economy.repro_payment_order` (see [CONFIG.md](CONFIG.md)).
 - **Reproduction risk** (`p_death_on_repro_base`, `p_damage_on_repro_base`, `repro_safety_margin`, damage fraction): **global only** — same rolls for all agents ([CONFIG.md](CONFIG.md) `[economy]`).
 
@@ -276,7 +275,7 @@ Chemosynthetic **vents** are not a separate core chromosome; vent niches use **m
 4. **Behavior** (avoid / pursue / wander intent)
 5. **Metabolism & gains** (photo, digestion, upkeep, sensor cost)
 6. **Movement** (integrate velocity, pay move cost)
-7. **Interactions** (collision, hazards — not defined here; legacy systems until ported)
+7. **Interactions** — **hazard zones only** (entity overlap does not damage HP; revision 2026-06)
 8. **Healing** (rate + cost penalty from gene)
 9. **Reproduction**
 10. **Death & despawn**
@@ -290,13 +289,29 @@ These apply **uniformly** to every organism. Tune in [CONFIG.md](CONFIG.md); nev
 | Age metabolism | `[economy.age_metabolism]` |
 | Repro cooldown | `economy.repro_cooldown_ticks` |
 | Repro death / damage risk | `economy.p_death_on_repro_base`, `p_damage_on_repro_base`, … |
-| Spawn energy | `economy.spawn_energy` |
+| Initial spawn energy | `economy.spawn_energy` — **generation-0 only**; offspring use parent endowment |
+| Initial spawn health | `economy.spawn_health_frac` — fraction of decoded max health at generation-0 spawn |
 | Metabolism floor | `economy.metabolism_floor` |
-| Movement distance calibration | `[economy.movement]` (e.g. units per energy at reference radius) |
-| Collision damage | `economy.collision_damage_scale` |
+| Movement distance calibration | `economy.move_energy_units_per_radius` |
 | Repair / heal baseline exchange | `economy.repair_energy_per_hp`, `heal_base_hp_per_sec` |
 | Light, hazards, vents, minerals fields | `[environment]` |
-| Mutation operator probabilities | `[genetics]` |
+| Mutation (v2) | `[genetics.mutation_v2]` — see [Mutation](#mutation-v2) |
+
+### Mutation (v2)
+
+Applied on asexual reproduction after cloning the parent genome. Config: `[genetics.mutation_v2]` ([CONFIG.md](CONFIG.md)).
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `passes_min` / `passes_max` | 0 / 4 | Independent mutation passes per offspring (uniform in range) |
+| `p_large_step` | 0.10 | Chance a pass uses magnitude 3–4 instead of 1 |
+| `large_step_min` / `large_step_max` | 3 / 4 | Large-step magnitude range |
+
+**Per pass:** pick one gene from the [mutable gene registry](EVOLUTION_MODEL_REVISION.md#evo2-mutable-gene-registry) → direction ±1 → magnitude 1 (90%) or `large_step_min..=large_step_max` (10%) → clamp to gene domain → write bytes.
+
+**Not used in v2:** bit flip, locus resample, segment dup/del, `mutations_per_offspring`, `p_bit_flip`, `p_point`, etc. (v1 legacy — [GENOME.md](GENOME.md)).
+
+Implementation: [`src/genome/mutation_v2.rs`](../src/genome/mutation_v2.rs).
 
 ### Explicitly out of scope here (future extension only via new chromosomes)
 
@@ -311,7 +326,7 @@ These apply **uniformly** to every organism. Tune in [CONFIG.md](CONFIG.md); nev
 | Topic | Was | Now |
 |-------|-----|-----|
 | Core loci | [GENOME.md](GENOME.md) | This file |
-| Greenness photo niche | [GENOME.md](GENOME.md) §4.7 | Color nibble caps + photo byte |
+| Greenness photo niche | [GENOME.md](GENOME.md) §4.7 | **v1 only** (`color_photosynthesis`); v2 color is cosmetic |
 | `chemo_potential` gene | Phase 5 / [GENOME.md](GENOME.md) | Minerals digestion + `0x0201` signatures |
 | Phase 5 sensor bytes in `repro_cost` | [PHASE_5.md](PHASE_5.md) | Sensors bytes 20–21 here |
 | Movement calibration | [GENOME_REVISIONS.md](GENOME_REVISIONS.md) | Still recommended unless config overrides; efficiency gene modulates cost |

@@ -117,16 +117,7 @@ pub fn attempt_reproduction_v2(
     }
 
     let child_genome = mutate_offspring_v2(parent_genome, &config.genetics, mutation_rng);
-    let Some((child_genome_any, child_phenotype_any)) =
-        try_prepare_spawn(AnyGenome::V2(child_genome), config)
-    else {
-        return ReproAttemptResult::Stillborn;
-    };
-
-    let AnyPhenotype::V2(child_phenotype) = child_phenotype_any else {
-        return ReproAttemptResult::Stillborn;
-    };
-    let AnyGenome::V2(child_genome) = child_genome_any else {
+    let Some((child_genome, child_phenotype)) = try_prepare_spawn(child_genome, config) else {
         return ReproAttemptResult::Stillborn;
     };
 
@@ -170,8 +161,8 @@ pub fn attempt_reproduction_v2(
     }
 
     ReproAttemptResult::Child {
-        genome: AnyGenome::V2(child_genome),
-        phenotype: AnyPhenotype::V2(child_phenotype),
+        genome: child_genome,
+        phenotype: child_phenotype,
         child_start_energy,
         child_start_hp,
     }
@@ -245,6 +236,73 @@ mod tests {
     }
 
     #[test]
+    fn child_vitality_from_endowment_not_spawn_energy() {
+        let (mut config, mut phenotype, genome) = v2_setup();
+        let mut bytes = genome.bytes.clone();
+        let body_idx = crate::genome::V2_HEADER_LEN + crate::genome::v2_core::BODY_RADIUS;
+        bytes[body_idx] = 0xFF;
+        bytes[body_idx + 1] = 0xFF;
+        let endowment_idx =
+            crate::genome::V2_HEADER_LEN + crate::genome::v2_core::OFFSPRING_ENDOWMENT;
+        let repro_idx =
+            crate::genome::V2_HEADER_LEN + crate::genome::v2_core::REPRO_THRESHOLD;
+        bytes[endowment_idx] = 0xFF;
+        bytes[repro_idx] = 0x00;
+        let genome = GenomeV2::from_bytes(bytes, &config.genetics).unwrap();
+        phenotype = decode_v2(&genome, &config).unwrap();
+
+        config.economy.spawn_energy = 999.0;
+        config.economy.p_death_on_repro_base = 0.0;
+        config.economy.p_damage_on_repro_base = 0.0;
+        config.genetics.mutation_v2 = Some(crate::config::MutationV2Config {
+            passes_min: 0,
+            passes_max: 0,
+            p_large_step: 0.0,
+            large_step_min: 3,
+            large_step_max: 4,
+        });
+
+        let available = 120.0;
+        let spend_target = endowment_budget_cap(&phenotype).min(available);
+        let (expected_hp, expected_energy) = split_endowment_to_child(
+            spend_target,
+            phenotype.max_health,
+            phenotype.max_energy,
+        );
+
+        let mut energy = Energy::new_v2(50.0, phenotype.max_energy);
+        let mut health = Health {
+            core_hp: 70.0,
+            core_max_hp: phenotype.max_health,
+            part_hp: vec![],
+        };
+        let mut repro_rng = StdRng::seed_from_u64(10);
+        let mut mutation_rng = StdRng::seed_from_u64(11);
+
+        match attempt_reproduction_v2(
+            &mut energy,
+            &mut health,
+            &phenotype,
+            &genome,
+            &config,
+            &mut repro_rng,
+            &mut mutation_rng,
+        ) {
+            ReproAttemptResult::Child {
+                child_start_energy,
+                child_start_hp,
+                ..
+            } => {
+                assert!((child_start_hp - expected_hp).abs() < 1e-2);
+                assert!((child_start_energy - expected_energy).abs() < 1e-2);
+                assert!((child_start_hp + child_start_energy - spend_target).abs() < 1e-2);
+                assert!(child_start_energy < config.economy.spawn_energy);
+            }
+            other => panic!("expected child, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn reproduces_at_max_energy_with_ancestor() {
         let (mut config, phenotype, genome) = v2_setup();
         let mut energy = Energy::new_v2(phenotype.max_energy, phenotype.max_energy);
@@ -255,7 +313,13 @@ mod tests {
         };
         config.economy.p_death_on_repro_base = 0.0;
         config.economy.p_damage_on_repro_base = 0.0;
-        config.genetics.mutations_per_offspring = 0;
+        config.genetics.mutation_v2 = Some(crate::config::MutationV2Config {
+            passes_min: 0,
+            passes_max: 0,
+            p_large_step: 0.0,
+            large_step_min: 3,
+            large_step_max: 4,
+        });
         let mut repro_rng = StdRng::seed_from_u64(1);
         let mut mutation_rng = StdRng::seed_from_u64(2);
 

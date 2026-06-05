@@ -2,7 +2,7 @@
 
 Phased implementation plan from the current proof of concept through sexual reproduction. Each phase lists scope, acceptance criteria, and explicit **out of scope** items to prevent creep.
 
-**Current state:** Phase 4 complete; **G8 cutover** — default config is EVO2 ([`configs/default.toml`](../configs/default.toml)). v1 regression: [`configs/v1_regression.toml`](../configs/v1_regression.toml). Track: [GENOME_V2_ARCHITECTURE_ROADMAP.md](GENOME_V2_ARCHITECTURE_ROADMAP.md).
+**Current state:** Evolution model revision complete (58/58). **EVO2 only** — [`configs/default.toml`](../configs/default.toml). v1 removed (Phase G). Track: [GENOME_V2_ARCHITECTURE_ROADMAP.md](GENOME_V2_ARCHITECTURE_ROADMAP.md).
 
 **Canonical redesign:** [Genome_Definition.md](Genome_Definition.md) supersedes v1 genetics. Phase 5 v1 sensor-byte plans are deferred; v2 uses sensors bytes 20–21 in the fixed core.
 
@@ -53,7 +53,7 @@ Phased implementation plan from the current proof of concept through sexual repr
 - `internal_energy`, `core_hp`; metabolism and trait upkeeps (no environmental gain yet—spawn energy or flat grant for testing).
 - Asexual reproduction with `repro_cost`, `offspring_endowment`, cooldown, **repro risk**.
 - Color and `body_radius` from genome.
-- Remove collision-despawn; death from energy / core HP / repro risk only.
+- Remove collision-despawn; death from energy / core HP / repro risk only. **Done.** Entity–entity collision **damage** also removed in evolution model revision (2026-06) — hazards only.
 - `max_entities` failsafe stub.
 
 **Acceptance**
@@ -123,7 +123,7 @@ Phased implementation plan from the current proof of concept through sexual repr
 
 ## Phase 4 — Hazards, armor, per-part health, green photosynthesis (done)
 
-**Detailed plan:** [PHASE_4.md](PHASE_4.md) (checklist, sub-phases 4A–4G, hazard/collision/repair and green-niche design).
+**Detailed plan:** [PHASE_4.md](PHASE_4.md) (checklist, sub-phases 4A–4G). **Note:** collision damage and v1 greenness niche superseded for v2 — see [EVOLUTION_MODEL_REVISION.md](EVOLUTION_MODEL_REVISION.md).
 
 **Scope**
 
@@ -275,7 +275,7 @@ When implementation diverges from docs, update the relevant `docs/*.md` in the s
 - [PHASE_1.md](PHASE_1.md) — Phase 1 implementation checklist and sub-phases
 - [PHASE_2.md](PHASE_2.md) — Phase 2 light field, Model A gain (complete)
 - [PHASE_3.md](PHASE_3.md) — Phase 3 headless CLI, metrics, evolvable lifespan / old-age death
-- [PHASE_4.md](PHASE_4.md) — Phase 4 hazards, collision damage, armor, repair, green photosynthesis niche
+- [PHASE_4.md](PHASE_4.md) — Phase 4 hazards, armor, repair (historical collision/greenness notes)
 - [PHASE_5.md](PHASE_5.md) — Phase 5 thermal vents, chemo threshold, core sensors, light taxis
 - [PHASE_9.md](PHASE_9.md) — Phase 9 seasons, climate cycles, environment_tick modulation
 - [VISION.md](VISION.md) — Project goals

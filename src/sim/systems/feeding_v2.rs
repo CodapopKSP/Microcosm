@@ -78,18 +78,16 @@ pub fn feeding_v2(
 
     let agent_snapshots: Vec<(Entity, Vec2, f32, f32, f32, f32)> = agents
         .iter()
-        .filter_map(|(e, tf, a, p, m, _, _)| {
-            let AnyPhenotype::V2(ph) = &p.0 else {
-                return None;
-            };
-            Some((
+        .map(|(e, tf, a, p, m, _, _)| {
+            let ph = &p.0;
+            (
                 e,
                 tf.translation.truncate(),
                 a.radius,
                 ph.biomass_effective,
                 ph.minerals_effective,
                 m.concentration,
-            ))
+            )
         })
         .collect();
 
@@ -141,9 +139,7 @@ pub fn feeding_v2(
         if gain <= 0.0 {
             continue;
         }
-        let AnyPhenotype::V2(p) = &phenotype.0 else {
-            continue;
-        };
+        let p = &phenotype.0;
         energy.internal_energy += gain;
         clamp_vitality_pools(&mut energy, &mut health, p);
     }

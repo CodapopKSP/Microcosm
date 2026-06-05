@@ -19,7 +19,7 @@ flowchart TB
   end
   subgraph genome_mod [genome]
     Enc[encoding]
-    Mut[mutation]
+    Mut[mutation_v2]
     Phen[phenotype]
   end
   subgraph visual_mod [visual]
@@ -43,12 +43,12 @@ src/
   config.rs            # SimConfig deserialize from TOML
   genome/
     mod.rs
-    encoding.rs        # v1 EVO1 (legacy)
-    encoding_v2.rs     # v2 EVO2 fixed core + slots
+    encoding_v2.rs     # EVO2 fixed core + pursue/avoid slots
     signatures.rs      # pursue/avoid registry
-    phenotype_v2.rs    # v2 decode from config
+    phenotype_v2.rs    # decode from config
     mutation_v2.rs
-    decode.rs          # dispatch by genome_version
+    decode.rs          # GenomeV2 / PhenotypeV2 aliases
+    error.rs, util.rs
   sim/
     mod.rs
     minerals.rs, soup.rs
@@ -56,10 +56,10 @@ src/
     systems/
       environment_tick.rs, feeding_v2.rs
       sense.rs, sense_rays.rs, behavior_v2.rs
-      metabolism.rs, metabolism_v2.rs
-      movement.rs, movement_v2.rs
-      healing.rs, healing_v2.rs
-      reproduction.rs, reproduction_v2.rs
+      metabolism_v2.rs   # (+ metabolism.rs shared helpers)
+      movement_v2.rs     # (+ movement.rs bounds/speed helpers)
+      healing_v2.rs      # (+ healing.rs repair helpers)
+      reproduction_v2.rs # (+ reproduction.rs shared helpers)
     metrics.rs         # Snapshot aggregation, JSON export
     snapshot.rs        # Read-only copy for renderer
   visual/
@@ -71,9 +71,9 @@ src/
 | Module | Responsibility |
 |--------|----------------|
 | `config` | Load and validate `SimConfig`; expose constants for decode ranges |
-| `genome::encoding` | Byte layout, locus offsets, ancestor template |
-| `genome::mutation` | RNG-driven operators on `Genome` |
-| `genome::phenotype` | `decode(genome) -> Phenotype`, upkeep helpers |
+| `genome::encoding_v2` | Byte layout, locus offsets, ancestor template |
+| `genome::mutation_v2` | Gene-level ±increment on reproduce |
+| `genome::phenotype_v2` | `decode(genome) -> PhenotypeV2`, upkeep helpers |
 | `sim::world` | `WorldBounds`, `AvailableSolarEnergy`, light grid, tick counter |
 | `sim::systems::*` | One file per pipeline stage; registered in order |
 | `sim::metrics` | Periodic JSON/JSONL write |
@@ -101,7 +101,7 @@ Current [`src/main.rs`](../src/main.rs) monolith moves incrementally:
 | PoC code | Target |
 |---------|--------|
 | `Agent`, `Velocity`, movement, bounds | `sim::systems::movement` + `visual` |
-| Collision despawn | **Removed**; `sim::systems::interactions` applies collision damage, `death` despawns on `core_hp <= 0` |
+| Collision despawn / damage | **Removed** (revision 2026-06); `interactions` applies **hazard** damage only; `death` despawns on `core_hp <= 0` |
 | Random colors | `genome` color loci + phenotype decode |
 | `WorldBounds` | `sim::world` |
 
@@ -118,10 +118,8 @@ app.add_systems(SimTickSchedule, (
     behavior_v2,         // v2
     feeding_v2,          // v2
     metabolism_and_gains,
-    behavior_movement,   // v1
-    behavior_movement_v2,// v2
+    behavior_movement_v2,
     interactions,
-    healing,
     healing_v2,
     reproduction,
     advance_age,

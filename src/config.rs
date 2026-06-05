@@ -7,26 +7,19 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-/// Legacy genome encoder (see [GENOME.md](../docs/GENOME.md)).
-pub const GENOME_VERSION_V1: u8 = 1;
-/// Target genome encoder ([Genome_Definition.md](../docs/Genome_Definition.md)).
+/// Genome encoder ([Genome_Definition.md](../docs/Genome_Definition.md)).
 pub const GENOME_VERSION_V2: u8 = 2;
 
 /// Default `genetics.genome_version` for [`SimConfig::load_default`] (EVO2).
 pub const SUPPORTED_GENOME_VERSION: u8 = GENOME_VERSION_V2;
 
 pub fn is_supported_genome_version(version: u8) -> bool {
-    matches!(version, GENOME_VERSION_V1 | GENOME_VERSION_V2)
+    version == GENOME_VERSION_V2
 }
 
 /// Default config path relative to the crate manifest (works with `cargo run` from any cwd).
 pub fn default_config_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/default.toml")
-}
-
-/// Legacy EVO1 config for regression tests ([GENOME.md](../docs/GENOME.md)).
-pub fn v1_regression_config_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/v1_regression.toml")
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,23 +83,6 @@ pub struct GeneticsConfig {
     pub genome_version: u8,
     pub core_length: usize,
     pub ancestor_hex: String,
-    #[serde(default)]
-    pub p_bit_flip: f32,
-    #[serde(default)]
-    pub p_point: f32,
-    #[serde(default)]
-    pub p_resample: f32,
-    #[serde(default)]
-    pub p_dup: f32,
-    #[serde(default)]
-    pub p_del: f32,
-    #[serde(default = "default_mutations_per_offspring")]
-    pub mutations_per_offspring: u32,
-    #[serde(default = "default_delta_max")]
-    pub delta_max: u8,
-    /// Required when `genome_version = 1`.
-    #[serde(default)]
-    pub decode_ranges: Option<DecodeRanges>,
     /// Required when `genome_version = 2` ([CONFIG.md](../docs/CONFIG.md) `[genetics.decode_v2]`).
     #[serde(default)]
     pub decode_v2: Option<GeneticsDecodeV2>,
@@ -120,9 +96,40 @@ pub struct GeneticsConfig {
     pub max_pursue_slots: u8,
     #[serde(default = "default_max_avoid_slots")]
     pub max_avoid_slots: u8,
-    /// Greenness niche: photosynthesis buff + metabolism penalty ([PHASE_4.md](../docs/PHASE_4.md) §4.7).
+    /// Required when `genome_version = 2` ([genetics.mutation_v2]).
     #[serde(default)]
-    pub color_photosynthesis: ColorPhotosynthesisConfig,
+    pub mutation_v2: Option<MutationV2Config>,
+}
+
+/// Gene-level ±increment mutation for EVO2 offspring.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MutationV2Config {
+    pub passes_min: u32,
+    pub passes_max: u32,
+    pub p_large_step: f32,
+    pub large_step_min: u32,
+    pub large_step_max: u32,
+}
+
+impl MutationV2Config {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.passes_min > self.passes_max {
+            return Err(ConfigError::Validation(
+                "genetics.mutation_v2.passes_min must not exceed passes_max".into(),
+            ));
+        }
+        if self.p_large_step < 0.0 || self.p_large_step > 1.0 || !self.p_large_step.is_finite() {
+            return Err(ConfigError::Validation(
+                "genetics.mutation_v2.p_large_step must be in [0, 1]".into(),
+            ));
+        }
+        if self.large_step_min < 1 || self.large_step_max < self.large_step_min {
+            return Err(ConfigError::Validation(
+                "genetics.mutation_v2.large_step_min must be >= 1 and <= large_step_max".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn default_max_genome_bytes() -> usize {
@@ -186,140 +193,6 @@ pub struct GeneticsBehaviorConfig {
     pub sensor_upkeep_strength_scale: f32,
 }
 
-/// Color-driven photosynthesis tradeoff (Phase 4G).
-#[derive(Debug, Clone, Deserialize)]
-pub struct ColorPhotosynthesisConfig {
-    #[serde(default = "default_greenness_scale")]
-    pub greenness_scale: f32,
-    #[serde(default = "default_greenness_max")]
-    pub greenness_max: f32,
-    #[serde(default)]
-    pub k_green_photo: f32,
-    #[serde(default)]
-    pub k_green_meta: f32,
-    #[serde(default = "default_light_ref")]
-    pub light_ref: f32,
-}
-
-fn default_greenness_scale() -> f32 {
-    0.5
-}
-
-fn default_greenness_max() -> f32 {
-    1.0
-}
-
-fn default_light_ref() -> f32 {
-    1.0
-}
-
-impl Default for ColorPhotosynthesisConfig {
-    fn default() -> Self {
-        Self {
-            greenness_scale: default_greenness_scale(),
-            greenness_max: default_greenness_max(),
-            k_green_photo: 0.0,
-            k_green_meta: 0.0,
-            light_ref: default_light_ref(),
-        }
-    }
-}
-
-impl ColorPhotosynthesisConfig {
-    /// §4.7 tradeoff: at `light_ref`, buff from `photo_strength_ref = 1.0` exceeds metabolism penalty.
-    pub fn validate_tradeoff(&self, solar_constant: f32) -> Result<(), ConfigError> {
-        if self.k_green_photo <= 0.0 && self.k_green_meta <= 0.0 {
-            return Ok(());
-        }
-        if !self.greenness_scale.is_finite() || self.greenness_scale <= 0.0 {
-            return Err(ConfigError::Validation(
-                "genetics.color_photosynthesis.greenness_scale must be positive and finite".into(),
-            ));
-        }
-        if !self.greenness_max.is_finite() || self.greenness_max < 0.0 {
-            return Err(ConfigError::Validation(
-                "genetics.color_photosynthesis.greenness_max must be non-negative and finite".into(),
-            ));
-        }
-        if self.k_green_photo < 0.0
-            || self.k_green_meta < 0.0
-            || !self.k_green_photo.is_finite()
-            || !self.k_green_meta.is_finite()
-        {
-            return Err(ConfigError::Validation(
-                "genetics.color_photosynthesis k_green_photo and k_green_meta must be non-negative and finite"
-                    .into(),
-            ));
-        }
-        if !self.light_ref.is_finite() || self.light_ref < 0.0 {
-            return Err(ConfigError::Validation(
-                "genetics.color_photosynthesis.light_ref must be non-negative and finite".into(),
-            ));
-        }
-        if self.k_green_meta > 0.0 {
-            let buff = self.k_green_photo * self.light_ref * 1.0 * solar_constant;
-            if buff <= self.k_green_meta {
-                return Err(ConfigError::Validation(format!(
-                    "genetics.color_photosynthesis: k_green_photo * light_ref * solar_constant ({buff:.6}) \
-                     must exceed k_green_meta ({})",
-                    self.k_green_meta
-                )));
-            }
-        }
-        Ok(())
-    }
-}
-
-fn default_mutations_per_offspring() -> u32 {
-    2
-}
-fn default_delta_max() -> u8 {
-    8
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct DecodeRanges {
-    pub body_radius_min: f32,
-    pub body_radius_max: f32,
-    pub photo_max: f32,
-    pub k_photo: f32,
-    pub meta_min: f32,
-    pub meta_max: f32,
-    pub loco_max: f32,
-    /// `movement_pace` locus decode range (bytes 24–25).
-    #[serde(alias = "speed_min")]
-    pub pace_min: f32,
-    #[serde(alias = "speed_max")]
-    pub pace_max: f32,
-    /// `repair_rate` locus decode range (bytes 20–21).
-    pub repair_rate_min: f32,
-    pub repair_rate_max: f32,
-    pub e_min: f32,
-    pub e_max: f32,
-    pub k_armor: f32,
-    pub k_move_hardness: f32,
-    pub chemo_cliff: f32,
-    pub v_base: f32,
-    pub k_v: f32,
-    pub m_base: f32,
-    pub k_m: f32,
-    pub k_drag: f32,
-    pub r_ref: f32,
-    pub k_move_meta: f32,
-    /// Gene locus scales logarithmic age metabolism (`age_metabolism_scale_min`..`max`).
-    pub age_metabolism_scale_min: f32,
-    pub age_metabolism_scale_max: f32,
-    /// Armor mitigation constant: `h / (h + k_mitigate)` (Phase 4B).
-    pub k_mitigate: f32,
-    /// Scales chemosynthetic vent gain (Phase 5B).
-    #[serde(default = "default_k_chemo")]
-    pub k_chemo: f32,
-}
-
-fn default_k_chemo() -> f32 {
-    1.0
-}
-
 /// HP repair ordering when energy is available ([PHASE_4.md](../docs/PHASE_4.md) §4.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -372,8 +245,6 @@ pub struct EconomyConfig {
     pub age_metabolism_ref_ticks: f32,
     #[serde(default = "default_repair_policy")]
     pub repair_policy: RepairPolicy,
-    /// Collision damage scale: `raw = collision_damage_scale * relative_speed` (Phase 4B).
-    pub collision_damage_scale: f32,
     /// Movement energy (J/s) at reference body size when `speed_ratio = move_energy_half_speed_ratio`.
     #[serde(default = "default_move_energy_per_sec_at_half_speed")]
     pub move_energy_per_sec_at_half_speed: f32,
@@ -771,15 +642,10 @@ impl SimConfig {
         Self::load_from_path(default_config_path())
     }
 
-    /// Load the v1 regression TOML (`configs/v1_regression.toml`).
-    pub fn load_v1_regression() -> Result<Self, ConfigError> {
-        Self::load_from_path(v1_regression_config_path())
-    }
-
     pub fn validate(&self) -> Result<(), ConfigError> {
         if !is_supported_genome_version(self.genetics.genome_version) {
             return Err(ConfigError::Validation(format!(
-                "unsupported genetics.genome_version {} (supported: {GENOME_VERSION_V1}, {GENOME_VERSION_V2})",
+                "unsupported genetics.genome_version {} (only v2 supported)",
                 self.genetics.genome_version
             )));
         }
@@ -799,23 +665,14 @@ impl SimConfig {
             )));
         }
 
-        match self.genetics.genome_version {
-            GENOME_VERSION_V1 => {
-                self.genetics.require_decode_ranges()?;
-                crate::genome::Genome::ancestor_from_genetics(&self.genetics)
-                    .map_err(|e| ConfigError::Validation(e.to_string()))?;
-                self.validate_v1_decode_ranges()?;
-            }
-            GENOME_VERSION_V2 => {
-                let d2 = self.genetics.require_decode_v2()?;
-                self.genetics.require_triad()?;
-                self.genetics.require_behavior()?;
-                d2.validate()?;
-                crate::genome::GenomeV2::ancestor_from_genetics(&self.genetics)
-                    .map_err(|e| ConfigError::Validation(e.to_string()))?;
-            }
-            _ => unreachable!(),
-        }
+        let d2 = self.genetics.require_decode_v2()?;
+        self.genetics.require_triad()?;
+        self.genetics.require_behavior()?;
+        let mutation_v2 = self.genetics.require_mutation_v2()?;
+        d2.validate()?;
+        mutation_v2.validate()?;
+        crate::genome::GenomeV2::ancestor_from_genetics(&self.genetics)
+            .map_err(|e| ConfigError::Validation(e.to_string()))?;
 
         if self.world.width <= 0.0 || self.world.height <= 0.0 {
             return Err(ConfigError::Validation(
@@ -902,28 +759,6 @@ impl SimConfig {
             ));
         }
 
-        if self.genetics.genome_version == GENOME_VERSION_V1 {
-            let dr = self.genetics.decode_ranges_ref();
-            if dr.k_mitigate < 0.0 || !dr.k_mitigate.is_finite() {
-                return Err(ConfigError::Validation(
-                    "genetics.decode_ranges.k_mitigate must be non-negative and finite".into(),
-                ));
-            }
-            if dr.k_chemo < 0.0 || !dr.k_chemo.is_finite() {
-                return Err(ConfigError::Validation(
-                    "genetics.decode_ranges.k_chemo must be non-negative and finite".into(),
-                ));
-            }
-        }
-
-        if self.economy.collision_damage_scale < 0.0
-            || !self.economy.collision_damage_scale.is_finite()
-        {
-            return Err(ConfigError::Validation(
-                "economy.collision_damage_scale must be non-negative and finite".into(),
-            ));
-        }
-
         if self.economy.move_energy_per_sec_at_half_speed < 0.0
             || !self.economy.move_energy_per_sec_at_half_speed.is_finite()
         {
@@ -942,9 +777,6 @@ impl SimConfig {
         }
 
         self.environment.validate()?;
-        self.genetics
-            .color_photosynthesis
-            .validate_tradeoff(self.environment.solar_constant)?;
 
         Ok(())
     }
@@ -958,20 +790,6 @@ impl GeneticsConfig {
     /// Parse `ancestor_hex` (optional `0x` prefix, whitespace ignored).
     pub fn parse_ancestor_bytes(&self) -> Result<Vec<u8>, ConfigError> {
         parse_hex_bytes(&self.ancestor_hex)
-    }
-
-    pub fn require_decode_ranges(&self) -> Result<&DecodeRanges, ConfigError> {
-        self.decode_ranges.as_ref().ok_or_else(|| {
-            ConfigError::Validation(
-                "genetics.decode_ranges is required when genetics.genome_version = 1".into(),
-            )
-        })
-    }
-
-    pub fn decode_ranges_ref(&self) -> &DecodeRanges {
-        self.decode_ranges
-            .as_ref()
-            .expect("decode_ranges present after v1 validation")
     }
 
     pub fn require_decode_v2(&self) -> Result<&GeneticsDecodeV2, ConfigError> {
@@ -994,6 +812,14 @@ impl GeneticsConfig {
         self.behavior.as_ref().ok_or_else(|| {
             ConfigError::Validation(
                 "genetics.behavior is required when genetics.genome_version = 2".into(),
+            )
+        })
+    }
+
+    pub fn require_mutation_v2(&self) -> Result<&MutationV2Config, ConfigError> {
+        self.mutation_v2.as_ref().ok_or_else(|| {
+            ConfigError::Validation(
+                "genetics.mutation_v2 is required when genetics.genome_version = 2".into(),
             )
         })
     }
@@ -1036,44 +862,6 @@ impl GeneticsDecodeV2 {
         if self.sensor_ray_count == 0 {
             return Err(ConfigError::Validation(
                 "genetics.decode_v2.sensor_ray_count must be positive".into(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl SimConfig {
-    fn validate_v1_decode_ranges(&self) -> Result<(), ConfigError> {
-        let dr = self.genetics.decode_ranges_ref();
-        if dr.body_radius_max <= dr.body_radius_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.body_radius_max must exceed body_radius_min".into(),
-            ));
-        }
-        if dr.pace_max <= dr.pace_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.pace_max must exceed pace_min".into(),
-            ));
-        }
-        if dr.repair_rate_max <= dr.repair_rate_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.repair_rate_max must exceed repair_rate_min".into(),
-            ));
-        }
-        if dr.meta_max <= dr.meta_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.meta_max must exceed meta_min".into(),
-            ));
-        }
-        if dr.e_max <= dr.e_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.e_max must exceed e_min".into(),
-            ));
-        }
-        if dr.age_metabolism_scale_max <= dr.age_metabolism_scale_min {
-            return Err(ConfigError::Validation(
-                "genetics.decode_ranges.age_metabolism_scale_max must exceed age_metabolism_scale_min"
-                    .into(),
             ));
         }
         Ok(())
@@ -1166,75 +954,12 @@ mod tests {
             p_damage_on_repro_base = 0.2
             repro_damage_fraction_of_max_hp = 0.1
             repair_energy_per_hp = 1.0
-            collision_damage_scale = 0.15
             age_metabolism_cap_per_sec = 1.0
             age_metabolism_cap_ticks = 18000.0
             age_metabolism_ref_ticks = 3600.0
         "#;
         let economy: EconomyConfig = toml::from_str(toml).unwrap();
         assert_eq!(economy.repair_policy, RepairPolicy::CoreFirst);
-    }
-
-    #[test]
-    fn color_photosynthesis_defaults_when_section_missing() {
-        let toml = r#"
-            genome_version = 1
-            core_length = 32
-            ancestor_hex = "45564f3188cc446dffff300028000af640000af6008000005555000055558000"
-            [decode_ranges]
-            body_radius_min = 6.0
-            body_radius_max = 20.0
-            photo_max = 3.0
-            k_photo = 0.008
-            meta_min = 0.001
-            meta_max = 0.03
-            loco_max = 1.0
-            pace_min = 0.5
-            pace_max = 2.0
-            repair_rate_min = 0.5
-            repair_rate_max = 2.0
-            e_min = 15.0
-            e_max = 2000.0
-            k_armor = 0.08
-            k_move_hardness = 0.02
-            chemo_cliff = 0.35
-            v_base = 10.0
-            k_v = 18.0
-            m_base = 0.0
-            k_m = 0.0
-            k_drag = 0.0
-            r_ref = 12.0
-            k_move_meta = 0.0
-            age_metabolism_scale_min = 0.5
-            age_metabolism_scale_max = 2.0
-            k_mitigate = 0.5
-        "#;
-        let genetics: GeneticsConfig = toml::from_str(toml).unwrap();
-        assert_eq!(genetics.color_photosynthesis.k_green_photo, 0.0);
-        assert_eq!(genetics.color_photosynthesis.k_green_meta, 0.0);
-        assert_eq!(genetics.color_photosynthesis.greenness_scale, 0.5);
-    }
-
-    #[test]
-    fn hazard_lab_toml_loads() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/hazard_lab.toml");
-        let config = SimConfig::load_from_path(&path).expect("hazard_lab.toml should load");
-        assert_eq!(config.environment.hazards.len(), 1);
-        assert!(config.environment.hazards[0].damage_per_tick > 0.01);
-    }
-
-    #[test]
-    fn vent_lab_toml_loads() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/vent_lab.toml");
-        let config = SimConfig::load_from_path(&path).expect("vent_lab.toml should load");
-        assert_eq!(config.environment.vents.len(), 1);
-        assert!(config.environment.vents[0].vent_flux > 0.01);
-        let genome = crate::genome::Genome::ancestor_from_config(&config).unwrap();
-        let phenotype = crate::genome::decode(&genome, &config).unwrap();
-        assert!(
-            phenotype.is_chemo_above_cliff(config.genetics.decode_ranges_ref().chemo_cliff),
-            "vent_lab ancestor should be above chemo cliff"
-        );
     }
 
     #[test]
@@ -1280,16 +1005,6 @@ mod tests {
         assert!(config.genetics.decode_v2.is_some());
         assert!(config.genetics.triad.is_some());
         assert!(config.genetics.behavior.is_some());
-    }
-
-    #[test]
-    fn v1_regression_toml_loads() {
-        let config = SimConfig::load_v1_regression().expect("v1_regression.toml should load");
-        assert_eq!(config.genetics.genome_version, GENOME_VERSION_V1);
-        assert_eq!(config.genetics.core_length, 32);
-        assert!(config.genetics.decode_ranges.is_some());
-        crate::genome::Genome::ancestor_from_config(&config).unwrap();
-        assert!(config.genetics.color_photosynthesis.k_green_photo > 0.0);
     }
 
     #[test]
@@ -1360,14 +1075,6 @@ mod tests {
         );
         let config: SimConfig = toml::from_str(&contents).unwrap();
         assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn ancestor_matches_core_length() {
-        let config = SimConfig::load_v1_regression().unwrap();
-        let bytes = config.genetics.parse_ancestor_bytes().unwrap();
-        assert_eq!(bytes.len(), config.genetics.core_length);
-        assert_eq!(&bytes[0..4], b"EVO1");
     }
 
     #[test]

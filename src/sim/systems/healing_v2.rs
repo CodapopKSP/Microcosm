@@ -86,19 +86,16 @@ pub fn apply_heal_tick_v2(
 
 /// Bevy system: v2 agents use decoded healing rate and cost penalty.
 pub fn healing_v2(
-    time: Res<Time>,
     config: Res<SimConfigResource>,
     mut repair_stats: ResMut<RepairStats>,
     mut query: Query<(Entity, &Phenotype, &mut Health, &mut Energy)>,
 ) {
     let economy = &config.0.economy;
     let policy = economy.repair_policy;
-    let dt = time.delta_secs();
+    let dt = super::super::world::SIM_DT;
 
     for (entity, phenotype, mut health, mut energy) in &mut query {
-        let Some(phenotype_v2) = phenotype.v2() else {
-            continue;
-        };
+        let phenotype_v2 = &phenotype.0;
         let cursor = entity.to_bits() as usize;
         let spent = apply_heal_tick_v2(
             &mut health,

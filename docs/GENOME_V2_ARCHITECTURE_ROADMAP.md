@@ -2,11 +2,11 @@
 
 **Authority:** [Genome_Definition.md](Genome_Definition.md) is the **single source of truth** for genetics **and** the simulation behaviors that genetics implies (vitality, metabolism, movement, sensing, pursue/avoid, reproduction, feeding, environment sampling).
 
-**Legacy:** [GENOME.md](GENOME.md), [GENOME_REVISIONS.md](GENOME_REVISIONS.md), and in-flight [PHASE_5.md](PHASE_5.md) sensor-byte plans describe the **current `EVO1` codebase** until cutover.
+**Legacy:** [GENOME.md](GENOME.md), [GENOME_REVISIONS.md](GENOME_REVISIONS.md) (stubs → [`docs/archive/`](archive/)) describe the removed `EVO1` implementation.
 
 **Config:** [CONFIG.md](CONFIG.md) + [`configs/genome_v2.example.toml`](../configs/genome_v2.example.toml). **Not in genome ⇒ not heritable** (age metabolism, repro risk, cooldown, …). **All decode constants ⇒ config** (no Rust literals for 6553.5, 0.1 photo rate, etc.).
 
-**Status:** Default config is **EVO2** (`configs/default.toml`). v1 regression: `configs/v1_regression.toml`. Target encoding = **`EVO2`** fixed 24-byte core + variable pursue/avoid slots (see spec byte map).
+**Status:** **EVO2 only** (`configs/default.toml`). v1 removed (Phase G). Encoding = **`EVO2`** fixed 24-byte core + variable pursue/avoid slots (see spec byte map).
 
 ---
 
@@ -93,7 +93,7 @@ With `EVO2` header prepended for `ancestor_hex` in config.
 | Armor `u16` | Stroke `raw/65535×25.5`; meta **+65.535%** at max; speed **×(1 − 0.65535×raw/65535)** |
 | Healing `u16` | `FFFF` → **3.27675×** heal speed, **13.107×** cost vs base 1 HP/s |
 | Ratio byte 0 | `lerp` energy cap fraction 99% → 1% |
-| Efficiencies u8 | `/255`; capped by color **high nibble**; triad inverse between photo/biomass/minerals |
+| Efficiencies u8 | `/255`; triad inverse between photo/biomass/minerals (**no** color nibble cap — revision 2026-06) |
 | Sensors | Mask popcount divides strength byte; avoid distance budget uses per-eye reach |
 | Max speed `00` | **Zero** locomotion — valid |
 
@@ -221,7 +221,7 @@ Corpses (`0x0200`), mineral field (`0x0201`), soup Phase 6 minimal; v2 uses mine
 
 ### G8 — Cutover ✅
 
-Default `genome_version = 2`; `configs/v1_regression.toml`; ENTITIES, ENERGY, SIMULATION, ARCHITECTURE, metrics updated.
+**EVO2 only** — `configs/default.toml`; v1 removed (Phase G); ENTITIES, ENERGY, SIMULATION, ARCHITECTURE, metrics updated.
 
 ---
 
@@ -229,7 +229,7 @@ Default `genome_version = 2`; `configs/v1_regression.toml`; ENTITIES, ENERGY, SI
 
 | v1 | v2 |
 |----|-----|
-| `photo_strength` + greenness | Photo u8 + G nibble cap |
+| `photo_strength` + greenness | Photo u8 gene (color cosmetic only in v2) |
 | `metabolism_base` | Radius + armor derived |
 | `locomotion` + `movement_pace` | `max_speed` + `movement_efficiency` u8 |
 | `skin_hardness` | Armor u16 |
@@ -250,7 +250,7 @@ Default `genome_version = 2`; `configs/v1_regression.toml`; ENTITIES, ENERGY, SI
 4. Pursue color `0000 000000FF05` turns toward matching agent; avoid `0200` flees 180° at max speed.
 5. Fuzzy: `0x0A` matches `0x09`/`0x0B`, not `0x07`.
 6. Dual vitality: ratio byte `00` vs `FF` produces different max E/H caps from same radius.
-7. v1 config still runs for regression when `genome_version = 1`.
+7. ~~v1 regression~~ — removed in Phase G; only `genome_version = 2` loads.
 
 ---
 

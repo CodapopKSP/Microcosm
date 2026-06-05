@@ -2,7 +2,7 @@
 
 This document describes configurable energy models, per-entity energy and health economics, the light field, thermal vents, hazards, and soup compounds.
 
-**Default config (v2):** [`configs/default.toml`](../configs/default.toml) uses EVO2 photosynthesis (`0.1 × radius × photo_eff × light × solar_constant` per second, per tick in code). v1 regression: [`configs/v1_regression.toml`](../configs/v1_regression.toml) (`photo_strength` + greenness). Light and hazards: [`src/sim/light.rs`](../src/sim/light.rs), [`src/sim/systems/sense.rs`](../src/sim/systems/sense.rs). **G7:** mineral field (vent bridge), corpses, minimal global soup — [`src/sim/minerals.rs`](../src/sim/minerals.rs), [`src/sim/systems/feeding_v2.rs`](../src/sim/systems/feeding_v2.rs). Models **B** (pool) and **C** (spatial occlusion) remain Phase 6.
+**Default config:** [`configs/default.toml`](../configs/default.toml) uses EVO2 photosynthesis (`0.1 × radius × photo_eff × light × solar_constant` per second, per tick in code). Light and hazards: [`src/sim/light.rs`](../src/sim/light.rs), [`src/sim/systems/sense.rs`](../src/sim/systems/sense.rs). Mineral field (vent bridge), corpses, minimal global soup — [`src/sim/minerals.rs`](../src/sim/minerals.rs), [`src/sim/systems/feeding_v2.rs`](../src/sim/systems/feeding_v2.rs). Models **B** (pool) and **C** (spatial occlusion) remain Phase 6.
 
 ## Design problem: per-entity vs global energy
 
@@ -187,7 +187,7 @@ Circular zones: `{ center, radius, vent_flux }`.
 | Type | Effect |
 |------|--------|
 | **Zone hazard** | `damage_per_tick` while overlapping; mitigated by `skin_hardness`; routed to `core_hp` when `part_hp` empty |
-| **Collision** | `collision_damage_scale * relative_speed * (1 - mitigation(hardness))`; symmetric per pair; no despawn |
+| **Collision** | **Removed** (revision 2026-06) — entity overlap does not damage HP; hazards only |
 
 Mitigation from `skin_hardness` with documented diminishing returns (e.g. `mitigation = hardness / (hardness + k)`).
 

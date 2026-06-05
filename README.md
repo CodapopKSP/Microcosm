@@ -2,7 +2,7 @@
 
 Evolution Sim is a 2D evolution sandbox built on [Bevy](https://bevyengine.org/). Entities have DNA, metabolize energy, move, reproduce with mutation, and are shaped by an environment with light, hazards, and (later) vents and resource fields.
 
-The default configuration uses **genome v2 (EVO2)** per [docs/Genome_Definition.md](docs/Genome_Definition.md): dual vitality caps, photo triad, heading-based movement, sensor rays, pursue/avoid behavior, feeding (minerals/corpses/soup), and v2 reproduction endowment. Legacy **v1 (EVO1)** remains available via [`configs/v1_regression.toml`](configs/v1_regression.toml) for regression tests.
+The simulator uses **genome v2 (EVO2)** only — see [docs/Genome_Definition.md](docs/Genome_Definition.md): dual vitality caps, photo triad, heading-based movement, sensor rays, pursue/avoid behavior, feeding (minerals/corpses/soup), and reproduction endowment. v1 (`EVO1`) was removed; archived specs are in [docs/archive/](docs/archive/).
 
 Phases 1–5 features (hazards, vents, metrics, headless runs) are wired for both encodings where applicable.
 
@@ -36,7 +36,6 @@ The first compile can take several minutes while Bevy builds. The window size, p
 ### Config
 
 - Default (v2): [`configs/default.toml`](configs/default.toml)
-- v1 regression: [`configs/v1_regression.toml`](configs/v1_regression.toml)
 - v2 template / labs: [`configs/genome_v2.example.toml`](configs/genome_v2.example.toml), [`configs/mineral_vent_v2.toml`](configs/mineral_vent_v2.toml)
 - Invalid TOML or unsupported `genetics.genome_version` exits with a readable error before the window opens.
 - Comment out `master_seed` under `[run]` for nondeterministic RNG.
@@ -70,7 +69,7 @@ Tune `solar_constant`, `gradient_min` / `gradient_max`, and `k_photo` together s
 
 #### Hazards and repair (Phase 4)
 
-Circular hazard bands apply damage each tick while agents overlap. `skin_hardness` mitigates hazard and collision damage; repair spends energy at `repair_energy_per_hp` with evolvable `repair_rate` throughput.
+Circular hazard bands apply damage each tick while agents overlap. Entity–entity overlap does **not** damage HP (revision 2026-06). v2 `armor` mitigates hazard damage and scales metabolism/speed tradeoffs. Repair spends energy at `repair_energy_per_hp`.
 
 ```toml
 [[environment.hazards]]
@@ -81,14 +80,16 @@ damage_per_tick = 0.00833
 [economy]
 repair_policy = "core_first"
 repair_energy_per_hp = 1.0
-collision_damage_scale = 0.15
+spawn_energy = 50.0          # generation-0 only
+repro_cooldown_ticks = 192    # ~3.2 s anti-spam (global)
 
-[genetics.color_photosynthesis]
-k_green_photo = 0.25
-k_green_meta = 0.005
+[genetics.mutation_v2]
+passes_min = 0
+passes_max = 4
+p_large_step = 0.10
 ```
 
-See [PHASE_4.md](docs/PHASE_4.md) for greenness formulas and acceptance tests.
+v2 color is cosmetic (no greenness photo niche). See [Genome_Definition.md](docs/Genome_Definition.md) and [PHASE_4.md](docs/PHASE_4.md) for hazard/repair history.
 
 ### Headless batch run (Phase 3)
 
@@ -116,7 +117,8 @@ Design and planning docs live in `docs/`:
 - [docs/PHASE_1.md](docs/PHASE_1.md) — Phase 1 checklist and acceptance criteria
 - [docs/PHASE_2.md](docs/PHASE_2.md) — Phase 2 light field and Model A gain
 - [docs/PHASE_3.md](docs/PHASE_3.md) — Headless CLI, metrics, age metabolism
-- [docs/PHASE_4.md](docs/PHASE_4.md) — Hazards, collision, armor, repair, green niche
+- [docs/PHASE_4.md](docs/PHASE_4.md) — Hazards, armor, repair (collision damage superseded in v2)
+- [docs/Genome_Definition.md](docs/Genome_Definition.md) — Canonical v2 genetics + mutation spec
 
 ### Tests
 

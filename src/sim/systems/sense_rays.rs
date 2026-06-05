@@ -153,17 +153,12 @@ pub fn sense_rays(
 
     let targets: Vec<AgentSenseTarget> = snapshots
         .iter()
-        .filter_map(|(entity, pos, _, _, genome, radius, self_light)| {
-            let AnyGenome::V2(g) = genome else {
-                return None;
-            };
-            Some(AgentSenseTarget {
-                entity: *entity,
-                position: *pos,
-                radius: *radius,
-                genome: g.clone(),
-                self_light: *self_light,
-            })
+        .map(|(entity, pos, _, _, genome, radius, self_light)| AgentSenseTarget {
+            entity: *entity,
+            position: *pos,
+            radius: *radius,
+            genome: genome.clone(),
+            self_light: *self_light,
         })
         .collect();
 
@@ -176,8 +171,8 @@ pub fn sense_rays(
     let mut updates: Vec<(Entity, SensePerception)> = Vec::with_capacity(snapshots.len());
 
     for (entity, pos, heading, phenotype, genome, _radius, self_light) in &snapshots {
-        let perception = match &phenotype {
-            AnyPhenotype::V2(p) if p.sensor_eye_count > 0 => {
+        let perception = match phenotype {
+            p if p.sensor_eye_count > 0 => {
                 let self_idx = target_index.get(entity).copied().unwrap_or(0);
                 let rays = perceive_agent(
                     self_idx,
@@ -192,12 +187,8 @@ pub fn sense_rays(
                     &minerals,
                     *self_light,
                 );
-                let (pursue, avoid) = match genome {
-                    AnyGenome::V2(g) => {
-                        parse_pursue_avoid_lists(g).unwrap_or((Vec::new(), Vec::new()))
-                    }
-                    _ => (Vec::new(), Vec::new()),
-                };
+                let (pursue, avoid) =
+                    parse_pursue_avoid_lists(genome).unwrap_or((Vec::new(), Vec::new()));
                 let matches =
                     evaluate_ray_slot_matches(&rays, *pos, &targets, &pursue, &avoid, fuzzy);
                 SensePerception {

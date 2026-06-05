@@ -72,7 +72,7 @@ Natural population limits come from energy, metabolism, and environment—not fr
 | `light_mode = "map"` | — | Phase 5+ | Image / procedural grid |
 | `vents` | array | Phase 5+ | Position, radius, flux |
 | `hazards` | array | **implemented** | Circular zones: `center`, `radius`, `damage_per_tick` ([`HazardField`](../src/sim/hazards.rs)) |
-| `[genetics.color_photosynthesis]` | table | **implemented** | Greenness niche: `k_green_photo`, `k_green_meta`, `greenness_scale` ([PHASE_4.md](PHASE_4.md) §4.7) |
+| `[genetics.color_photosynthesis]` | table | **v1 removed** | Historical greenness niche ([PHASE_4.md](PHASE_4.md) §4.7); v2 color is cosmetic — [Genome_Definition.md](Genome_Definition.md) |
 | `seasons_enabled` | bool | Phase 9 | Default `false`; cyclic environment modulation |
 | `seasons` | array | Phase 9 | Named keyframes: `duration_ticks`, optional overrides (`solar_constant`, `gradient_max`, scales) — [PHASE_9.md](PHASE_9.md) |
 
@@ -84,11 +84,10 @@ Natural population limits come from energy, metabolism, and environment—not fr
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `genome_version` | u8 | `2` default (EVO2); `1` for legacy ([`configs/v1_regression.toml`](../configs/v1_regression.toml)) |
+| `genome_version` | u8 | Must be `2` (EVO2) |
 | `core_length` | usize | Fixed core byte length |
-| `p_bit_flip`, `p_point`, `p_resample`, `p_dup`, `p_del` | f32 | Mutation probabilities |
-| `mutations_per_offspring` | u32 | Expected mutation passes on reproduce |
-| `delta_max` | u8 | Max byte delta for point noise |
+| `[genetics.mutation_v2]` | table | **v2:** `passes_min`, `passes_max`, `p_large_step`, `large_step_min`, `large_step_max` — see [Genome_Definition.md](Genome_Definition.md#mutation-v2) |
+| `p_bit_flip`, `p_point`, … | f32 | **v1 only** — legacy mutation operators |
 
 ### `[genetics.decode_ranges]` (lifespan — Phase 3)
 
@@ -149,7 +148,7 @@ Implement systems in this order (see [ARCHITECTURE.md](ARCHITECTURE.md)):
 5. **Feeding** (v2) — **Implemented:** minerals, corpses, soup ([`feeding_v2`](../src/sim/systems/feeding_v2.rs))
 6. **Metabolism & gains** — v1 Model A; v2 photo triad + sensor upkeep ([`metabolism_v2`](../src/sim/systems/metabolism_v2.rs))
 7. **Behavior / movement** — v1 random velocity; v2 heading + pursue / avoid flee ([`movement_v2`](../src/sim/systems/movement_v2.rs))
-8. **Interactions** — zone hazard + collision → `core_hp` ([`interactions`](../src/sim/systems/interactions.rs))
+8. **Interactions** — hazard zones only → `core_hp` ([`interactions`](../src/sim/systems/interactions.rs); no entity–entity collision damage)
 9. **Healing** — v1 repair policy; v2 `healing_rate` gene ([`healing_v2`](../src/sim/systems/healing_v2.rs))
 10. **Reproduction** — v1 absolute threshold; v2 % max energy + combined endowment ([`reproduction_v2`](../src/sim/systems/reproduction_v2.rs))
 11. **Advance age** — `Age.ticks += 1` (global age metabolism; no `max_age` gene in v2)

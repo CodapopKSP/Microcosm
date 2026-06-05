@@ -14,7 +14,7 @@ Detailed implementation plan for **Phase 5** from [ROADMAP.md](ROADMAP.md). Phas
 - [x] **5B** — Chemo gain in metabolism: cliff, `chemo_potential`, `chemo_sensitivity`, `chemo_upkeep` (already decoded)
 - [ ] **5C** — Core sensor decode: `visual_bandwidth`, `sensory_gain`, `sensor_upkeep`; document tier fallback in [GENOME.md](GENOME.md)
 - [ ] **5D** — Behavior stub: light-gradient bias in `behavior_movement` scaled by `visual_bandwidth`
-- [ ] **5E** — Pipeline integration, default config with vent band, acceptance configs (`vent_lab.toml`, `sensor_ab.toml`)
+- [ ] **5E** — Pipeline integration, default config with vent band, acceptance configs (`mineral_vent_v2.toml`; `vent_lab.toml` / `sensor_ab.toml` removed)
 - [ ] **5F** — Metrics, acceptance tests; update [ROADMAP.md](ROADMAP.md) Phase 5 → **Done**
 
 ---
@@ -253,7 +253,7 @@ JSONL additions (backward compatible until Phase 5 ships; then required in parse
 |------|--------|
 | [`genome/phenotype.rs`](../src/genome/phenotype.rs) | `chemo_sensitivity`, `chemo_gain_per_tick` helper |
 | [`sim/systems/metabolism.rs`](../src/sim/systems/metabolism.rs) | Query `VentExposure`; apply gain |
-| [`configs/vent_lab.toml`](../configs/vent_lab.toml) (new) | Strong vent, short run, high-chemo ancestor hex |
+| [`configs/mineral_vent_v2.toml`](../configs/mineral_vent_v2.toml) | v2 vent/minerals niche (`vent_lab.toml` removed) |
 
 ### Acceptance (5B)
 
@@ -282,7 +282,7 @@ JSONL additions (backward compatible until Phase 5 ships; then required in parse
 | [`genome/encoding.rs`](../src/genome/encoding.rs) | `visual_bandwidth_raw`, `sensory_gain_raw` accessors |
 | [`genome/phenotype.rs`](../src/genome/phenotype.rs) | Decode + `sensor_upkeep` |
 | [`config.rs`](../src/config.rs) | `CoreSensorsConfig` |
-| [`genome/mutation.rs`](../src/genome/mutation.rs) | Rename comments for `REPRO_COST` locus (still same offsets) |
+| [`genome/mutation_v2.rs`](../src/genome/mutation_v2.rs) | v2 pursue/avoid slot genes in registry (v1 `mutation.rs` legacy until Phase G) |
 
 ### Acceptance (5C)
 
@@ -323,14 +323,14 @@ JSONL additions (backward compatible until Phase 5 ships; then required in parse
 
 | Task | Detail |
 |------|--------|
-| `configs/vent_lab.toml` | Vent flux high; ancestor with `chemo_potential` above cliff; low photo |
+| `configs/mineral_vent_v2.toml` | Vent flux high; v2 minerals digestion ancestor (`vent_lab.toml` removed) |
 | `configs/sensor_ab.toml` | Two ancestor hex strings: high `visual_bandwidth` vs low, equal other loci |
 | Default vent placement | Complement `gradient_y` (e.g. vent in dim lower band, light at top) |
 | Visual debug (optional) | Vent circles in `VisualDebugPlugin` (mirror hazard gizmos) |
 
 ### Acceptance (5E)
 
-- [ ] Headless A/B: high-chemo clone sustains net positive energy at vent; zero-chemo ancestor does not (5k ticks, `vent_lab.toml`)
+- [ ] Headless A/B: high-minerals clone sustains net positive energy at vent; low-minerals ancestor does not (5k ticks, `mineral_vent_v2.toml`)
 - [ ] Headless A/B: high-chemo clone **loses** net energy vs control when held outside all vents (upkeep, no gain)
 - [ ] Headless A/B: high-bandwidth vs low-bandwidth in nutrient-poor region (uniform low light config) — high bandwidth lower mean energy
 - [ ] Default `configs/default.toml` + vents enabled: population survives 10k ticks
@@ -343,7 +343,7 @@ JSONL additions (backward compatible until Phase 5 ships; then required in parse
 
 | Criterion | How to verify |
 |-----------|----------------|
-| Vent-adjacent niche sustains invested `chemo_potential` | `vent_lab` harness: high-chemo vs zero-chemo |
+| Vent-adjacent niche sustains invested minerals digestion | `mineral_vent_v2.toml` harness: high- vs low-minerals ancestor |
 | Uninvested genotypes do not sustain at vents | Same harness; mean energy diverges |
 | High sensor investment hurts in nutrient-poor areas | `sensor_ab` harness; mean energy / `mean_sensor_upkeep` |
 | Headless determinism preserved | Same seed + config ⇒ identical metrics hash (new fields 4 dp) |
@@ -416,7 +416,7 @@ k_light_taxis = 0.35
 Optional acceptance ancestor patch (core bytes 22–23 only; keep header):
 
 ```toml
-# chemo_potential ≈ 0.55 (above cliff 0.35) — adjust hex in vent_lab.toml
+# minerals efficiency byte — adjust ancestor_hex in mineral_vent_v2.toml
 ```
 
 Regression: `vents = []` and bytes 12–13 = `0` restores Phase 4 energy behavior (aside from sensor decode of legacy `0x4000` — set ancestor bytes 12–13 to `0x00` in regression configs if needed).

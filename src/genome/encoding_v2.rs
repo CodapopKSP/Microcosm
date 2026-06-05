@@ -1,7 +1,7 @@
 //! Genome v2 (`EVO2`) byte layout, validation, and core locus accessors.
 
 use crate::config::{GeneticsConfig, SimConfig};
-use crate::genome::encoding::GenomeError;
+use crate::genome::error::GenomeError;
 use crate::genome::signatures::{expected_genome_len, slot_payload_len};
 
 pub const MAGIC: &[u8; 4] = b"EVO2";

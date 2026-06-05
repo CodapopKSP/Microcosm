@@ -30,7 +30,7 @@ Detailed implementation plan for **Phase 3** from [ROADMAP.md](ROADMAP.md). Phas
 
 | Item | Lands in |
 |------|----------|
-| Hazards, collision damage, per-part HP | Phase 4 (done — see [PHASE_4.md](PHASE_4.md)) |
+| Hazards, per-part HP | Phase 4 (done — see [PHASE_4.md](PHASE_4.md)). v2: no collision damage ([EVOLUTION_MODEL_REVISION.md](EVOLUTION_MODEL_REVISION.md)) |
 | Vents, soup, spatial pool | Phases 5–6 |
 | Morphology tree | Phase 7 |
 | Sexual reproduction | Phase 8 |

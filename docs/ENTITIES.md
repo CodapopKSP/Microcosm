@@ -51,7 +51,7 @@ stateDiagram-v2
 1. Obtain genome (ancestor template, random viable, or mutated child).
 2. Validate header / version; on failure → stillborn (no entity).
 3. Decode → `Phenotype`; build `Health` (full core HP; `part_hp: []` until Phase 7 morphology).
-4. Set `internal_energy` from config spawn energy or `offspring_endowment`.
+4. Set vitality: **generation-0** uses `economy.spawn_energy` + `spawn_health_frac × max_health`; **offspring** use parent endowment only (`build_offspring_spawn_params`).
 5. Assign `Transform` / `Velocity` (random or offset from parent).
 6. Spawn visual representation from `color_*` and `body_radius`.
 
@@ -78,8 +78,8 @@ Order follows [SIMULATION.md](SIMULATION.md):
 
 1. Pay `repro_threshold` energy from parent; parent core HP unchanged ([GENOME.md](GENOME.md) energy→HP transfer).
 2. Roll `p_death` and `p_damage` from [GENOME.md](GENOME.md) (config rates; death scales with post-transfer energy margin).
-3. On success: clone genome, apply `mutations_per_offspring`, decode child.
-4. Child spawns with `internal_energy = 0` and `core_hp` from converted energy (`offspring_endowment` cap).
+3. On success: clone genome, apply v2 `[genetics.mutation_v2]` passes (or v1 `mutations_per_offspring`), decode child.
+4. v1 child: `internal_energy = 0`, `core_hp` from endowment. v2 child: health + energy from `split_endowment_to_child` (see [Genome_Definition.md](Genome_Definition.md#reproduction)).
 5. Place child near parent; set `Lineage.parent_id`, increment `generation`.
 6. Reset parent cooldown from `economy.repro_cooldown_ticks`.
 
@@ -106,22 +106,22 @@ Old-age despawn was removed; aging adds logarithmic metabolism instead ([GENOME.
 
 `internal_energy == 0` is **not** fatal. Unpaid metabolic deficit (costs minus photosynthetic gain) drains `core_hp` each tick until the agent dies as `CoreDestroyed`.
 
-**Phase 0 note:** collision overlap used to despawn both entities. Default config applies **collision damage** in `interactions` (Phase 4); death only via `death_and_despawn`.
+**Revision 2026-06:** Entity overlap does **not** damage HP. Death only via `death_and_despawn` (starvation, hazards, repro risk, etc.).
 
 ## Interactions
 
 | Interaction | Phase | Behavior |
 |-------------|-------|----------|
 | World bounds | 0+ | `bounce` or `wrap` per config |
-| Entity–entity collision | 4 (live) | Damage from relative speed; no instant despawn |
-| Hazard zones | 4 (live) | Damage per tick; hardness mitigates |
+| Entity–entity collision | — | **No damage** (revision 2026-06); overlap allowed |
+| Hazard zones | 4 (live) | Damage per tick while overlapping; v1 `skin_hardness` mitigates |
 | Predation / absorption | future | Optional; out of v1 scope |
 
 ### Damage routing (Phase 4 vs 7)
 
 | `part_hp` | Phase | Incoming damage |
 |-----------|-------|-----------------|
-| Empty (`[]`) | 4 (now) | All hazard and collision damage subtracts from `core_hp` via `Health::apply_damage_to_core` |
+| Empty (`[]`) | 4 (now) | All **hazard** damage subtracts from `core_hp` via `Health::apply_damage_to_core` |
 | Non-empty | 7+ | Route to appendages by exposure; overflow to core |
 
 Repair (Phase 4D) may restore `core_hp` and any manually populated `part_hp` slots per `repair_policy`; interaction damage remains core-only until Phase 7.

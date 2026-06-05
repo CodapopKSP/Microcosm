@@ -2,6 +2,8 @@
 
 Detailed implementation plan for **Phase 4** from [ROADMAP.md](ROADMAP.md). Phases 1–3 deliver genetics, local photosynthesis, headless metrics, and evolvable lifespan. Phase 4 turns **latent** loci (`skin_hardness`, `repair_efficiency`) and **documented** interaction slots into active ecology: localized hazard niches, collision damage, energy-funded repair, and **fitness-linked color** (greenness buffs photosynthesis with a smaller metabolism penalty).
 
+> **Evolution model revision (2026-06):** For **genome v2**, entity–entity **collision damage is removed**, color is **cosmetic** (no greenness photo niche), and mutation uses `[genetics.mutation_v2]`. This file remains the Phase 4 **historical** plan for v1; current v2 behavior is in [Genome_Definition.md](Genome_Definition.md) and [EVOLUTION_MODEL_REVISION.md](EVOLUTION_MODEL_REVISION.md).
+
 **Prerequisite reading:** [SIMULATION.md](SIMULATION.md), [GENOME.md](GENOME.md), [ENTITIES.md](ENTITIES.md), [ENERGY_AND_ENVIRONMENT.md](ENERGY_AND_ENVIRONMENT.md), [ARCHITECTURE.md](ARCHITECTURE.md), [PHASE_3.md](PHASE_3.md).
 
 ---
@@ -24,7 +26,7 @@ Detailed implementation plan for **Phase 4** from [ROADMAP.md](ROADMAP.md). Phas
 
 1. **Environmental heterogeneity** — Configurable circular hazard zones apply ongoing damage so no single genotype dominates all map regions (complements Phase 2 `gradient_y`).
 2. **Armor tradeoff is real** — `skin_hardness` reduces incoming damage via documented mitigation while `armor_upkeep` and `move_penalty` (already decoded) remain costly in safe zones.
-3. **Collision as ecology** — Entity overlap applies damage from relative speed; **no** instant despawn (Phase 1 policy preserved).
+3. ~~**Collision as ecology**~~ — **Superseded for v2** (2026-06): no entity–entity damage. v1 Phase 4 shipped relative-speed collision damage; v2 uses hazard-only `interactions`.
 4. **Repair loop** — Agents spend `internal_energy` to restore `core_hp` / `part_hp` per policy; high `repair_efficiency` lowers cost.
 5. **Phase 7 readiness** — `Health.part_hp` is a `Vec<f32>` aligned with future morphology nodes; Phase 4 uses length `0` or `1` (core-only alias).
 6. **Green photosynthesis niche** — Color loci affect fitness: greener agents gain more from local photosynthesis in bright bands but pay a smaller metabolism tax so shade/low-light strategies remain viable.
@@ -51,7 +53,7 @@ Detailed implementation plan for **Phase 4** from [ROADMAP.md](ROADMAP.md). Phas
 | **`skin_hardness`** | Active: `armor_upkeep`, `move_penalty`, `damage_mitigation` on hazard/collision damage |
 | **`repair_efficiency`** | `healing` system spends energy per `repair_policy`; tracked in `RepairStats` → JSONL `repair_energy_spent` |
 | **`Health.part_hp`** | Empty at spawn; core-only damage routing until Phase 7 |
-| **Collisions** | Symmetric relative-speed damage in `interactions`; no instant despawn |
+| **Collisions** | v1: symmetric damage in `interactions`. **v2: no collision damage** (revision 2026-06) |
 | **`environment.hazards`** | `HazardField` + `HazardExposure` + per-tick core damage |
 | **Death reasons** | Hazard/collision HP loss → `CoreDestroyed` when `core_hp <= 0` |
 | **Metrics** | Phase 3 fields + `mean_skin_hardness`, `mean_core_hp_frac`, `repair_energy_spent`, `mean_greenness` |
@@ -93,17 +95,7 @@ Add `k_mitigate` to `[genetics.decode_ranges]` (suggested default `0.5`). Expose
 
 **Zone hazard:** `raw = damage_per_tick` per overlapping zone (sum if multiple zones overlap).
 
-**Collision:** For each unordered pair overlapping this tick:
-
-```text
-relative_speed = |v_a - v_b|   # or closing speed along separation; document choice in code
-raw_collision = k_collision * relative_speed
-damage_applied = raw_collision * (1 - mitigation_self)
-```
-
-Add `k_collision` to decode ranges or `[economy]` (suggested: `economy.collision_damage_scale = 0.15`).
-
-**Pair handling:** Apply damage to **both** entities once per pair per tick (symmetric). Use deterministic pair iteration (sort entity ids) for reproducibility.
+**Collision (v1 Phase 4 — superseded for v2):** ~~Relative-speed pairwise damage via `economy.collision_damage_scale`.~~ **Removed** in evolution model revision 2026-06. v2 `interactions` applies **hazard zones only**.
 
 ### 4.3 — Damage routing without morphology
 
@@ -243,6 +235,8 @@ Use `photo_strength_ref = 1.0` or ancestor mean in test; document chosen referen
 
 ## Sub-phase 4B — Interactions (hazard + collision damage)
 
+> **v2 (2026-06):** Hazard branch only. Collision pair loop and `collision_damage_scale` removed.
+
 ### Deliverables
 
 | Task | Detail |
@@ -258,7 +252,7 @@ Use `photo_strength_ref = 1.0` or ancestor mean in test; document chosen referen
 | File | Change |
 |------|--------|
 | [`genome/phenotype.rs`](../src/genome/phenotype.rs) | `damage_mitigation`, decode uses `k_mitigate` |
-| [`config.rs`](../src/config.rs) | `k_mitigate`, `collision_damage_scale` |
+| [`config.rs`](../src/config.rs) | `k_mitigate` (v1); `collision_damage_scale` **removed** in v2 |
 | [`sim/systems/interactions.rs`](../src/sim/systems/interactions.rs) | New |
 | [`sim/systems/mod.rs`](../src/sim/systems/mod.rs) | Chain after `behavior_movement` |
 
@@ -356,7 +350,7 @@ Use `photo_strength_ref = 1.0` or ancestor mean in test; document chosen referen
 | [`genome/phenotype.rs`](../src/genome/phenotype.rs) | `greenness` + helpers |
 | [`sim/systems/metabolism.rs`](../src/sim/systems/metabolism.rs) | Apply buff and penalty |
 | [`configs/default.toml`](../configs/default.toml) | `[genetics.color_photosynthesis]` tuned for subtle selection pressure |
-| `configs/green_ab.toml` (optional) | Acceptance: high-G vs low-G ancestor hex, 5k ticks |
+| `configs/green_ab.toml` | **Removed** — v1 greenness niche superseded; v2 color is cosmetic ([EVOLUTION_MODEL_REVISION.md](EVOLUTION_MODEL_REVISION.md)) |
 
 ### Acceptance (4G)
 
@@ -398,7 +392,7 @@ Use `photo_strength_ref = 1.0` or ancestor mean in test; document chosen referen
 |------|--------|
 | `mitigation_increases_with_hardness` | `genome::phenotype` |
 | `hazard_damage_inside_zone` | `sim::hazards` or `sense` |
-| `collision_reduces_core_hp` | `sim::systems::interactions` |
+| ~~`collision_reduces_core_hp`~~ | Removed for v2; overlap does not reduce HP |
 | `repair_cost_scales_with_efficiency` | `sim::systems::healing` |
 | `hardness_hazard_survival_tradeoff` | `sim::acceptance` |
 | `headless_metrics_include_phase4_fields` | `sim::metrics` |
@@ -426,7 +420,7 @@ Use `photo_strength_ref = 1.0` or ancestor mean in test; document chosen referen
 | Phase 3 | Phase 4 target |
 |---------|----------------|
 | Sense: light only | + hazard exposure |
-| Movement: overlap ignored | Collision damage in `interactions` (still no despawn) |
+| Movement: overlap ignored | v1: collision damage in `interactions`. v2: overlap harmless |
 | `armor_upkeep` only | + mitigation on damage |
 | `repair_efficiency` decode only | + `healing` system |
 | `part_hp` always `[]` | Documented; optional repair on parts in tests |
@@ -455,10 +449,10 @@ Add to `[economy]`:
 
 ```toml
 repair_policy = "core_first"
-collision_damage_scale = 0.15
+# collision_damage_scale removed in v2 (2026-06)
 ```
 
-Optional acceptance-only config: `configs/hazard_lab.toml` with extreme hazard + short run for CI.
+Optional acceptance-only config: `configs/hazard_lab.toml` (**removed**); tune `[[environment.hazards]]` in `configs/default.toml` or a short-run copy for CI.
 
 Add `[genetics.color_photosynthesis]` (example):
 

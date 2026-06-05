@@ -147,7 +147,7 @@ Each tick, before sense/metabolism:
 
 | Season profile | Favored traits (examples) |
 |----------------|---------------------------|
-| High solar / bright gradient | High `photo_strength`, greenness (Phase 4), bright-band positioning |
+| High solar / bright gradient | High photo efficiency gene (v2) or `photo_strength` (v1); bright-band positioning. v1 greenness niche only. |
 | Low solar / winter | Low metabolism, low photo upkeep, short lifespan if cycle << `max_age_ticks` |
 | High hazard scale | `skin_hardness`, repair efficiency |
 | High vent / soup scale | `chemo_potential`, transporters (Phase 5–6) |

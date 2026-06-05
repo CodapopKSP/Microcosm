@@ -6,6 +6,9 @@ use rand::rngs::StdRng;
 
 use crate::config::SimConfig;
 
+/// Fixed simulation timestep in seconds ([SIMULATION.md](../../docs/SIMULATION.md)).
+pub const SIM_DT: f32 = 1.0 / 60.0;
+
 /// Bevy resource for loaded simulation config (`config` module stays Bevy-free).
 #[derive(Resource, Clone)]
 pub struct SimConfigResource(pub SimConfig);
@@ -153,7 +156,7 @@ mod tests {
 
     #[test]
     fn seeded_rng_is_reproducible() {
-        let config = SimConfig::load_v1_regression().unwrap();
+        let config = SimConfig::load_default().unwrap();
         let mut a = SimRng::from_config(&config);
         let mut b = SimRng::from_config(&config);
         assert!(a.is_seeded());
@@ -162,7 +165,7 @@ mod tests {
 
     #[test]
     fn mutation_stream_varies_by_entity() {
-        let config = SimConfig::load_v1_regression().unwrap();
+        let config = SimConfig::load_default().unwrap();
         let rng = SimRng::from_config(&config);
         let a = rng.stream_mutation(1, 0).gen::<u32>();
         let b = rng.stream_mutation(2, 0).gen::<u32>();
@@ -171,7 +174,7 @@ mod tests {
 
     #[test]
     fn repro_risk_stream_stable_for_same_key() {
-        let config = SimConfig::load_v1_regression().unwrap();
+        let config = SimConfig::load_default().unwrap();
         let rng = SimRng::from_config(&config);
         let a = rng.stream_repro_risk(7, 100).gen::<f32>();
         let b = rng.stream_repro_risk(7, 100).gen::<f32>();
@@ -180,7 +183,7 @@ mod tests {
 
     #[test]
     fn repro_risk_stream_varies_by_tick() {
-        let config = SimConfig::load_v1_regression().unwrap();
+        let config = SimConfig::load_default().unwrap();
         let rng = SimRng::from_config(&config);
         let a = rng.stream_repro_risk(7, 100).gen::<f32>();
         let b = rng.stream_repro_risk(7, 101).gen::<f32>();
@@ -196,7 +199,7 @@ mod tests {
 
     #[test]
     fn seeded_reproduction_digest_identical_over_500_ticks() {
-        let mut config = SimConfig::load_v1_regression().unwrap();
+        let mut config = SimConfig::load_default().unwrap();
         assert!(config.run.master_seed.is_some());
         config.world.initial_population = 10;
 
@@ -229,7 +232,7 @@ mod tests {
 
     #[test]
     fn different_master_seed_changes_reproduction_digest() {
-        let mut config_a = SimConfig::load_v1_regression().unwrap();
+        let mut config_a = SimConfig::load_default().unwrap();
         config_a.run.master_seed = Some(1);
         config_a.world.initial_population = 25;
         let mut config_b = config_a.clone();

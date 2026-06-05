@@ -1,8 +1,8 @@
 //! Simulation tick systems ([SIMULATION.md](../../docs/SIMULATION.md)).
 //!
 //! Phase 4+ pipeline: `environment_tick` → `sense_exposure` → `sense_rays` → `behavior_v2` →
-//! `feeding_v2` → `metabolism_and_gains` → `behavior_movement` →
-//! `interactions` → `healing` → `reproduction` → `advance_age` → `death_and_despawn` →
+//! `feeding_v2` → `metabolism_and_gains` → `behavior_movement_v2` →
+//! `interactions` → `healing_v2` → `reproduction` → `advance_age` → `death_and_despawn` →
 //! `performance_failsafe` → `metrics_sample`.
 //! Metabolism may skip photosynthetic gain on overlap when
 //! `[environment].crowding_blocks_photosynthesis` is true.
@@ -32,8 +32,8 @@ pub use age::*;
 pub use death::*;
 pub use failsafe::*;
 pub use headless::*;
-pub use healing::*;
-pub use interactions::*;
+pub use healing::{repair_energy_cost, repair_hp_cap_per_tick};
+pub use interactions::{interactions, v2_damage_mitigation};
 pub use metabolism::*;
 pub use metabolism_v2::{
     apply_metabolism_tick_v2, metabolism_tick_delta_v2, metabolism_tick_cost_v2,

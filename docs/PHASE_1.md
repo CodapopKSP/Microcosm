@@ -334,9 +334,11 @@ Register as `metabolism_and_gains` in tick pipeline ([SIMULATION.md](SIMULATION.
 
 ### Mutation operators (core only)
 
-Implement from [GENOME.md](GENOME.md):
+**v1 (this sub-phase):** Implement from [GENOME.md](GENOME.md) — bit flip, point noise, resample.
 
-| Operator | Phase 1 |
+**v2 (current default):** [Genome_Definition.md — Mutation (v2)](Genome_Definition.md#mutation-v2) — `[genetics.mutation_v2]`, 0–4 gene-level ±increment passes; no bit flip / resample.
+
+| Operator | Phase 1 (v1) |
 |----------|---------|
 | Bit flip | Yes |
 | Point noise | Yes, one hex nibble ±1 per affected byte (`delta_max` = 1 in default config) |

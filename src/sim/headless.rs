@@ -1,20 +1,18 @@
 //! Fast headless tick loop for acceptance tests (no Bevy window).
 //!
-//! This is a **test-only shortcut** that mirrors metabolism → reproduction → age → death
-//! without the full ECS pipeline. CLI and metrics determinism tests use [`run_headless_bevy`]
-//! in [`app`](super::app) instead.
+//! Mirrors metabolism → reproduction → age → death without the full ECS pipeline.
 
 #![cfg(test)]
 
 use crate::config::SimConfig;
-use crate::genome::{AnyGenome, AnyPhenotype, Genome};
+use crate::genome::{GenomeV2, PhenotypeV2};
 use crate::sim::components::Energy;
 use crate::sim::spawn::{
-    build_offspring_spawn_params, build_spawn_params, place_near_parent, randomize_placement,
+    build_initial_spawn_params, build_offspring_spawn_params, place_near_parent, randomize_placement,
     try_prepare_spawn,
 };
 use crate::sim::{
-    apply_failsafe, apply_metabolism_tick, attempt_reproduction,
+    apply_failsafe, apply_metabolism_tick_v2, attempt_reproduction_v2,
     overlap_photo_light_multipliers, ReproAttemptResult,
 };
 use crate::sim::light::LightField;
@@ -37,17 +35,19 @@ pub struct HeadlessRunSummary {
 struct SimAgent {
     id: u64,
     generation: u32,
-    genome: Genome,
-    phenotype: crate::genome::Phenotype,
+    genome: GenomeV2,
+    phenotype: PhenotypeV2,
     energy: f32,
     core_hp: f32,
+    core_max_hp: f32,
+    max_energy: f32,
     position: bevy::prelude::Vec2,
     repro_cooldown: u32,
     pending_fatal: bool,
     age_ticks: u32,
 }
 
-fn fold_genome_bytes(g: &Genome) -> u64 {
+fn fold_genome_bytes(g: &GenomeV2) -> u64 {
     g.bytes
         .iter()
         .fold(0u64, |acc, &b| acc.wrapping_mul(31).wrapping_add(u64::from(b)))
@@ -61,14 +61,14 @@ fn color_key(rgb: [f32; 3]) -> (u8, u8, u8) {
     )
 }
 
-/// Run Phase 1 metabolism + reproduction + death for `ticks` (requires `master_seed`).
+/// Run metabolism + reproduction + death for `ticks` (requires `master_seed`).
 pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
     assert!(
         config.run.master_seed.is_some(),
         "headless acceptance runs require master_seed"
     );
 
-    let ancestor = Genome::ancestor_from_config(config).unwrap();
+    let ancestor = GenomeV2::ancestor_from_config(config).unwrap();
     let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
     let light_field = LightField::from_environment(&config.environment, &bounds);
     let mut sim_rng = SimRng::from_config(config);
@@ -78,29 +78,23 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
 
     for _ in 0..config.world.initial_population {
         let genome = ancestor.clone_genome();
-        let Some((AnyGenome::V1(genome), AnyPhenotype::V1(phenotype))) =
-            try_prepare_spawn(AnyGenome::V1(genome.clone()), config)
-        else {
+        let Some((genome, phenotype)) = try_prepare_spawn(genome, config) else {
             continue;
         };
         let id = next_id.next();
-        let mut params = build_spawn_params(
-            AnyGenome::V1(genome.clone()),
-            AnyPhenotype::V1(phenotype.clone()),
-            config,
-            id,
-            None,
-            0,
-        );
+        let mut params = build_initial_spawn_params(genome, phenotype, config, id, 0);
         randomize_placement(&mut params, spawn_rng, &bounds, &config.world);
 
+        let p = &params.life.phenotype.0;
         agents.push(SimAgent {
             id,
             generation: 0,
-            genome,
-            phenotype,
-            energy: config.economy.spawn_energy,
-            core_hp: config.economy.core_max_hp,
+            genome: params.life.genome.0.clone_genome(),
+            phenotype: p.clone(),
+            energy: params.life.energy.internal_energy,
+            core_hp: params.life.health.core_hp,
+            core_max_hp: params.life.health.core_max_hp,
+            max_energy: p.max_energy,
             position: params.position,
             repro_cooldown: 0,
             pending_fatal: false,
@@ -132,25 +126,22 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
 
         for (idx, agent) in agents.iter_mut().enumerate() {
             let light = light_field.sample(agent.position);
-            let mut energy = Energy::new_v1(agent.energy);
+            let mut energy = Energy::new_v2(agent.energy, agent.max_energy);
             let mut health = crate::sim::components::Health {
                 core_hp: agent.core_hp,
-                core_max_hp: config.economy.core_max_hp,
+                core_max_hp: agent.core_max_hp,
                 part_hp: vec![],
             };
             let photo_light_multiplier = photo_light_mults.get(idx).copied().unwrap_or(1.0);
-            let vent_flux = super::vents::VentField::from_environment(&config.environment)
-                .flux_at(agent.position);
-            apply_metabolism_tick(
+            apply_metabolism_tick_v2(
                 &mut energy,
                 &mut health,
                 &agent.phenotype,
                 agent.age_ticks,
                 light,
-                vent_flux,
                 &config.environment,
                 &config.economy,
-                config.genetics.decode_ranges_ref(),
+                config,
                 photo_light_multiplier,
             );
             agent.energy = energy.internal_energy;
@@ -171,7 +162,8 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
             if spawn_blocked {
                 continue;
             }
-            if agent.energy < agent.phenotype.repro_threshold {
+            let threshold = agent.phenotype.max_energy * agent.phenotype.repro_threshold_frac;
+            if agent.energy < threshold {
                 continue;
             }
 
@@ -181,14 +173,14 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
             let mut repro_rng = sim_rng.stream_repro_risk(agent.id, tick);
             let mut mutation_rng =
                 sim_rng.stream_mutation(agent.id, agent.generation.saturating_add(1));
-            let mut energy = Energy::new_v1(agent.energy);
+            let mut energy = Energy::new_v2(agent.energy, agent.max_energy);
             let mut health = crate::sim::components::Health {
                 core_hp: agent.core_hp,
-                core_max_hp: config.economy.core_max_hp,
+                core_max_hp: agent.core_max_hp,
                 part_hp: vec![],
             };
 
-            match attempt_reproduction(
+            match attempt_reproduction_v2(
                 &mut energy,
                 &mut health,
                 &agent.phenotype,
@@ -212,21 +204,14 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                     child_start_energy,
                     child_start_hp,
                 } => {
-                    let (AnyGenome::V1(child_genome), AnyPhenotype::V1(child_phenotype)) =
-                        (child_genome, child_phenotype)
-                    else {
-                        agent.repro_cooldown = config.economy.repro_cooldown_ticks;
-                        summary.stillborns += 1;
-                        continue;
-                    };
                     let child_id = next_id.next();
                     agent.repro_cooldown = config.economy.repro_cooldown_ticks;
                     summary.births += 1;
                     summary.child_genome_fold ^= fold_genome_bytes(&child_genome);
 
                     let mut child_params = build_offspring_spawn_params(
-                        AnyGenome::V1(child_genome.clone()),
-                        AnyPhenotype::V1(child_phenotype.clone()),
+                        child_genome.clone_genome(),
+                        child_phenotype.clone(),
                         config,
                         child_id,
                         Some(agent.id),
@@ -249,6 +234,8 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                         phenotype: child_phenotype,
                         energy: child_params.life.energy.internal_energy,
                         core_hp: child_params.life.health.core_hp,
+                        core_max_hp: child_params.life.health.core_max_hp,
+                        max_energy: child_params.life.phenotype.0.max_energy,
                         position: child_params.position,
                         repro_cooldown: 0,
                         pending_fatal: false,

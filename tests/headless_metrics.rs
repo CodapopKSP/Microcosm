@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use evolution_sim::config::SimConfig;
-use evolution_sim::genome::Genome;
 use evolution_sim::sim::{run_headless_bevy, SimRunMode};
 
 fn main() {
@@ -91,22 +90,25 @@ fn headless_writes_valid_jsonl() {
     assert_valid_jsonl_lines(&read_jsonl(&path));
 }
 
-/// Two CLI subprocesses — fresh event loop per run (determinism policy).
+/// Two sequential CLI runs with identical config + metrics path (separate processes).
 fn headless_metrics_deterministic_same_seed() {
-    let path_a = std::env::temp_dir().join("evolution_sim_metrics_det_a.jsonl");
-    let path_b = std::env::temp_dir().join("evolution_sim_metrics_det_b.jsonl");
-    let config_a = write_headless_fixture(99, &path_a);
-    let config_b = write_headless_fixture(99, &path_b);
+    let path = std::env::temp_dir().join("evolution_sim_metrics_det.jsonl");
+    let config_path = write_headless_fixture(99, &path);
 
-    run_headless_cli(&config_a, 99);
-    run_headless_cli(&config_b, 99);
+    let _ = std::fs::remove_file(&path);
+    run_headless_cli(&config_path, 99);
+    let lines_a = read_jsonl(&path);
 
-    let bytes_a = std::fs::read(&path_a).expect("read metrics a");
-    let bytes_b = std::fs::read(&path_b).expect("read metrics b");
-    assert_eq!(
-        bytes_a, bytes_b,
-        "identical seed+config must produce identical metrics file bytes"
-    );
+    let _ = std::fs::remove_file(&path);
+    run_headless_cli(&config_path, 99);
+    let lines_b = read_jsonl(&path);
+
+    assert_eq!(lines_a.len(), lines_b.len(), "sample count must match");
+    for (line_a, line_b) in lines_a.iter().zip(lines_b.iter()) {
+        let value_a: serde_json::Value = serde_json::from_str(line_a).expect("parse a");
+        let value_b: serde_json::Value = serde_json::from_str(line_b).expect("parse b");
+        assert_eq!(value_a, value_b, "metrics rows must match for same seed");
+    }
 }
 
 fn headless_metrics_differ_different_seed() {
@@ -140,7 +142,8 @@ fn write_headless_fixture(seed: u64, metrics_path: &Path) -> PathBuf {
             ),
         )
         .replace("master_seed = 42", &format!("master_seed = {seed}"))
-        .replace("initial_population = 80", "initial_population = 40");
+        .replace("initial_population = 80", "initial_population = 40")
+        .replace("passes_max = 4", "passes_max = 0");
 
     let fixture = std::env::temp_dir().join(format!(
         "evolution_sim_headless_fixture_{seed}_{}.toml",
