@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use crate::config::FailsafePolicy;
 
 use super::super::components::Genome;
+use super::super::interval::logic_active_this_tick;
 use super::super::world::{SimConfigResource, SimTick, SpawnBlocked};
 
 /// Suppresses repeated stderr warnings while population stays above `max_entities`.
@@ -55,6 +56,9 @@ pub fn performance_failsafe(
     mut warn_latch: ResMut<FailsafeWarnLatch>,
     agents: Query<(), With<Genome>>,
 ) {
+    if !logic_active_this_tick(tick.tick, &config.0.run) {
+        return;
+    }
     let performance = &config.0.performance;
     let population = agents.iter().count();
     let over_cap = population > performance.max_entities;

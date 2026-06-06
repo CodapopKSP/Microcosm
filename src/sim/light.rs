@@ -17,19 +17,22 @@ pub struct LightField {
     uniform_level: f32,
     gradient_min: f32,
     gradient_max: f32,
-    bright_at: GradientBrightAt,
-    half_y: f32,
+    /// World Y where [`gradient_min`](Self::gradient_min) is reached.
+    dark_y: f32,
+    /// World Y where [`gradient_max`](Self::gradient_max) is reached.
+    bright_y: f32,
 }
 
 impl LightField {
     pub fn from_environment(env: &EnvironmentConfig, bounds: &WorldBounds) -> Self {
+        let (dark_y, bright_y) = gradient_y_endpoints(env, bounds.half_y);
         Self {
             mode: env.light_mode,
             uniform_level: env.gradient_max,
             gradient_min: env.gradient_min,
             gradient_max: env.gradient_max,
-            bright_at: env.gradient_bright_at,
-            half_y: bounds.half_y,
+            dark_y,
+            bright_y,
         }
     }
 
@@ -42,18 +45,27 @@ impl LightField {
     }
 
     fn sample_gradient_y(&self, y: f32) -> f32 {
-        let span = 2.0 * self.half_y;
-        if span <= 0.0 {
-            return self.gradient_min;
+        let span = self.bright_y - self.dark_y;
+        if span.abs() <= 1e-6 {
+            return self.gradient_max;
         }
 
-        // y = -half_y → t = 0 (bottom edge), y = +half_y → t = 1 (top edge).
-        let t = ((y + self.half_y) / span).clamp(0.0, 1.0);
-        let t = match self.bright_at {
-            GradientBrightAt::Top => t,
-            GradientBrightAt::Bottom => 1.0 - t,
-        };
+        let t = ((y - self.dark_y) / span).clamp(0.0, 1.0);
         self.gradient_min + t * (self.gradient_max - self.gradient_min)
+    }
+}
+
+/// Dark and bright Y endpoints for `gradient_y` ([`EnvironmentConfig::gradient_min_y`] optional).
+fn gradient_y_endpoints(env: &EnvironmentConfig, half_y: f32) -> (f32, f32) {
+    match env.gradient_bright_at {
+        GradientBrightAt::Top => (
+            env.gradient_min_y.unwrap_or(-half_y),
+            half_y,
+        ),
+        GradientBrightAt::Bottom => (
+            env.gradient_min_y.unwrap_or(half_y),
+            -half_y,
+        ),
     }
 }
 
@@ -159,6 +171,22 @@ mod tests {
         let above = Vec2::new(0.0, bounds.half_y * 2.0);
         let top = Vec2::new(0.0, bounds.half_y);
         assert_eq!(field.sample(above), field.sample(top));
+    }
+
+    #[test]
+    fn gradient_min_y_sets_dark_band_level() {
+        let config = SimConfig::load_default().unwrap();
+        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+        let mut env = config.environment.clone();
+        env.light_mode = LightMode::GradientY;
+        env.gradient_min_y = Some(-200.0);
+        let field = LightField::from_environment(&env, &bounds);
+
+        assert_eq!(field.sample(Vec2::new(0.0, bounds.half_y)), env.gradient_max);
+        assert_eq!(field.sample(Vec2::new(0.0, -200.0)), env.gradient_min);
+        assert_eq!(field.sample(Vec2::new(0.0, -bounds.half_y)), env.gradient_min);
+        let mid = field.sample(Vec2::ZERO);
+        assert!(mid > env.gradient_min && mid < env.gradient_max);
     }
 
 }

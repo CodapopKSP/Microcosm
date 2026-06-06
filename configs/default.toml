@@ -4,9 +4,9 @@
 width = 1000.0
 height = 1500.0
 boundary = "bounce"
-initial_population = 80
+initial_population = 1
 default_agent_radius = 12.0
-min_speed = 0.0
+min_speed = 10.0
 max_speed = 255.0
 
 [world.physics]
@@ -25,24 +25,24 @@ max_genome_bytes = 512
 max_pursue_slots = 8
 max_avoid_slots = 8
 # EVO2 + 24-byte sessile photo ancestor (docs/Genome_Definition.md)
-ancestor_hex = "45564f3200ff0500ff0000000080ff0f00000000ff000000000000"
+ancestor_hex = "45564f3200ff0502ff0000000080ff0f00000000f00f0000000000"
 [genetics.mutation_v2]
-passes_min = 0
-passes_max = 4
-p_large_step = 0.10
+passes_min = 2
+passes_max = 8
+p_large_step = 0.50
 large_step_min = 3
 large_step_max = 4
 
 [genetics.decode_v2]
 nibble_levels = 16
 channel_max = 255.0
-radius_at_zero = 4.0
-radius_at_max = 1314.70
+radius_at_zero = 0.01
+radius_at_max = 800.00
 energy_bonus_at_max = 6553.5
-metabolism_bonus_at_max = 6553.5
+metabolism_bonus_at_max = 1.0
 stroke_max = 25.5
-metabolism_pct_at_max = 0.65535
-speed_penalty_at_max = 0.65535
+metabolism_pct_at_max = 0.01
+speed_penalty_at_max = 0.065535
 heal_base_hp_per_sec = 1.0
 heal_speed_mult_at_max = 3.27675
 heal_cost_mult_at_max = 13.107
@@ -53,8 +53,8 @@ byte_scale = 255.0
 turn_chance_max_per_sec = 0.30
 turn_degrees_max = 180.0
 max_speed_at_max_byte = 255.0
-movement_cost_reduction_at_max = 0.52
-photo_rate_per_sec_per_radius = 2.0
+movement_cost_reduction_at_max = 0.052
+photo_rate_per_sec_per_radius = 0.1
 sensor_distance_at_high_nibble_f = 610.0
 sensor_width_deg_at_low_nibble_f = 35.0
 sensor_ray_count = 8
@@ -66,12 +66,14 @@ coupling_strength = 1.0
 [genetics.behavior]
 fuzzy_nibble_delta = 1
 avoid_flee_heading_offset_deg = 180.0
-sensor_upkeep_per_eye_per_tick = 0.002
-sensor_upkeep_strength_scale = 1.0
+sensor_upkeep_per_eye_per_tick = 0.0015
+sensor_upkeep_strength_scale = 0.2
+sensor_ray_interval_ticks = 60
+sensor_ray_phase_ticks = 0
 
 [economy]
 metabolism_floor = 0.001
-spawn_energy = 50.0
+spawn_energy = 400.0
 flat_energy_grant_per_tick = 0.0
 core_max_hp = 100.0
 repro_cooldown_ticks = 192
@@ -79,34 +81,34 @@ repro_safety_margin = 0.25
 p_death_on_repro_base = 0.12
 p_damage_on_repro_base = 0.35
 repro_damage_fraction_of_max_hp = 0.12
-repro_payment_order = "health_first"
+repro_payment_order = "energy_first"
 repair_energy_per_hp = 1.0
 repair_hp_per_tick_at_rate_1 = 50.0
 repair_policy = "core_first"
-move_energy_units_per_radius = 10.0
-age_metabolism_cap_per_sec = 1.0
+move_energy_units_per_radius = 0.01
+age_metabolism_cap_multiplier = 3.0
 age_metabolism_cap_ticks = 18000.0
 age_metabolism_ref_ticks = 3600.0
 
 [environment]
 energy_model = "local"
-solar_constant = 2.5
+solar_constant = 1.5
 light_mode = "gradient_y"
 gradient_axis = "y"
-gradient_min = 0.15
+gradient_min = 0.0
 gradient_max = 1.0
+# World Y where light = gradient_min (default: bottom edge at -height/2). Example: -450.0
+# gradient_min_y = -150.0
 gradient_bright_at = "top"
-crowding_blocks_photosynthesis = false
-overlap_shades_photosynthesis = true
-overlap_shade_factor = 0.5
-minerals_enabled = false
-corpses_enabled = false
+minerals_enabled = true
+corpses_enabled = true
 
 [environment.feeding]
 minerals_vent_flux_scale = 25.0
-minerals_uptake_per_tick = 0.08
-biomass_uptake_per_radius = 0.15
-corpse_biomass_frac = 0.4
+minerals_uptake_per_tick = 5.0
+biomass_uptake_per_radius_per_sec = 50.0
+biomass_feeding_interval_ticks = 60
+biomass_feeding_phase_ticks = 30
 corpse_ttl_ticks = 3600
 soup_enabled = false
 soup_regen_per_tick = 0.0005
@@ -115,29 +117,22 @@ soup_initial_concentration = 0.0
 soup_uptake_rate = 0.04
 
 [[environment.hazards]]
-center = [200.0, 600.0]
-radius = 20.0
-damage_per_tick = 0.00833
+center = [300.0, -200.0]
+radius = 200.0
+damage_per_tick = 0.0
+chem_flux = 1.0
 
 [[environment.hazards]]
-center = [300.0, 650.0]
-radius = 20.0
-damage_per_tick = 0.00875
+center = [200.0, -650.0]
+radius = 200.0
+damage_per_tick = 0.0
+chem_flux = 1.0
 
 [[environment.hazards]]
-center = [400.0, 600.0]
-radius = 20.0
-damage_per_tick = 0.00792
-
-[[environment.hazards]]
-center = [300.0, 450.0]
-radius = 20.0
-damage_per_tick = 0.00833
-
-[[environment.hazards]]
-center = [400.0, 300.0]
-radius = 20.0
-damage_per_tick = 0.00917
+center = [-200.0, -650.0]
+radius = 200.0
+damage_per_tick = 0.0
+chem_flux = 1.0
 
 [[environment.vents]]
 center = [0.0, -450.0]
@@ -147,5 +142,7 @@ vent_flux = 0.032
 [run]
 master_seed = 42
 max_ticks = 360000
+logic_interval_ticks = 6
+logic_interval_phase_ticks = 0
 snapshot_interval = 60
 metrics_path = "metrics.jsonl"

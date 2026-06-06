@@ -4,11 +4,13 @@ use bevy::prelude::*;
 
 use super::super::behavior::{update_behavior_intent, BehaviorState};
 use super::super::components::{Energy, Phenotype};
+use super::super::interval::logic_active_this_tick;
 use super::super::perception::SensePerception;
-use super::super::world::SimConfigResource;
+use super::super::world::{SimConfigResource, SimTick};
 
 /// Bevy system: set locomotion intent after [`super::sense_rays`](super::sense_rays).
 pub fn behavior_v2(
+    tick: Res<SimTick>,
     config: Res<SimConfigResource>,
     mut query: Query<(
         &Phenotype,
@@ -18,6 +20,9 @@ pub fn behavior_v2(
     )>,
 ) {
     if config.0.genetics.genome_version != 2 {
+        return;
+    }
+    if !logic_active_this_tick(tick.tick, &config.0.run) {
         return;
     }
     let behavior_cfg = match config.0.genetics.behavior.as_ref() {

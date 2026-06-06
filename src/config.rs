@@ -244,12 +244,49 @@ pub struct GeneticsTriadConfig {
     pub coupling_strength: f32,
 }
 
+fn default_sensor_ray_interval_ticks() -> u32 {
+    60
+}
+
+fn default_sensor_ray_phase_ticks() -> u32 {
+    0
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct GeneticsBehaviorConfig {
     pub fuzzy_nibble_delta: u8,
     pub avoid_flee_heading_offset_deg: f32,
     pub sensor_upkeep_per_eye_per_tick: f32,
     pub sensor_upkeep_strength_scale: f32,
+    /// How often [`sense_rays`](crate::sim::systems::sense_rays) runs; 1 = every tick. Behavior reuses the last scan between updates.
+    #[serde(default = "default_sensor_ray_interval_ticks")]
+    pub sensor_ray_interval_ticks: u32,
+    /// Tick offset within the interval (default 0 — stagger from biomass feeding via its phase).
+    #[serde(default = "default_sensor_ray_phase_ticks")]
+    pub sensor_ray_phase_ticks: u32,
+}
+
+impl GeneticsBehaviorConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.sensor_ray_interval_ticks == 0 {
+            return Err(ConfigError::Validation(
+                "genetics.behavior.sensor_ray_interval_ticks must be at least 1".into(),
+            ));
+        }
+        if self.sensor_ray_phase_ticks >= self.sensor_ray_interval_ticks {
+            return Err(ConfigError::Validation(
+                "genetics.behavior.sensor_ray_phase_ticks must be < sensor_ray_interval_ticks"
+                    .into(),
+            ));
+        }
+        if self.sensor_upkeep_per_eye_per_tick < 0.0 || !self.sensor_upkeep_per_eye_per_tick.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "genetics.behavior.sensor_upkeep_per_eye_per_tick must be finite and >= 0".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// HP repair ordering when energy is available ([PHASE_4.md](../docs/PHASE_4.md) §4.4).
@@ -269,8 +306,8 @@ fn default_repair_policy() -> RepairPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ReproPaymentOrder {
-    #[default]
     HealthFirst,
+    #[default]
     EnergyFirst,
     Proportional,
 }
@@ -298,8 +335,8 @@ pub struct EconomyConfig {
     /// Max HP restored per tick at `repair_rate = 1.0` (throughput cap; energy still `hp * repair_energy_per_hp`).
     #[serde(default = "default_repair_hp_per_tick_at_rate_1")]
     pub repair_hp_per_tick_at_rate_1: f32,
-    /// Log-age metabolism reaches this rate (energy/s) at `age_metabolism_cap_ticks` (60 Hz).
-    pub age_metabolism_cap_per_sec: f32,
+    /// Log-age metabolism multiplier at `age_metabolism_cap_ticks` (1.0 at birth; e.g. 2.0 = double demand).
+    pub age_metabolism_cap_multiplier: f32,
     pub age_metabolism_cap_ticks: f32,
     pub age_metabolism_ref_ticks: f32,
     #[serde(default = "default_repair_policy")]
@@ -341,6 +378,9 @@ pub struct HazardZone {
     pub center: [f32; 2],
     pub radius: f32,
     pub damage_per_tick: f32,
+    /// Local chemosynthetic flux while inside the zone (summed like vent flux; default 0).
+    #[serde(default)]
+    pub chem_flux: f32,
 }
 
 /// Axis-aligned circular thermal vent ([PHASE_5.md](../docs/PHASE_5.md) §5.1).
@@ -360,12 +400,16 @@ pub struct FeedingConfig {
     /// Energy gained per tick at full minerals digestion and concentration `1.0`.
     #[serde(default = "default_minerals_uptake_per_tick")]
     pub minerals_uptake_per_tick: f32,
-    /// Biomass energy per tick per unit corpse radius at full biomass digestion.
-    #[serde(default = "default_biomass_uptake_per_radius")]
-    pub biomass_uptake_per_radius: f32,
-    /// Fraction of parent's current energy + health left on the corpse marker.
-    #[serde(default = "default_corpse_biomass_frac")]
-    pub corpse_biomass_frac: f32,
+    /// Health-energy units per second per body-radius unit at 100% biomass digestion
+    /// (`uptake/sec = body_radius × biomass_effective × this value`).
+    #[serde(default = "default_biomass_uptake_per_radius_per_sec")]
+    pub biomass_uptake_per_radius_per_sec: f32,
+    /// How often corpse/prey biomass feeding runs; default 60 = once per second at 60 Hz.
+    #[serde(default = "default_biomass_feeding_interval_ticks")]
+    pub biomass_feeding_interval_ticks: u32,
+    /// Tick offset within the interval (default 30 — half second after sensor rays at 60 Hz).
+    #[serde(default = "default_biomass_feeding_phase_ticks")]
+    pub biomass_feeding_phase_ticks: u32,
     #[serde(default = "default_corpse_ttl_ticks")]
     pub corpse_ttl_ticks: u32,
     /// Global soup pool (Phase 6 minimal scalar field).
@@ -388,11 +432,15 @@ fn default_minerals_vent_flux_scale() -> f32 {
 fn default_minerals_uptake_per_tick() -> f32 {
     0.08
 }
-fn default_biomass_uptake_per_radius() -> f32 {
-    0.15
+fn default_biomass_uptake_per_radius_per_sec() -> f32 {
+    10.0
 }
-fn default_corpse_biomass_frac() -> f32 {
-    0.4
+fn default_biomass_feeding_interval_ticks() -> u32 {
+    60
+}
+
+fn default_biomass_feeding_phase_ticks() -> u32 {
+    30
 }
 fn default_corpse_ttl_ticks() -> u32 {
     3600
@@ -414,8 +462,9 @@ fn default_feeding_config() -> FeedingConfig {
     FeedingConfig {
         minerals_vent_flux_scale: default_minerals_vent_flux_scale(),
         minerals_uptake_per_tick: default_minerals_uptake_per_tick(),
-        biomass_uptake_per_radius: default_biomass_uptake_per_radius(),
-        corpse_biomass_frac: default_corpse_biomass_frac(),
+        biomass_uptake_per_radius_per_sec: default_biomass_uptake_per_radius_per_sec(),
+        biomass_feeding_interval_ticks: default_biomass_feeding_interval_ticks(),
+        biomass_feeding_phase_ticks: default_biomass_feeding_phase_ticks(),
         corpse_ttl_ticks: default_corpse_ttl_ticks(),
         soup_enabled: false,
         soup_regen_per_tick: default_soup_regen_per_tick(),
@@ -430,8 +479,7 @@ impl FeedingConfig {
         for (name, v) in [
             ("minerals_vent_flux_scale", self.minerals_vent_flux_scale),
             ("minerals_uptake_per_tick", self.minerals_uptake_per_tick),
-            ("biomass_uptake_per_radius", self.biomass_uptake_per_radius),
-            ("corpse_biomass_frac", self.corpse_biomass_frac),
+            ("biomass_uptake_per_radius_per_sec", self.biomass_uptake_per_radius_per_sec),
             ("soup_regen_per_tick", self.soup_regen_per_tick),
             ("soup_max_concentration", self.soup_max_concentration),
             ("soup_initial_concentration", self.soup_initial_concentration),
@@ -443,11 +491,6 @@ impl FeedingConfig {
                 )));
             }
         }
-        if self.corpse_biomass_frac > 1.0 {
-            return Err(ConfigError::Validation(
-                "environment.feeding.corpse_biomass_frac must be in [0, 1]".into(),
-            ));
-        }
         if self.soup_max_concentration <= 0.0 {
             return Err(ConfigError::Validation(
                 "environment.feeding.soup_max_concentration must be positive".into(),
@@ -456,6 +499,17 @@ impl FeedingConfig {
         if self.soup_initial_concentration > self.soup_max_concentration {
             return Err(ConfigError::Validation(
                 "environment.feeding.soup_initial_concentration must be <= soup_max_concentration"
+                    .into(),
+            ));
+        }
+        if self.biomass_feeding_interval_ticks == 0 {
+            return Err(ConfigError::Validation(
+                "environment.feeding.biomass_feeding_interval_ticks must be at least 1".into(),
+            ));
+        }
+        if self.biomass_feeding_phase_ticks >= self.biomass_feeding_interval_ticks {
+            return Err(ConfigError::Validation(
+                "environment.feeding.biomass_feeding_phase_ticks must be < biomass_feeding_interval_ticks"
                     .into(),
             ));
         }
@@ -473,15 +527,10 @@ pub struct EnvironmentConfig {
     pub gradient_axis: GradientAxis,
     pub gradient_min: f32,
     pub gradient_max: f32,
-    pub gradient_bright_at: GradientBrightAt,
+    /// World Y where light equals [`gradient_min`](Self::gradient_min). Omitted ⇒ shaded world edge.
     #[serde(default)]
-    pub crowding_blocks_photosynthesis: bool,
-    /// Grade photosynthesis by overlap area and cluster size (one sun per patch).
-    #[serde(default = "default_overlap_shades_photosynthesis")]
-    pub overlap_shades_photosynthesis: bool,
-    /// Fraction of self-area overlap treated as lost light before cluster split.
-    #[serde(default = "default_overlap_shade_factor")]
-    pub overlap_shade_factor: f32,
+    pub gradient_min_y: Option<f32>,
+    pub gradient_bright_at: GradientBrightAt,
     /// Circular hazard bands; empty ⇒ no zone damage (Phase 4A).
     #[serde(default)]
     pub hazards: Vec<HazardZone>,
@@ -496,14 +545,6 @@ pub struct EnvironmentConfig {
     pub corpses_enabled: bool,
     #[serde(default = "default_feeding_config")]
     pub feeding: FeedingConfig,
-}
-
-fn default_overlap_shades_photosynthesis() -> bool {
-    true
-}
-
-fn default_overlap_shade_factor() -> f32 {
-    0.5
 }
 
 fn default_gradient_axis() -> GradientAxis {
@@ -545,7 +586,7 @@ pub enum GradientBrightAt {
 }
 
 impl EnvironmentConfig {
-    pub fn validate(&self) -> Result<(), ConfigError> {
+    pub fn validate(&self, half_y: f32) -> Result<(), ConfigError> {
         match self.energy_model {
             EnergyModel::Local | EnergyModel::LegacyFlat => {}
             EnergyModel::Pool => {
@@ -582,12 +623,28 @@ impl EnvironmentConfig {
             ));
         }
 
-        if !self.overlap_shade_factor.is_finite()
-            || !(0.0..=1.0).contains(&self.overlap_shade_factor)
-        {
-            return Err(ConfigError::Validation(
-                "environment.overlap_shade_factor must be in [0, 1]".into(),
-            ));
+        if let Some(y) = self.gradient_min_y {
+            if !y.is_finite() {
+                return Err(ConfigError::Validation(
+                    "environment.gradient_min_y must be finite".into(),
+                ));
+            }
+            match self.gradient_bright_at {
+                GradientBrightAt::Top if y >= half_y => {
+                    return Err(ConfigError::Validation(format!(
+                        "environment.gradient_min_y must be below the bright top edge \
+                         (y < {half_y}) when gradient_bright_at = \"top\""
+                    )));
+                }
+                GradientBrightAt::Bottom if y <= -half_y => {
+                    return Err(ConfigError::Validation(format!(
+                        "environment.gradient_min_y must be above the bright bottom edge \
+                         (y > {}) when gradient_bright_at = \"bottom\"",
+                        -half_y
+                    )));
+                }
+                _ => {}
+            }
         }
 
         for (i, zone) in self.hazards.iter().enumerate() {
@@ -604,6 +661,11 @@ impl EnvironmentConfig {
             if !zone.damage_per_tick.is_finite() || zone.damage_per_tick < 0.0 {
                 return Err(ConfigError::Validation(format!(
                     "environment.hazards[{i}].damage_per_tick must be finite and >= 0"
+                )));
+            }
+            if !zone.chem_flux.is_finite() || zone.chem_flux < 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "environment.hazards[{i}].chem_flux must be finite and >= 0"
                 )));
             }
         }
@@ -637,10 +699,21 @@ pub struct RunConfig {
     pub master_seed: Option<u64>,
     #[serde(default)]
     pub max_ticks: u64,
+    /// Cadence for non-movement simulation logic (metabolism, behavior, feeding except biomass, …).
+    /// Movement and passive physics still run every tick.
+    #[serde(default = "default_logic_interval_ticks")]
+    pub logic_interval_ticks: u32,
+    /// Tick offset within [`logic_interval_ticks`](Self::logic_interval_ticks).
+    #[serde(default)]
+    pub logic_interval_phase_ticks: u32,
     #[serde(default = "default_snapshot_interval")]
     pub snapshot_interval: u64,
     #[serde(default = "default_metrics_path")]
     pub metrics_path: String,
+}
+
+fn default_logic_interval_ticks() -> u32 {
+    6
 }
 
 fn default_snapshot_interval() -> u64 {
@@ -648,6 +721,22 @@ fn default_snapshot_interval() -> u64 {
 }
 fn default_metrics_path() -> String {
     "metrics.jsonl".into()
+}
+
+impl RunConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.logic_interval_ticks == 0 {
+            return Err(ConfigError::Validation(
+                "run.logic_interval_ticks must be at least 1".into(),
+            ));
+        }
+        if self.logic_interval_phase_ticks >= self.logic_interval_ticks {
+            return Err(ConfigError::Validation(
+                "run.logic_interval_phase_ticks must be < run.logic_interval_ticks".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Errors from loading or validating configuration.
@@ -726,7 +815,7 @@ impl SimConfig {
 
         let d2 = self.genetics.require_decode_v2()?;
         self.genetics.require_triad()?;
-        self.genetics.require_behavior()?;
+        self.genetics.require_behavior()?.validate()?;
         let mutation_v2 = self.genetics.require_mutation_v2()?;
         d2.validate()?;
         mutation_v2.validate()?;
@@ -795,11 +884,11 @@ impl SimConfig {
             ));
         }
 
-        if self.economy.age_metabolism_cap_per_sec < 0.0
-            || !self.economy.age_metabolism_cap_per_sec.is_finite()
+        if self.economy.age_metabolism_cap_multiplier < 1.0
+            || !self.economy.age_metabolism_cap_multiplier.is_finite()
         {
             return Err(ConfigError::Validation(
-                "economy.age_metabolism_cap_per_sec must be non-negative and finite".into(),
+                "economy.age_metabolism_cap_multiplier must be finite and >= 1".into(),
             ));
         }
 
@@ -837,7 +926,8 @@ impl SimConfig {
             ));
         }
 
-        self.environment.validate()?;
+        self.environment.validate(self.world.height * 0.5)?;
+        self.run.validate()?;
 
         Ok(())
     }
@@ -994,15 +1084,6 @@ mod tests {
     }
 
     #[test]
-    fn crowding_flag_off_by_default() {
-        let config = SimConfig::load_default().expect("default.toml should load");
-        assert!(
-            !config.environment.crowding_blocks_photosynthesis,
-            "binary overlap blocking must be off in default config (Phase 2 canonical)"
-        );
-    }
-
-    #[test]
     fn repair_policy_defaults_to_core_first() {
         let toml = r#"
             metabolism_floor = 0.1
@@ -1015,7 +1096,7 @@ mod tests {
             p_damage_on_repro_base = 0.2
             repro_damage_fraction_of_max_hp = 0.1
             repair_energy_per_hp = 1.0
-            age_metabolism_cap_per_sec = 1.0
+            age_metabolism_cap_multiplier = 1.5
             age_metabolism_cap_ticks = 18000.0
             age_metabolism_ref_ticks = 3600.0
         "#;
@@ -1062,7 +1143,6 @@ mod tests {
         assert_eq!(config.economy.flat_energy_grant_per_tick, 0.0);
         assert_eq!(config.economy.repair_policy, RepairPolicy::CoreFirst);
         assert_eq!(config.environment.light_mode, LightMode::GradientY);
-        assert!(!config.environment.crowding_blocks_photosynthesis);
         assert!(config.genetics.decode_v2.is_some());
         assert!(config.genetics.triad.is_some());
         assert!(config.genetics.behavior.is_some());

@@ -1,0 +1,7 @@
+[package]
+name = "repro_diag"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+evolution_sim = { path = "../.." }
+rand = "0.8"

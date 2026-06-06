@@ -40,7 +40,7 @@ channel_max = 255.0
 radius_at_zero = 4.0
 radius_at_max = 1314.70
 energy_bonus_at_max = 6553.5
-metabolism_bonus_at_max = 6553.5
+metabolism_bonus_at_max = 65.535
 stroke_max = 25.5
 metabolism_pct_at_max = 0.65535
 speed_penalty_at_max = 0.65535
@@ -69,6 +69,7 @@ fuzzy_nibble_delta = 1
 avoid_flee_heading_offset_deg = 180.0
 sensor_upkeep_per_eye_per_tick = 0.002
 sensor_upkeep_strength_scale = 1.0
+sensor_ray_interval_ticks = 60
 
 [economy]
 metabolism_floor = 0.001
@@ -80,12 +81,12 @@ repro_safety_margin = 0.25
 p_death_on_repro_base = 0.12
 p_damage_on_repro_base = 0.35
 repro_damage_fraction_of_max_hp = 0.12
-repro_payment_order = "health_first"
+repro_payment_order = "energy_first"
 repair_energy_per_hp = 1.0
 repair_hp_per_tick_at_rate_1 = 50.0
 repair_policy = "core_first"
 move_energy_units_per_radius = 10.0
-age_metabolism_cap_per_sec = 1.0
+age_metabolism_cap_multiplier = 1.5
 age_metabolism_cap_ticks = 18000.0
 age_metabolism_ref_ticks = 3600.0
 
@@ -97,17 +98,13 @@ gradient_axis = "y"
 gradient_min = 0.15
 gradient_max = 1.0
 gradient_bright_at = "top"
-crowding_blocks_photosynthesis = false
-overlap_shades_photosynthesis = true
-overlap_shade_factor = 0.5
 minerals_enabled = true
 corpses_enabled = true
 
 [environment.feeding]
 minerals_vent_flux_scale = 25.0
 minerals_uptake_per_tick = 0.12
-biomass_uptake_per_radius = 0.2
-corpse_biomass_frac = 0.5
+biomass_uptake_per_radius_per_sec = 10.0
 corpse_ttl_ticks = 6000
 soup_enabled = true
 soup_regen_per_tick = 0.001
@@ -123,5 +120,7 @@ vent_flux = 0.032
 [run]
 master_seed = 7
 max_ticks = 36000
+logic_interval_ticks = 6
+logic_interval_phase_ticks = 0
 snapshot_interval = 60
 metrics_path = "metrics_mineral_v2.jsonl"

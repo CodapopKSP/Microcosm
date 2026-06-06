@@ -114,11 +114,19 @@ pub fn decode(genome: &GenomeV2, config: &SimConfig) -> Result<PhenotypeV2, Deco
     let r = genome.color_r()?;
     let g = genome.color_g()?;
     let b = genome.color_b()?;
-    let color_rgb = [r, g, b];
+    let photo_raw = genome.photo_efficiency_raw()?;
+    let biomass_raw = genome.biomass_efficiency_raw()?;
+    let minerals_raw = genome.minerals_efficiency_raw()?;
+    let color_rgb = crate::genome::encoding_v2::energy_method_color_rgb(
+        biomass_raw,
+        photo_raw,
+        minerals_raw,
+        [r, g, b],
+    );
     let color = [
-        r as f32 / d.channel_max,
-        g as f32 / d.channel_max,
-        b as f32 / d.channel_max,
+        color_rgb[0] as f32 / d.channel_max,
+        color_rgb[1] as f32 / d.channel_max,
+        color_rgb[2] as f32 / d.channel_max,
     ];
 
     let body_t = u16_fraction(genome.body_radius_raw()?);
@@ -171,9 +179,9 @@ pub fn decode(genome: &GenomeV2, config: &SimConfig) -> Result<PhenotypeV2, Deco
     let move_eff = byte_fraction(genome.movement_efficiency_raw()?, d.byte_scale);
     let movement_cost_multiplier = 1.0 - move_eff * d.movement_cost_reduction_at_max;
 
-    let photo_gene_eff = byte_fraction(genome.photo_efficiency_raw()?, d.byte_scale);
-    let biomass_gene_eff = byte_fraction(genome.biomass_efficiency_raw()?, d.byte_scale);
-    let minerals_gene_eff = byte_fraction(genome.minerals_efficiency_raw()?, d.byte_scale);
+    let photo_gene_eff = byte_fraction(photo_raw, d.byte_scale);
+    let biomass_gene_eff = byte_fraction(biomass_raw, d.byte_scale);
+    let minerals_gene_eff = byte_fraction(minerals_raw, d.byte_scale);
 
     let photo_effective = apply_triad(
         photo_gene_eff,
@@ -311,9 +319,42 @@ mod tests {
         bytes[biomass_idx] = 0x00;
         let solo = decode(&GenomeV2::from_bytes(bytes.clone(), &config.genetics).unwrap(), &config)
             .unwrap();
-        bytes[biomass_idx] = 0xFF;
+        bytes[photo_idx] = 0x80;
+        bytes[biomass_idx] = 0x7F;
         let coupled = decode(&GenomeV2::from_bytes(bytes, &config.genetics).unwrap(), &config).unwrap();
         assert!(coupled.photo_effective < solo.photo_effective);
+    }
+
+    #[test]
+    fn energy_method_color_reflects_triad_in_phenotype() {
+        let config = v2_config();
+        let mut bytes = config.genetics.parse_ancestor_bytes().unwrap();
+        let photo_idx =
+            crate::genome::encoding_v2::HEADER_LEN + crate::genome::encoding_v2::core::PHOTO_EFFICIENCY;
+        let biomass_idx =
+            crate::genome::encoding_v2::HEADER_LEN + crate::genome::encoding_v2::core::BIOMASS_EFFICIENCY;
+        let minerals_idx = crate::genome::encoding_v2::HEADER_LEN
+            + crate::genome::encoding_v2::core::MINERALS_EFFICIENCY;
+        let r_idx =
+            crate::genome::encoding_v2::HEADER_LEN + crate::genome::encoding_v2::core::COLOR_R;
+        let g_idx =
+            crate::genome::encoding_v2::HEADER_LEN + crate::genome::encoding_v2::core::COLOR_G;
+        let b_idx =
+            crate::genome::encoding_v2::HEADER_LEN + crate::genome::encoding_v2::core::COLOR_B;
+        bytes[photo_idx] = 0x00;
+        bytes[biomass_idx] = 0xF0;
+        bytes[minerals_idx] = 0x0F;
+        bytes[r_idx] = 0x00;
+        bytes[g_idx] = 0x00;
+        bytes[b_idx] = 0x00;
+        let p = decode(
+            &GenomeV2::from_bytes(bytes, &config.genetics).unwrap(),
+            &config,
+        )
+        .unwrap();
+        assert_eq!(p.color_rgb[0], 0xF0);
+        assert_eq!(p.color_rgb[1], 0x00);
+        assert_eq!(p.color_rgb[2], 0x00);
     }
 
     #[test]

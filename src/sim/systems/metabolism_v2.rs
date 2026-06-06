@@ -6,7 +6,7 @@ use crate::config::{
 use crate::genome::PhenotypeV2;
 use crate::sim::components::{Energy, Health};
 
-use super::metabolism::age_metabolism_per_tick;
+use super::metabolism::age_metabolism_multiplier;
 
 /// Simulation tick rate for per-second genome formulas.
 pub const TICKS_PER_SEC: f32 = 60.0;
@@ -38,7 +38,7 @@ pub fn sensor_upkeep_per_tick(
     eyes as f32 * behavior.sensor_upkeep_per_eye_per_tick * strength_mult
 }
 
-/// Per-tick energy drain (metabolism + sensors + global age tax).
+/// Per-tick energy drain (scaled base metabolism + sensor upkeep).
 pub fn metabolism_tick_cost_v2(
     phenotype: &PhenotypeV2,
     age_ticks: u32,
@@ -46,9 +46,9 @@ pub fn metabolism_tick_cost_v2(
     behavior: &GeneticsBehaviorConfig,
     decode: &GeneticsDecodeV2,
 ) -> f32 {
-    metabolism_demand_per_tick(phenotype, economy)
-        + sensor_upkeep_per_tick(phenotype, behavior, decode)
-        + age_metabolism_per_tick(age_ticks, 1.0, economy)
+    let demand = metabolism_demand_per_tick(phenotype, economy);
+    let age_mult = age_metabolism_multiplier(age_ticks, 1.0, economy);
+    demand * age_mult + sensor_upkeep_per_tick(phenotype, behavior, decode)
 }
 
 /// Photosynthetic gain for one tick (`photo_rate × radius × photo_effective × light × solar`, per-second → per-tick).
@@ -57,14 +57,9 @@ pub fn photosynthetic_gain_per_tick_v2(
     light_sample: f32,
     environment: &EnvironmentConfig,
     decode: &GeneticsDecodeV2,
-    photo_light_multiplier: f32,
 ) -> f32 {
-    let light_mult = photo_light_multiplier.clamp(0.0, 1.0);
-    if light_mult <= 0.0 {
-        return 0.0;
-    }
     let per_sec = phenotype.photo_gain_per_sec(decode);
-    per_sec * light_sample.clamp(0.0, 1.0) * environment.solar_constant * light_mult / TICKS_PER_SEC
+    per_sec * light_sample.clamp(0.0, 1.0) * environment.solar_constant / TICKS_PER_SEC
 }
 
 /// Net energy change for one v2 metabolism tick.
@@ -76,15 +71,9 @@ pub fn metabolism_tick_delta_v2(
     economy: &EconomyConfig,
     decode: &GeneticsDecodeV2,
     behavior: &GeneticsBehaviorConfig,
-    photo_light_multiplier: f32,
 ) -> f32 {
-    photosynthetic_gain_per_tick_v2(
-        phenotype,
-        light_sample,
-        environment,
-        decode,
-        photo_light_multiplier,
-    ) - metabolism_tick_cost_v2(phenotype, age_ticks, economy, behavior, decode)
+    photosynthetic_gain_per_tick_v2(phenotype, light_sample, environment, decode)
+        - metabolism_tick_cost_v2(phenotype, age_ticks, economy, behavior, decode)
 }
 
 /// Clamp pools to decoded caps ([Genome_Definition.md](../../../docs/Genome_Definition.md) vitality).
@@ -97,7 +86,7 @@ pub fn clamp_vitality_pools(energy: &mut Energy, health: &mut Health, phenotype:
     health.core_hp = health.core_hp.min(max_hp);
 }
 
-/// Apply one v2 metabolism tick; deficit drains `core_hp` after energy is empty.
+/// Apply one or more v2 metabolism ticks; deficit drains `core_hp` after energy is empty.
 pub fn apply_metabolism_tick_v2(
     energy: &mut Energy,
     health: &mut Health,
@@ -107,7 +96,7 @@ pub fn apply_metabolism_tick_v2(
     environment: &EnvironmentConfig,
     economy: &EconomyConfig,
     config: &SimConfig,
-    photo_light_multiplier: f32,
+    tick_count: u32,
 ) {
     let decode = config.genetics.require_decode_v2().expect("v2 metabolism requires decode_v2");
     let behavior = config.genetics.require_behavior().expect("v2 metabolism requires behavior");
@@ -120,8 +109,7 @@ pub fn apply_metabolism_tick_v2(
         economy,
         decode,
         behavior,
-        photo_light_multiplier,
-    );
+    ) * tick_count.max(1) as f32;
     energy.internal_energy += delta;
     if energy.internal_energy < 0.0 {
         let hp_deficit = -energy.internal_energy;
@@ -176,7 +164,6 @@ mod tests {
             config.environment.gradient_max,
             &config.environment,
             decode,
-            1.0,
         );
         assert!(gain > 0.0);
         assert!(phenotype.photo_effective > 0.9);
@@ -224,7 +211,7 @@ mod tests {
             &config.environment,
             &config.economy,
             &config,
-            1.0,
+            1,
         );
         assert_eq!(energy.internal_energy, 0.0);
         assert!(health.core_hp < 50.0);
@@ -244,7 +231,6 @@ mod tests {
             &config.economy,
             decode,
             behavior,
-            1.0,
         );
         assert!(
             delta > 0.0,
@@ -270,7 +256,7 @@ mod tests {
                 &config.environment,
                 &config.economy,
                 &config,
-                1.0,
+                1,
             );
         }
 
@@ -295,7 +281,7 @@ mod tests {
                 &config.environment,
                 &config.economy,
                 &config,
-                1.0,
+                1,
             );
         }
 

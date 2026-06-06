@@ -6,7 +6,7 @@ use rand::Rng;
 use crate::config::SimConfig;
 use crate::genome::AnyGenome;
 
-use super::reproduction_v2::attempt_reproduction_v2;
+use super::reproduction_v2::{attempt_reproduction_v2, repro_threshold_energy};
 use crate::sim::spawn::{
     build_offspring_spawn_params, place_near_parent, spawn_agent_entity, try_prepare_spawn,
 };
@@ -15,6 +15,7 @@ use super::super::components::{
     Cooldowns, DeathReason, Energy, Genome, Health, Lineage, PendingDeath, Phenotype,
 };
 use super::super::spawn::SpawnParams;
+use super::super::interval::{logic_active_this_tick, logic_elapsed_ticks};
 use super::super::metrics::MetricsPeriodCounters;
 use super::super::world::{NextEntityId, SimConfigResource, SimRng, SimTick, SpawnBlocked, WorldBounds};
 
@@ -90,38 +91,41 @@ pub fn reproduction(
     )>,
 ) {
     let sim_config = &config.0;
+    if !logic_active_this_tick(tick.tick, &sim_config.run) {
+        return;
+    }
+    let logic_steps = logic_elapsed_ticks(&sim_config.run);
     let mut children_to_spawn: Vec<(Vec2, f32, SpawnParams)> = Vec::new();
 
-    let mut parents: Vec<(Entity, u64)> = query
-        .iter()
-        .map(|(entity, _, _, _, _, _, _, lineage)| (entity, lineage.id))
-        .collect();
-    parents.sort_by_key(|(_, id)| *id);
+    // Cooldowns tick for everyone; only threshold-ready agents enter the repro pass.
+    let mut candidates: Vec<(Entity, u64)> = Vec::new();
+    for (entity, _, _, phenotype, energy, _, mut cooldowns, lineage) in query.iter_mut() {
+        if cooldowns.repro_ticks_remaining > 0 {
+            cooldowns.repro_ticks_remaining =
+                cooldowns.repro_ticks_remaining.saturating_sub(logic_steps);
+        }
+        if cooldowns.repro_ticks_remaining > 0 || spawn_blocked.0 {
+            continue;
+        }
+        let threshold = repro_threshold_energy(&phenotype.0);
+        if energy.internal_energy >= threshold {
+            candidates.push((entity, lineage.id));
+        }
+    }
+    candidates.sort_by_key(|(_, id)| *id);
 
-    for (entity, _) in parents {
+    for (entity, _) in candidates {
         let Ok((_, transform, genome, phenotype, mut energy, mut health, mut cooldowns, lineage)) =
             query.get_mut(entity)
         else {
             continue;
         };
-        if cooldowns.repro_ticks_remaining > 0 {
-            cooldowns.repro_ticks_remaining -= 1;
-            continue;
-        }
-
-        if spawn_blocked.0 {
-            continue;
-        }
-
         let phenotype_v2 = &phenotype.0;
         let genome_v2 = &genome.0;
-        if energy.internal_energy < phenotype_v2.max_energy * phenotype_v2.repro_threshold_frac {
-            continue;
-        }
 
         let mut repro_rng = sim_rng.stream_repro_risk(lineage.id, tick.tick);
         let mut mutation_rng =
-            sim_rng.stream_mutation(lineage.id, lineage.generation.saturating_add(1));
+            sim_rng.stream_mutation(lineage.id, lineage.generation.saturating_add(1), tick.tick);
 
         let result = attempt_reproduction_v2(
             &mut energy,

@@ -9,8 +9,9 @@ use super::healing::{
     apply_hp_to_slot, collect_damaged_slots, pick_slot_index, repair_energy_cost,
 };
 use super::super::components::{Energy, Health, Phenotype};
+use super::super::interval::{logic_active_this_tick, logic_elapsed_ticks};
 use super::super::metrics::RepairStats;
-use super::super::world::SimConfigResource;
+use super::super::world::{SimConfigResource, SimTick};
 
 /// Max HP restorable this tick from decoded heal rate (per-second → `dt`).
 pub fn heal_hp_cap_per_tick(heal_hp_per_sec: f32, dt: f32) -> f32 {
@@ -86,13 +87,18 @@ pub fn apply_heal_tick_v2(
 
 /// Bevy system: v2 agents use decoded healing rate and cost penalty.
 pub fn healing_v2(
+    tick: Res<SimTick>,
     config: Res<SimConfigResource>,
     mut repair_stats: ResMut<RepairStats>,
     mut query: Query<(Entity, &Phenotype, &mut Health, &mut Energy)>,
 ) {
+    let run = &config.0.run;
+    if !logic_active_this_tick(tick.tick, run) {
+        return;
+    }
     let economy = &config.0.economy;
     let policy = economy.repair_policy;
-    let dt = super::super::world::SIM_DT;
+    let dt = super::super::world::SIM_DT * logic_elapsed_ticks(run) as f32;
 
     for (entity, phenotype, mut health, mut energy) in &mut query {
         let phenotype_v2 = &phenotype.0;

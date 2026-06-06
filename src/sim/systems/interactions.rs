@@ -4,7 +4,8 @@ use bevy::prelude::*;
 use std::collections::HashMap;
 
 use super::super::components::{Agent, HazardExposure, Health, Phenotype, Velocity};
-use super::super::world::SimConfigResource;
+use super::super::interval::{logic_active_this_tick, logic_elapsed_ticks};
+use super::super::world::{SimConfigResource, SimTick};
 use crate::genome::{mitigated_damage, PhenotypeV2};
 
 const K_MITIGATE: f32 = 0.5;
@@ -42,6 +43,7 @@ pub(crate) fn accumulate_hazard_damage(agents: &[HazardSnapshot]) -> HashMap<Ent
 
 /// Bevy system: apply hazard exposure damage after movement.
 pub fn interactions(
+    tick: Res<SimTick>,
     config: Res<SimConfigResource>,
     mut query: Query<(
         Entity,
@@ -53,6 +55,12 @@ pub fn interactions(
         &mut Health,
     )>,
 ) {
+    let run = &config.0.run;
+    if !logic_active_this_tick(tick.tick, run) {
+        return;
+    }
+    let steps = logic_elapsed_ticks(run) as f32;
+
     let stroke_max = config
         .0
         .genetics
@@ -73,7 +81,7 @@ pub fn interactions(
 
     for (entity, _, _, _, _, _, mut health) in &mut query {
         if let Some(amount) = damage.get(&entity) {
-            health.apply_damage_to_core(*amount);
+            health.apply_damage_to_core(*amount * steps);
         }
     }
 }
@@ -90,7 +98,7 @@ mod tests {
     use crate::sim::vents::VentField;
     use crate::sim::light::LightField;
     use crate::sim::systems::sense_exposure;
-    use crate::sim::world::{SimConfigResource, WorldBounds};
+    use crate::sim::world::{SimConfigResource, SimTick, WorldBounds};
 
     fn snapshot(entity: Entity, mitigation: f32, hazard_raw: f32) -> HazardSnapshot {
         HazardSnapshot {
@@ -115,7 +123,8 @@ mod tests {
     fn overlapping_v2_agents_do_not_lose_hp_from_collision() {
         use crate::genome::{decode_v2, v2_core, GenomeV2, V2_HEADER_LEN};
 
-        let config = SimConfig::load_default().unwrap();
+        let mut config = SimConfig::load_default().unwrap();
+        config.run.logic_interval_ticks = 1;
         assert_eq!(config.genetics.genome_version, 2);
         let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
         let light = LightField::from_environment(&config.environment, &bounds);
@@ -131,11 +140,13 @@ mod tests {
 
         let mut app = App::new();
         app.insert_resource(SimConfigResource(config.clone()));
+        app.insert_resource(SimTick::default());
         app.insert_resource(light);
-        app.insert_resource(hazards);
+        app.insert_resource(hazards.clone());
         app.insert_resource(vents.clone());
         app.insert_resource(MineralField::from_vent_field(
             &vents,
+            &hazards,
             &config.environment.feeding,
             config.environment.minerals_enabled,
         ));

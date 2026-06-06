@@ -8,6 +8,8 @@ pub const MAGIC: &[u8; 4] = b"EVO2";
 pub const HEADER_LEN: usize = 4;
 pub const CORE_FIXED_LEN: usize = 23;
 pub const MIN_GENOME_LEN: usize = HEADER_LEN + CORE_FIXED_LEN;
+/// Fixed budget shared by photo, biomass, and minerals efficiency bytes ([Genome_Definition.md](../../../docs/Genome_Definition.md) E chromosome).
+pub const EFFICIENCY_TRIAD_BUDGET: u16 = 255;
 
 /// Core-segment byte offsets (relative to first byte after the header).
 pub mod core {
@@ -31,6 +33,21 @@ pub mod core {
     pub const SENSOR_STRENGTH: usize = 20;
     pub const PURSUE_SLOT_COUNT: usize = 21;
     pub const AVOID_SLOT_COUNT: usize = 22;
+}
+
+/// Birth color: R/G/B high nibbles encode biomass / photo / minerals gene levels (0–F).
+/// Low nibbles preserve cosmetic variation from existing color loci.
+pub fn energy_method_color_rgb(
+    biomass_raw: u8,
+    photo_raw: u8,
+    minerals_raw: u8,
+    cosmetic_low: [u8; 3],
+) -> [u8; 3] {
+    [
+        (biomass_raw & 0xF0) | (cosmetic_low[0] & 0x0F),
+        (photo_raw & 0xF0) | (cosmetic_low[1] & 0x0F),
+        (minerals_raw & 0xF0) | (cosmetic_low[2] & 0x0F),
+    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +135,13 @@ impl GenomeV2 {
                 expected: payload_expected,
                 actual: genetics.core_length,
             });
+        }
+
+        let triad_sum = u16::from(self.photo_efficiency_raw()?)
+            + u16::from(self.biomass_efficiency_raw()?)
+            + u16::from(self.minerals_efficiency_raw()?);
+        if triad_sum != EFFICIENCY_TRIAD_BUDGET {
+            return Err(GenomeError::EfficiencyTriadSumInvalid { sum: triad_sum });
         }
 
         let core_start = HEADER_LEN + CORE_FIXED_LEN;
@@ -230,6 +254,22 @@ impl GenomeV2 {
         self.read_u8_at_core(core::COLOR_B)
     }
 
+    /// Rewrite color loci so R/G/B high nibbles reflect biomass / photo / minerals genes.
+    pub fn sync_color_from_efficiency(&mut self) -> Result<(), GenomeError> {
+        let cosmetic = [self.color_r()?, self.color_g()?, self.color_b()?];
+        let rgb = energy_method_color_rgb(
+            self.biomass_efficiency_raw()?,
+            self.photo_efficiency_raw()?,
+            self.minerals_efficiency_raw()?,
+            cosmetic,
+        );
+        let idx = self.absolute_core_index(core::COLOR_R)?;
+        self.bytes[idx] = rgb[0];
+        self.bytes[idx + 1] = rgb[1];
+        self.bytes[idx + 2] = rgb[2];
+        Ok(())
+    }
+
     pub fn body_radius_raw(&self) -> Result<u16, GenomeError> {
         self.read_u16_be_at_core(core::BODY_RADIUS)
     }
@@ -309,6 +349,34 @@ mod tests {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/genome_v2.example.toml"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn energy_method_color_maps_efficiency_high_nibbles() {
+        assert_eq!(
+            energy_method_color_rgb(0x7F, 0x80, 0x00, [0x03, 0x0A, 0x05]),
+            [0x73, 0x8A, 0x05]
+        );
+        assert_eq!(
+            energy_method_color_rgb(0x00, 0xFF, 0x00, [0x00, 0xFF, 0x05]),
+            [0x00, 0xFF, 0x05]
+        );
+    }
+
+    #[test]
+    fn sync_color_from_efficiency_writes_genome_loci() {
+        let config = v2_config();
+        let mut genome = GenomeV2::ancestor_from_config(&config).unwrap();
+        let photo_idx = HEADER_LEN + core::PHOTO_EFFICIENCY;
+        let biomass_idx = HEADER_LEN + core::BIOMASS_EFFICIENCY;
+        let g_idx = HEADER_LEN + core::COLOR_G;
+        genome.bytes[photo_idx] = 0x80;
+        genome.bytes[biomass_idx] = 0x7F;
+        genome.bytes[g_idx] = 0x00;
+        genome.sync_color_from_efficiency().unwrap();
+        assert_eq!(genome.color_r().unwrap(), 0x70);
+        assert_eq!(genome.color_g().unwrap(), 0x80);
+        assert_eq!(genome.color_b().unwrap(), 0x05);
     }
 
     #[test]

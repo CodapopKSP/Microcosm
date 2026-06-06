@@ -36,7 +36,7 @@ pub struct SenseRaySample {
     pub hit: RayHit,
 }
 
-/// Per-tick perception written by [`super::systems::sense_rays`](crate::sim::systems::sense_rays).
+/// Cached perception written by [`super::systems::sense_rays`](crate::sim::systems::sense_rays) on scan ticks.
 #[derive(Component, Clone, Default, PartialEq)]
 pub struct SensePerception {
     pub rays: Vec<SenseRaySample>,

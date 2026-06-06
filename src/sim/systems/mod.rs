@@ -1,11 +1,13 @@
 //! Simulation tick systems ([SIMULATION.md](../../docs/SIMULATION.md)).
 //!
-//! Phase 4+ pipeline: `environment_tick` → `sense_exposure` → `sense_rays` → `behavior_v2` →
+//! Phase 4+ pipeline: `environment_tick` → `sense_exposure` → `sense_rays` (interval) → `behavior_v2` →
 //! `feeding_v2` → `metabolism_and_gains` → `behavior_movement_v2` → `passive_physics` →
 //! `interactions` → `healing_v2` → `reproduction` → `advance_age` → `death_and_despawn` →
 //! `performance_failsafe` → `metrics_sample`.
-//! Metabolism may skip photosynthetic gain on overlap when
-//! `[environment].crowding_blocks_photosynthesis` is true.
+//!
+//! Most non-movement systems run on [`RunConfig::logic_interval_ticks`](crate::config::RunConfig::logic_interval_ticks)
+//! (default 6); movement (`behavior_movement_v2`, `passive_physics`) runs every tick. Sensor rays and
+//! biomass feeding keep their own longer intervals.
 
 mod age;
 mod death;

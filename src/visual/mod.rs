@@ -11,6 +11,7 @@ use bevy::sprite::ColorMaterial;
 use bevy_egui::EguiPlugin;
 use std::collections::HashMap;
 
+mod hud;
 mod inspector;
 
 use crate::sim::{
@@ -18,9 +19,9 @@ use crate::sim::{
     SensePerception, SimConfigResource, SimSpeed, WorldBounds,
 };
 
-/// Child mesh behind the agent fill showing decoded armor stroke width (genome v2).
+/// Child mesh behind the agent fill: black outline (1 world unit min, scales with armor stroke).
 #[derive(Component, Clone, Copy, Debug)]
-pub struct ArmorOutline;
+pub struct AgentOutline;
 
 /// Keyboard-driven debug overlay state (visual mode only).
 #[derive(Resource)]
@@ -76,6 +77,7 @@ impl Plugin for VisualDebugPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin)
             .init_resource::<DebugVisualState>()
+            .init_resource::<hud::FpsCounter>()
             .init_resource::<ActiveSensorRays>()
             .add_systems(
                 Startup,
@@ -87,6 +89,7 @@ impl Plugin for VisualDebugPlugin {
                 ),
             )
             .add_systems(Update, debug_keyboard_input.before(run_sim_tick_schedule))
+            .add_systems(Update, hud::tick_fps_counter)
             .add_systems(
                 Update,
                 (
@@ -95,6 +98,7 @@ impl Plugin for VisualDebugPlugin {
                     sync_hazard_overlay_visibility,
                     update_sensor_ray_overlays,
                     update_selection_overlay,
+                    hud::draw_sim_hud,
                     inspector::draw_agent_inspector,
                 )
                     .after(run_sim_tick_schedule),

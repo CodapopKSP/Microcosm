@@ -5,6 +5,7 @@ edition = "2021"
 description = "Evolution simulation PoC with Bevy"
 
 [dependencies]
+bevy_hierarchy = "0.15"
 bevy = { version = "0.15", default-features = false, features = [
     "bevy_asset",
     "bevy_color",

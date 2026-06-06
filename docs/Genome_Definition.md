@@ -56,7 +56,7 @@ Color
 Body Radius
 - 2 bytes
 - Larger radius = more energy storage, FFFF = +6553.5 energy storage
-- Larger radius = more metabolism requirements, FFFF = +6553.5 metabolism requirements
+- Larger radius = more metabolism requirements, FFFF = +65.535 metabolism requirements
 - 0000 is 0+4 units, FFFF is 1310.70 + 4 units radius
 
 Armor
@@ -112,8 +112,12 @@ Photosynthesis Efficiency
 
 Biomass Digestion Efficiency
 - 1 byte
-- 00 = no biomas digestion, FF = 100% biomas digestion, calculated at the time the energy/health is eaten
-- Scales in inverse of Photosynthesis and Minerals Efficiency
+- 00 = no biomass digestion, FF = 100% biomass digestion
+- Uptake rate (health-energy units per second): `body_radius × biomass_effective × biomass_uptake_per_radius_per_sec` (config default `10.0` — e.g. radius 10 at 10% digestion → 10 units/s; radius 20 at 100% → 200 units/s)
+- Overlapping corpses or living prey: evaluated once per second (`biomass_feeding_interval_ticks`, default 60; `biomass_feeding_phase_ticks`, default 30 — staggered from sensor rays) for agents with `biomass_effective > 0`; drain up to one second of uptake; 1 drained HP becomes 1 predator energy
+- If uptake per second ≥ prey remaining HP, kill prey that tick and grant **max health** as energy (not just remaining HP)
+- Corpses store the dead agent's **max health** as consumable energy
+- Triad coupling still applies to `biomass_effective` vs photo/minerals genes
 
 Minerals Digestion Efficiency
 - 1 byte
@@ -253,7 +257,7 @@ Rules implied by this spec that extend beyond the genome crate:
 ### Reproduction
 
 - Trigger when `internal_energy ≥ (repro_threshold_byte / 255) × max_energy` and **`economy.repro_cooldown_ticks`** elapsed (global; not a gene). Default **192** ticks ≈ **3.2 s** at 60 Hz — anti-spam brake when energy refills quickly; not evolvable.
-- **Endowment:** spend up to `(endowment_byte / 255) × (max_energy + max_health)` from parent’s **current** energy+health pools; convert spent amount into child **health first**, overflow to child **energy**. Parent payment order: config `economy.repro_payment_order` (see [CONFIG.md](CONFIG.md)).
+- **Endowment:** spend up to `(endowment_byte / 255) × (max_energy + max_health)` from parent’s **current** energy+health pools (**energy first**, then health if energy is insufficient; default `economy.repro_payment_order = energy_first`). Convert the collected amount into child **health first**, overflow to child **energy**.
 - **Reproduction risk** (`p_death_on_repro_base`, `p_damage_on_repro_base`, `repro_safety_margin`, damage fraction): **global only** — same rolls for all agents ([CONFIG.md](CONFIG.md) `[economy]`).
 
 ### Environment (signature sources)

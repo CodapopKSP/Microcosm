@@ -12,6 +12,7 @@ pub enum GenomeError {
     InvalidAndArity { arity: u8 },
     SlotPayloadOverflow { need: usize, have: usize },
     SlotCountExceedsConfig { pursue: u8, avoid: u8 },
+    EfficiencyTriadSumInvalid { sum: u16 },
     Config(String),
 }
 
@@ -47,6 +48,10 @@ impl fmt::Display for GenomeError {
             GenomeError::SlotCountExceedsConfig { pursue, avoid } => write!(
                 f,
                 "pursue/avoid slot counts ({pursue}, {avoid}) exceed config limits"
+            ),
+            GenomeError::EfficiencyTriadSumInvalid { sum } => write!(
+                f,
+                "photo/biomass/minerals efficiency bytes must sum to 255 (got {sum})"
             ),
             GenomeError::Config(msg) => write!(f, "genome config error: {msg}"),
         }

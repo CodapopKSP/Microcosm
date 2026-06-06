@@ -13,7 +13,13 @@ use super::super::minerals::MineralField;
 use super::super::perception::{
     perceive_agent, stimulus_bearing, AgentSenseTarget, CorpseSenseTarget, SenseRaySample,
 };
-use super::super::world::SimConfigResource;
+use super::super::interval::interval_active_this_tick;
+use super::super::world::{SimConfigResource, SimTick};
+
+/// Whether [`sense_rays`] should run on this tick (`interval_ticks = 1` ⇒ every tick).
+pub fn sensor_rays_active_this_tick(tick: u64, interval_ticks: u32, phase_ticks: u32) -> bool {
+    interval_active_this_tick(tick, interval_ticks, phase_ticks)
+}
 
 /// Result of matching pursue/avoid slot lists against ray hits.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -84,8 +90,11 @@ pub fn evaluate_slot_matches(
 }
 
 /// Bevy system: cast sensor rays after [`super::sense_exposure`](super::sense_exposure).
+///
+/// Between scans, agents keep their previous [`SensePerception`] and [`super::behavior_v2`] reuses it.
 pub fn sense_rays(
     config: Res<SimConfigResource>,
+    tick: Res<SimTick>,
     light: Res<LightField>,
     minerals: Res<MineralField>,
     corpses: Query<(&Transform, &Corpse)>,
@@ -114,6 +123,13 @@ pub fn sense_rays(
         Some(b) => b,
         None => return,
     };
+    if !sensor_rays_active_this_tick(
+        tick.tick,
+        behavior.sensor_ray_interval_ticks,
+        behavior.sensor_ray_phase_ticks,
+    ) {
+        return;
+    }
     let environment = &config.0.environment;
     let fuzzy = behavior.fuzzy_nibble_delta;
     let corpse_targets: Vec<CorpseSenseTarget> = if environment.corpses_enabled {
@@ -225,6 +241,22 @@ mod tests {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/genome_v2.example.toml"),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn sensor_rays_active_every_tick_when_interval_is_one() {
+        for tick in 1..=120 {
+            assert!(sensor_rays_active_this_tick(tick, 1, 0));
+        }
+    }
+
+    #[test]
+    fn sensor_rays_active_every_sixty_ticks() {
+        assert!(!sensor_rays_active_this_tick(1, 60, 0));
+        assert!(!sensor_rays_active_this_tick(59, 60, 0));
+        assert!(sensor_rays_active_this_tick(60, 60, 0));
+        assert!(sensor_rays_active_this_tick(120, 60, 0));
+        assert!(!sensor_rays_active_this_tick(61, 60, 0));
     }
 
     #[test]

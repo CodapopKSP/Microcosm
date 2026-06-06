@@ -96,13 +96,17 @@ impl SimRng {
     }
 
     /// Deterministic per-entity mutation stream when `master_seed` is set.
-    pub fn stream_mutation(&self, entity_id: u64, generation: u32) -> StdRng {
+    ///
+    /// Includes `tick` so each reproduction attempt draws fresh offspring variation;
+    /// seeding on `(entity_id, generation)` alone would retry the same child every cooldown.
+    pub fn stream_mutation(&self, entity_id: u64, generation: u32, tick: u64) -> StdRng {
         let seed = self.master_seed.map(|master| {
             mix_seed(
                 master,
                 STREAM_MUTATION
                     ^ entity_id
-                    ^ (generation as u64).wrapping_mul(0xD134_2543_DE82_BF95),
+                    ^ (generation as u64).wrapping_mul(0xD134_2543_DE82_BF95)
+                    ^ tick.wrapping_mul(0x517C_C1B7_2722_0A95),
             )
         });
         seed_from_opt_or_thread(seed)
@@ -179,8 +183,17 @@ mod tests {
     fn mutation_stream_varies_by_entity() {
         let config = SimConfig::load_default().unwrap();
         let rng = SimRng::from_config(&config);
-        let a = rng.stream_mutation(1, 0).gen::<u32>();
-        let b = rng.stream_mutation(2, 0).gen::<u32>();
+        let a = rng.stream_mutation(1, 0, 0).gen::<u32>();
+        let b = rng.stream_mutation(2, 0, 0).gen::<u32>();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn mutation_stream_varies_by_tick() {
+        let config = SimConfig::load_default().unwrap();
+        let rng = SimRng::from_config(&config);
+        let a = rng.stream_mutation(76, 0, 100).gen::<u32>();
+        let b = rng.stream_mutation(76, 0, 101).gen::<u32>();
         assert_ne!(a, b);
     }
 

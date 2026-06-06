@@ -30,10 +30,10 @@ pub struct MineralExposure {
     pub concentration: f32,
 }
 
-/// Dead-agent biomass marker (signature `0x0200`, feeding).
+/// Dead-agent energy pool (signature `0x0200`, feeding). Stores max health as consumable energy.
 #[derive(Component, Clone, Debug)]
 pub struct Corpse {
-    pub remaining_biomass: f32,
+    pub remaining_energy: f32,
     pub radius: f32,
     pub ticks_remaining: u32,
 }

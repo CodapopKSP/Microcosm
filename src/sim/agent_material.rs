@@ -55,7 +55,7 @@ impl Material2d for AgentColorMaterial {
         AlphaMode2d::Blend
     }
 
-    /// Drives `Transparent2d` sort key (`mesh_z + depth_bias`) so draw order matches creation order.
+    /// Drives `Transparent2d` sort key (`mesh_z + depth_bias`). Lower values draw first (behind).
     fn depth_bias(&self) -> f32 {
         self.lineage_id as f32
     }

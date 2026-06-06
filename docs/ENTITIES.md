@@ -16,7 +16,7 @@ Logical components for implementation (names may map 1:1 to Bevy components):
 | `Heading` | radians | v2: sensor rays and steering |
 | `Velocity` | `Vec2` | Motion; capped by `phenotype.max_speed` |
 | `MineralExposure` | concentration `0..1` | v2 vent/mineral field sample |
-| `Corpse` | `remaining_biomass`, `radius`, TTL | v2 dead-agent marker (not an `Agent`) |
+| `Corpse` | `remaining_energy`, `radius`, TTL | v2 dead-agent marker (max health as consumable energy) |
 | `Agent` | `radius` (from phenotype), collision flags | Physics and rendering hull |
 | `Lineage` | `id`, `parent_id`, `generation` | Optional tracking and metrics |
 | `Cooldowns` | `repro_ticks_remaining` | Reproduction timer |

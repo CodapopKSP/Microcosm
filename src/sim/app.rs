@@ -91,8 +91,12 @@ pub fn insert_sim_resources(app: &mut App, sim_config: SimConfig, ancestor: AnyG
     let light_field = LightField::from_environment(&sim_config.environment, &world_bounds);
     let hazard_field = HazardField::from_environment(&sim_config.environment);
     let vent_field = VentField::from_environment(&sim_config.environment);
-    let mineral_field =
-        MineralField::from_vent_field(&vent_field, &sim_config.environment.feeding, sim_config.environment.minerals_enabled);
+    let mineral_field = MineralField::from_vent_field(
+        &vent_field,
+        &hazard_field,
+        &sim_config.environment.feeding,
+        sim_config.environment.minerals_enabled,
+    );
     let soup_field = SoupField::from_feeding(&sim_config.environment.feeding);
     let sim_rng = SimRng::from_config(&sim_config);
 

@@ -78,7 +78,7 @@ Each row maps prose in [Genome_Definition.md](Genome_Definition.md) to config ke
 | `radius_at_zero` | 4.0 | Units at raw 0 |
 | `radius_at_max` | 1314.70 | Added linear term at raw 65535 (spec: 1310.70 + 4) |
 | `energy_bonus_at_max` | 6553.5 | Added to max energy at raw 65535 |
-| `metabolism_bonus_at_max` | 6553.5 | Added metabolism demand at raw 65535 |
+| `metabolism_bonus_at_max` | 65.535 | Added metabolism demand at raw 65535 |
 
 ### Armor (bytes 5–6, u16)
 
@@ -173,7 +173,7 @@ Effective efficiency = `gene_eff × (1 - strength × f(other genes))`. Color byt
 | `spawn_energy` | yes | **Generation-0 only** — initial `internal_energy` |
 | `spawn_health_frac` | new | **Generation-0 only** — fraction of decoded max health at birth |
 | `metabolism_floor` | yes | Minimum idle drain after decode |
-| `repro_payment_order` | new | `health_first` / `energy_first` / `proportional` for endowment spend |
+| `repro_payment_order` | new | Parent endowment spend order: default `energy_first` (then `health_first`, `proportional`) |
 
 ### Reproduction (global)
 

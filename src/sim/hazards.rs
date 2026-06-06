@@ -28,6 +28,15 @@ impl HazardField {
             .sum()
     }
 
+    /// Sum of `chem_flux` for all zones overlapping `pos` (world XY).
+    pub fn chem_flux_at(&self, pos: Vec2) -> f32 {
+        self.zones
+            .iter()
+            .filter(|zone| Self::overlaps(zone, pos))
+            .map(|zone| zone.chem_flux)
+            .sum()
+    }
+
     /// Configured hazard zones (for debug overlay and tests).
     pub fn zones(&self) -> &[HazardZone] {
         &self.zones
@@ -54,6 +63,7 @@ mod tests {
             center: [0.0, -400.0],
             radius: 180.0,
             damage_per_tick: 2.5,
+            chem_flux: 0.0,
         }]);
         assert!(field.damage_at(Vec2::new(0.0, -400.0)) > 0.0);
         assert_eq!(field.damage_at(Vec2::new(0.0, -400.0)), 2.5);
@@ -65,6 +75,7 @@ mod tests {
             center: [0.0, -400.0],
             radius: 180.0,
             damage_per_tick: 2.5,
+            chem_flux: 0.0,
         }]);
         assert_eq!(field.damage_at(Vec2::new(500.0, 500.0)), 0.0);
     }
@@ -76,11 +87,13 @@ mod tests {
                 center: [0.0, 0.0],
                 radius: 100.0,
                 damage_per_tick: 1.0,
+                chem_flux: 0.0,
             },
             HazardZone {
                 center: [50.0, 0.0],
                 radius: 100.0,
                 damage_per_tick: 2.0,
+                chem_flux: 0.0,
             },
         ]);
         // Origin is inside both circles.
@@ -91,5 +104,18 @@ mod tests {
     fn empty_field_always_zero() {
         let field = field_with_zones(vec![]);
         assert_eq!(field.damage_at(Vec2::new(0.0, -400.0)), 0.0);
+        assert_eq!(field.chem_flux_at(Vec2::new(0.0, -400.0)), 0.0);
+    }
+
+    #[test]
+    fn point_inside_zone_has_positive_chem_flux() {
+        let field = field_with_zones(vec![HazardZone {
+            center: [200.0, 600.0],
+            radius: 20.0,
+            damage_per_tick: 0.01,
+            chem_flux: 0.032,
+        }]);
+        assert_eq!(field.chem_flux_at(Vec2::new(200.0, 600.0)), 0.032);
+        assert_eq!(field.chem_flux_at(Vec2::new(500.0, 500.0)), 0.0);
     }
 }

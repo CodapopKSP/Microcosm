@@ -42,6 +42,23 @@ fn stat_row(ui: &mut egui::Ui, label: &str, value: impl std::fmt::Display) {
     });
 }
 
+/// Render label/value pairs in two side-by-side columns to save vertical space.
+fn stat_columns(ui: &mut egui::Ui, items: &[(&str, String)]) {
+    if items.is_empty() {
+        return;
+    }
+    let mid = items.len().div_ceil(2);
+    ui.columns(2, |columns| {
+        for (col_idx, col) in columns.iter_mut().enumerate() {
+            let start = col_idx * mid;
+            let end = (start + mid).min(items.len());
+            for (label, value) in &items[start..end] {
+                stat_row(col, label, value);
+            }
+        }
+    });
+}
+
 fn section_heading(ui: &mut egui::Ui, title: &str) {
     ui.add_space(4.0);
     ui.label(egui::RichText::new(title).strong());
@@ -66,6 +83,23 @@ fn format_energy_cap(max: f32) -> String {
     } else {
         "∞".into()
     }
+}
+
+/// Render grouped genome bytes in a wrapping row of label + hex chips.
+pub fn draw_genome_chromosomes(ui: &mut egui::Ui, chromosome_lines: &[(String, String)]) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+        for (label, hex) in chromosome_lines {
+            egui::Frame::group(ui.style())
+                .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(label).monospace().strong());
+                        ui.label(egui::RichText::new(hex).monospace());
+                    });
+                });
+        }
+    });
 }
 
 /// Draw the agent inspector when an organism is selected.
@@ -143,67 +177,68 @@ pub fn draw_agent_inspector(
     egui::Window::new(format!("Agent #{}", lineage.id))
         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
         .resizable(true)
-        .default_width(360.0)
+        .default_width(400.0)
         .show(contexts.ctx_mut(), |ui| {
-            section_heading(ui, "Vitality");
-            stat_row(
-                ui,
-                "Energy",
-                format!(
-                    "{:.2} / {}",
-                    energy.internal_energy,
-                    format_energy_cap(energy.max_internal_energy)
+            let mut vitality = vec![
+                (
+                    "Energy",
+                    format!(
+                        "{:.2} / {}",
+                        energy.internal_energy,
+                        format_energy_cap(energy.max_internal_energy)
+                    ),
                 ),
-            );
+                (
+                    "Health",
+                    format!("{:.2} / {:.2}", health.core_hp, health.core_max_hp),
+                ),
+            ];
             if energy.max_internal_energy.is_finite() {
-                stat_row(
-                    ui,
+                vitality.push((
                     "Repro at",
                     format!("{:.2}", phenotype.repro_threshold_energy()),
-                );
+                ));
             }
-            stat_row(
-                ui,
-                "Health",
-                format!("{:.2} / {:.2}", health.core_hp, health.core_max_hp),
-            );
             if health.has_part_hp() {
-                stat_row(ui, "Part HP slots", health.part_hp.len());
+                vitality.push(("Part HP slots", health.part_hp.len().to_string()));
             }
+            section_heading(ui, "Vitality");
+            stat_columns(ui, &vitality);
 
             section_heading(ui, "Lineage");
-            stat_row(ui, "Entity", format!("{selected:?}"));
-            stat_row(ui, "Generation", lineage.generation);
-            stat_row(
+            stat_columns(
                 ui,
-                "Parent",
-                lineage
-                    .parent_id
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| "—".into()),
+                &[
+                    ("Entity", format!("{selected:?}")),
+                    ("Generation", lineage.generation.to_string()),
+                    (
+                        "Parent",
+                        lineage
+                            .parent_id
+                            .map(|p| p.to_string())
+                            .unwrap_or_else(|| "—".into()),
+                    ),
+                    ("Age", format!("{} ticks ({:.1}s)", age.ticks, age_secs)),
+                    ("Repro cooldown", format!("{repro_cooldown} ticks")),
+                ],
             );
-            stat_row(
-                ui,
-                "Age",
-                format!("{} ticks ({:.1}s)", age.ticks, age_secs),
-            );
-            stat_row(ui, "Repro cooldown", format!("{repro_cooldown} ticks"));
 
             section_heading(ui, "State");
-            stat_row(ui, "Position", format!("({:.1}, {:.1})", pos.x, pos.y));
-            stat_row(ui, "Radius", format!("{:.2}", agent.radius));
-            stat_row(
+            stat_columns(
                 ui,
-                "Heading",
-                format!("{:.1}°", heading.0.to_degrees()),
+                &[
+                    ("Position", format!("({:.1}, {:.1})", pos.x, pos.y)),
+                    ("Radius", format!("{:.2}", agent.radius)),
+                    ("Heading", format!("{:.1}°", heading.0.to_degrees())),
+                    ("Speed", format!("{:.2}", speed)),
+                    ("Behavior", format!("{:?}", behavior.mode)),
+                    ("Light", format!("{:.3}", light.0)),
+                    ("Hazard dmg/tick", format!("{:.5}", hazard.damage_raw)),
+                    ("Vent flux", format!("{:.4}", vent.vent_flux)),
+                    ("Minerals", format!("{:.4}", minerals.concentration)),
+                    ("Sensor rays", sensor_rays.to_string()),
+                ],
             );
-            stat_row(ui, "Speed", format!("{:.2}", speed));
-            stat_row(ui, "Behavior", format!("{:?}", behavior.mode));
-            stat_row(ui, "Light", format!("{:.3}", light.0));
-            stat_row(ui, "Hazard dmg/tick", format!("{:.5}", hazard.damage_raw));
-            stat_row(ui, "Vent flux", format!("{:.4}", vent.vent_flux));
-            stat_row(ui, "Minerals", format!("{:.4}", minerals.concentration));
-            stat_row(ui, "Sensor rays", sensor_rays);
 
             {
                 let p = &phenotype.0;
@@ -217,35 +252,34 @@ pub fn draw_agent_inspector(
                         p.color_rgb[0], p.color_rgb[1], p.color_rgb[2]
                     ));
                 });
-                stat_row(ui, "Body radius", format!("{:.2}", p.body_radius));
-                stat_row(ui, "Max speed", format!("{:.2}", p.max_speed_effective));
-                stat_row(ui, "Photo effective", format!("{:.3}", p.photo_effective));
+                let mut phenotype_stats = vec![
+                    ("Body radius", format!("{:.2}", p.body_radius)),
+                    ("Max speed", format!("{:.2}", p.max_speed_effective)),
+                    ("Photo effective", format!("{:.3}", p.photo_effective)),
+                    ("Metabolism / sec", format!("{:.3}", p.metabolism_demand)),
+                    (
+                        "Repro threshold",
+                        format!("{:.1}%", p.repro_threshold_frac * 100.0),
+                    ),
+                    (
+                        "Offspring endowment",
+                        format!("{:.1}%", p.offspring_endowment_frac * 100.0),
+                    ),
+                    (
+                        "Move desire",
+                        format!("{:.1}%", p.movement_desire * 100.0),
+                    ),
+                    ("Sensor eyes", p.sensor_eye_count.to_string()),
+                    ("Pursue slots", p.pursue_slot_count.to_string()),
+                    ("Avoid slots", p.avoid_slot_count.to_string()),
+                ];
                 if let Some(d) = decode_v2 {
-                    stat_row(
-                        ui,
-                        "Photo / sec",
-                        format!("{:.3}", p.photo_gain_per_sec(d)),
+                    phenotype_stats.insert(
+                        3,
+                        ("Photo / sec", format!("{:.3}", p.photo_gain_per_sec(d))),
                     );
                 }
-                stat_row(ui, "Metabolism / sec", format!("{:.3}", p.metabolism_demand));
-                stat_row(
-                    ui,
-                    "Repro threshold",
-                    format!("{:.1}%", p.repro_threshold_frac * 100.0),
-                );
-                stat_row(
-                    ui,
-                    "Offspring endowment",
-                    format!("{:.1}%", p.offspring_endowment_frac * 100.0),
-                );
-                stat_row(
-                    ui,
-                    "Move desire",
-                    format!("{:.1}%", p.movement_desire * 100.0),
-                );
-                stat_row(ui, "Sensor eyes", p.sensor_eye_count);
-                stat_row(ui, "Pursue slots", p.pursue_slot_count);
-                stat_row(ui, "Avoid slots", p.avoid_slot_count);
+                stat_columns(ui, &phenotype_stats);
             }
 
             section_heading(ui, "Genome");
@@ -266,27 +300,14 @@ pub fn draw_agent_inspector(
                     ui.ctx().copy_text(chromosome_text.clone());
                 }
             });
-            egui::ScrollArea::vertical()
-                .max_height(160.0)
-                .show(ui, |ui| {
-                    if chromosome_lines.is_empty() {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut hex_spaced.as_str())
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY),
-                        );
-                    } else {
-                        for (label, hex) in &chromosome_lines {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("{label:>5}"))
-                                        .monospace()
-                                        .strong(),
-                                );
-                                ui.label(egui::RichText::new(hex).monospace());
-                            });
-                        }
-                    }
-                });
+            if chromosome_lines.is_empty() {
+                ui.add(
+                    egui::TextEdit::multiline(&mut hex_spaced.as_str())
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY),
+                );
+            } else {
+                draw_genome_chromosomes(ui, &chromosome_lines);
+            }
         });
 }

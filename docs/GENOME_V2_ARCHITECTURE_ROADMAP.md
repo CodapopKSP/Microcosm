@@ -89,7 +89,7 @@ With `EVO2` header prepended for `ancestor_hex` in config.
 
 | Chromosome | Decode notes |
 |------------|----------------|
-| Body `u16` | Radius: `0000` → **4.0** units; `FFFF` → **1314.70**; same raw drives **+6553.5** max energy & metabolism at max |
+| Body `u16` | Radius: `0000` → **4.0** units; `FFFF` → **1314.70**; same raw drives **+6553.5** max energy and **+65.535** metabolism demand at max |
 | Armor `u16` | Stroke `raw/65535×25.5`; meta **+65.535%** at max; speed **×(1 − 0.65535×raw/65535)** |
 | Healing `u16` | `FFFF` → **3.27675×** heal speed, **13.107×** cost vs base 1 HP/s |
 | Ratio byte 0 | `lerp` energy cap fraction 99% → 1% |

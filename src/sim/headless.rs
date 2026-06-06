@@ -12,8 +12,7 @@ use crate::sim::spawn::{
     try_prepare_spawn,
 };
 use crate::sim::{
-    apply_failsafe, apply_metabolism_tick_v2, attempt_reproduction_v2,
-    overlap_photo_light_multipliers, ReproAttemptResult,
+    apply_failsafe, apply_metabolism_tick_v2, attempt_reproduction_v2, ReproAttemptResult,
 };
 use crate::sim::light::LightField;
 use crate::sim::world::{NextEntityId, SimRng, WorldBounds};
@@ -114,17 +113,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
     let mut spawn_blocked = false;
 
     for tick in 0..ticks {
-        let overlap_geom: Vec<_> = agents
-            .iter()
-            .map(|a| (a.position, a.phenotype.body_radius))
-            .collect();
-        let photo_light_mults = if config.environment.overlap_shades_photosynthesis {
-            overlap_photo_light_multipliers(&overlap_geom, config.environment.overlap_shade_factor)
-        } else {
-            vec![1.0; agents.len()]
-        };
-
-        for (idx, agent) in agents.iter_mut().enumerate() {
+        for agent in agents.iter_mut() {
             let light = light_field.sample(agent.position);
             let mut energy = Energy::new_v2(agent.energy, agent.max_energy);
             let mut health = crate::sim::components::Health {
@@ -132,7 +121,6 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                 core_max_hp: agent.core_max_hp,
                 part_hp: vec![],
             };
-            let photo_light_multiplier = photo_light_mults.get(idx).copied().unwrap_or(1.0);
             apply_metabolism_tick_v2(
                 &mut energy,
                 &mut health,
@@ -142,7 +130,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                 &config.environment,
                 &config.economy,
                 config,
-                photo_light_multiplier,
+                1,
             );
             agent.energy = energy.internal_energy;
             agent.core_hp = health.core_hp;
@@ -157,7 +145,9 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
             }
             if agent.repro_cooldown > 0 {
                 agent.repro_cooldown -= 1;
-                continue;
+                if agent.repro_cooldown > 0 {
+                    continue;
+                }
             }
             if spawn_blocked {
                 continue;
@@ -172,7 +162,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
 
             let mut repro_rng = sim_rng.stream_repro_risk(agent.id, tick);
             let mut mutation_rng =
-                sim_rng.stream_mutation(agent.id, agent.generation.saturating_add(1));
+                sim_rng.stream_mutation(agent.id, agent.generation.saturating_add(1), tick);
             let mut energy = Energy::new_v2(agent.energy, agent.max_energy);
             let mut health = crate::sim::components::Health {
                 core_hp: agent.core_hp,

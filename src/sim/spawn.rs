@@ -9,13 +9,27 @@ use crate::genome::{decode_phenotype, phenotype_color, AnyGenome, AnyPhenotype};
 
 use super::behavior::BehaviorState;
 use super::components::{
-    HazardExposure, Heading, LifeBundle, LightExposure, MineralExposure, VentExposure, Velocity,
+    Corpse, HazardExposure, Heading, LifeBundle, LightExposure, MineralExposure, VentExposure,
+    Velocity,
 };
 use super::perception::SensePerception;
 use super::world::{NextEntityId, SimRng, WorldBounds};
 
 /// Agent mesh Z (draw order comes from [`AgentColorMaterial::depth_bias`](super::agent_material::AgentColorMaterial)).
 const AGENT_MESH_Z: f32 = 0.0;
+
+/// Minimum visible outline width in world units (always drawn, even at zero armor).
+pub const MIN_AGENT_OUTLINE_WIDTH: f32 = 1.0;
+
+/// Outline ring width: 1 world unit baseline; scales up to decoded [`PhenotypeV2::armor_stroke`].
+pub fn agent_outline_width(armor_stroke: f32) -> f32 {
+    armor_stroke.max(MIN_AGENT_OUTLINE_WIDTH)
+}
+
+/// Outer radius of the outline mesh sitting behind the body fill.
+pub fn agent_outline_ring_radius(body_radius: f32, armor_stroke: f32) -> f32 {
+    body_radius + agent_outline_width(armor_stroke)
+}
 
 /// Outcome of one spawn attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,9 +51,10 @@ pub struct SpawnParams {
 
 /// Validate genome and decode phenotype; returns `None` on stillborn.
 pub fn try_prepare_spawn(
-    genome: AnyGenome,
+    mut genome: AnyGenome,
     config: &SimConfig,
 ) -> Option<(AnyGenome, AnyPhenotype)> {
+    genome.sync_color_from_efficiency().ok()?;
     let phenotype = decode_phenotype(&genome, config).ok()?;
     Some((genome, phenotype))
 }
@@ -166,6 +181,33 @@ pub fn phenotype_to_color(phenotype: &AnyPhenotype) -> Color {
     Color::srgb(c[0], c[1], c[2])
 }
 
+/// Desaturated fill for a dead agent (same hue, lower brightness and alpha).
+pub fn corpse_color_from_phenotype(phenotype: &AnyPhenotype) -> Color {
+    let c = phenotype_to_color(phenotype).to_srgba();
+    Color::srgba(c.red * 0.45, c.green * 0.45, c.blue * 0.45, 0.65)
+}
+
+/// Insert one corpse marker (mesh + biomass pool for feeding).
+pub fn spawn_corpse_entity(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<AgentColorMaterial>,
+    position: Vec2,
+    radius: f32,
+    color: Color,
+    depth_id: u64,
+    corpse: Corpse,
+) -> Entity {
+    commands
+        .spawn((
+            corpse,
+            Mesh2d(meshes.add(Circle::new(radius))),
+            MeshMaterial2d(materials.add(AgentColorMaterial::new(color, depth_id))),
+            Transform::from_translation(position.extend(AGENT_MESH_Z)),
+        ))
+        .id()
+}
+
 fn vitality_spawn_pools(phenotype: &AnyPhenotype, config: &SimConfig) -> (f32, f32) {
     crate::sim::components::vitality_spawn_pools_for(phenotype, config)
 }
@@ -206,14 +248,23 @@ pub fn place_near_parent(
 ) {
     let child_radius = params.body_radius;
     let gap = rng.gen_range(2.0..12.0);
+    let standoff = parent_radius + child_radius + gap;
     let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-    let offset = Vec2::from_angle(angle) * (parent_radius + child_radius + gap);
-    let mut pos = parent_pos + offset;
+    let ideal = parent_pos + Vec2::from_angle(angle) * standoff;
 
     let (min_x, max_x) = axis_range(bounds.half_x, child_radius);
     let (min_y, max_y) = axis_range(bounds.half_y, child_radius);
-    pos.x = pos.x.clamp(min_x, max_x);
-    pos.y = pos.y.clamp(min_y, max_y);
+    let mut pos = Vec2::new(ideal.x.clamp(min_x, max_x), ideal.y.clamp(min_y, max_y));
+
+    // When the child is larger than the world half-extent, axis clamping collapses to (0, 0)
+    // and can teleport offspring to the map center — keep them beside the parent instead.
+    let max_drift = standoff * 2.0;
+    if pos.distance_squared(parent_pos) > max_drift * max_drift {
+        pos = parent_pos;
+        pos.x = pos.x.clamp(min_x, max_x);
+        pos.y = pos.y.clamp(min_y, max_y);
+    }
+
     params.position = pos;
 
     let speed = random_initial_speed(params.life.phenotype.max_speed(), 5.0, rng);
@@ -232,13 +283,11 @@ fn random_initial_speed(max_speed: f32, min_speed: f32, rng: &mut impl Rng) -> f
 }
 
 fn axis_range(half_extent: f32, radius: f32) -> (f32, f32) {
-    let min = -half_extent + radius;
-    let max = half_extent - radius;
-    if min <= max {
-        (min, max)
-    } else {
-        (0.0, 0.0)
+    if half_extent <= 0.0 {
+        return (0.0, 0.0);
     }
+    let r = radius.min(half_extent);
+    (-half_extent + r, half_extent - r)
 }
 
 /// Insert one agent entity (mesh radius and color from decoded phenotype).
@@ -257,40 +306,38 @@ pub fn spawn_agent_entity(
         body_radius,
     } = params;
     let lineage_id = life.lineage.id;
-    let armor_stroke = Some(life.phenotype.0.armor_stroke);
-    let mut entity_cmd = commands.spawn((
-        life,
-        heading,
-        SensePerception::default(),
-        BehaviorState::default(),
-        Velocity(velocity),
-        LightExposure(0.0),
-        HazardExposure::default(),
-        VentExposure::default(),
-        MineralExposure::default(),
-        Mesh2d(meshes.add(Circle::new(body_radius))),
-        MeshMaterial2d(materials.add(AgentColorMaterial::new(color, lineage_id))),
-        Transform::from_translation(position.extend(AGENT_MESH_Z)),
-    ));
-
-    if let Some(stroke) = armor_stroke {
-        if stroke > 0.05 {
-            let ring_radius = body_radius + stroke * 0.5;
-            entity_cmd.with_children(|parent| {
-                parent.spawn((
-                    crate::visual::ArmorOutline,
-                    Mesh2d(meshes.add(Circle::new(ring_radius))),
-                    MeshMaterial2d(materials.add(AgentColorMaterial::new(
-                        Color::srgba(0.15, 0.15, 0.18, 0.85),
-                        lineage_id.wrapping_add(1),
-                    ))),
-                    Transform::from_xyz(0.0, 0.0, -0.05),
-                ));
-            });
-        }
-    }
-
-    entity_cmd.id()
+    let armor_stroke = life.phenotype.0.armor_stroke;
+    let outline_radius = agent_outline_ring_radius(body_radius, armor_stroke);
+    // Paired sort keys: outline must draw before fill (lower depth_bias).
+    let fill_sort = lineage_id.saturating_mul(2);
+    let outline_sort = fill_sort.saturating_sub(1);
+    commands
+        .spawn((
+            life,
+            heading,
+            SensePerception::default(),
+            BehaviorState::default(),
+            Velocity(velocity),
+            LightExposure(0.0),
+            HazardExposure::default(),
+            VentExposure::default(),
+            MineralExposure::default(),
+            Mesh2d(meshes.add(Circle::new(body_radius))),
+            MeshMaterial2d(materials.add(AgentColorMaterial::new(color, fill_sort))),
+            Transform::from_translation(position.extend(AGENT_MESH_Z)),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                crate::visual::AgentOutline,
+                Mesh2d(meshes.add(Circle::new(outline_radius))),
+                MeshMaterial2d(materials.add(AgentColorMaterial::new(
+                    Color::srgb(0.0, 0.0, 0.0),
+                    outline_sort,
+                ))),
+                Transform::from_xyz(0.0, 0.0, -0.05),
+            ));
+        })
+        .id()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,6 +405,18 @@ mod tests {
     }
 
     #[test]
+    fn outline_width_is_one_without_armor() {
+        assert_eq!(agent_outline_width(0.0), MIN_AGENT_OUTLINE_WIDTH);
+        assert_eq!(agent_outline_ring_radius(10.0, 0.0), 11.0);
+    }
+
+    #[test]
+    fn outline_width_scales_with_armor_stroke() {
+        assert_eq!(agent_outline_width(25.5), 25.5);
+        assert_eq!(agent_outline_ring_radius(10.0, 25.5), 35.5);
+    }
+
+    #[test]
     fn spawn_uses_phenotype_color_and_radius() {
         let config = SimConfig::load_default().unwrap();
         let genome = ancestor_any_from_config(&config).unwrap();
@@ -395,5 +454,45 @@ mod tests {
         for _ in 0..config.world.initial_population {
             assert!(try_prepare_spawn(ancestor.clone_genome(), &config).is_some());
         }
+    }
+
+    #[test]
+    fn oversized_offspring_stays_near_parent_not_world_center() {
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
+
+        let config = SimConfig::load_default().unwrap();
+        let ancestor = ancestor_any_from_config(&config).unwrap();
+        let (_, phenotype) = try_prepare_spawn(ancestor.clone(), &config).unwrap();
+        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+        let parent_pos = Vec2::new(200.0, 300.0);
+        let parent_radius = phenotype.body_radius;
+
+        let mut params = build_offspring_spawn_params(
+            ancestor,
+            phenotype,
+            &config,
+            99,
+            Some(1),
+            1,
+            10.0,
+            10.0,
+        );
+        params.body_radius = bounds.half_y + 50.0;
+        params.life.agent.radius = params.body_radius;
+
+        let mut rng = StdRng::seed_from_u64(7);
+        place_near_parent(&mut params, parent_pos, parent_radius, &mut rng, &bounds);
+
+        assert!(
+            params.position.distance(parent_pos) < 100.0,
+            "offspring at {:?} should stay near parent {:?}, not teleport to center",
+            params.position,
+            parent_pos,
+        );
+        assert!(
+            params.position.distance_squared(Vec2::ZERO) > 10_000.0,
+            "offspring should not spawn at world origin",
+        );
     }
 }

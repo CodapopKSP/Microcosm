@@ -3,14 +3,60 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 
-use crate::genome::AnyPhenotype;
-
 use super::metabolism_v2::clamp_vitality_pools;
 use super::metabolism::circles_overlap;
 use super::super::components::{Agent, Corpse, Energy, Health, MineralExposure, Phenotype};
-use super::super::minerals::MineralField;
 use super::super::soup::SoupField;
-use super::super::world::SimConfigResource;
+use super::metabolism_v2::TICKS_PER_SEC;
+use super::super::interval::{interval_active_this_tick, logic_active_this_tick, logic_elapsed_ticks};
+use super::super::world::{SimConfigResource, SimTick};
+
+/// Health-energy units per second at full biomass digestion: `body_radius × biomass_effective × scale`.
+pub fn biomass_uptake_per_sec(
+    body_radius: f32,
+    biomass_effective: f32,
+    uptake_scale: f32,
+) -> f32 {
+    if body_radius <= 0.0 || biomass_effective <= 0.0 || uptake_scale <= 0.0 {
+        return 0.0;
+    }
+    body_radius * biomass_effective * uptake_scale
+}
+
+/// Whether biomass feeding (corpses + living prey) runs this tick (default: once per second, phase 30).
+pub fn biomass_feeding_active_this_tick(tick: u64, interval_ticks: u32, phase_ticks: u32) -> bool {
+    interval_active_this_tick(tick, interval_ticks, phase_ticks)
+}
+
+/// Drain from a corpse or prey pool (1:1 health-energy → predator energy).
+pub fn consume_from_pool(uptake_per_interval: f32, available: f32) -> f32 {
+    if uptake_per_interval <= 0.0 || available <= 0.0 {
+        return 0.0;
+    }
+    uptake_per_interval.min(available)
+}
+
+/// Living prey: if uptake/sec covers remaining HP, grant max HP as energy; else drain 1:1 for the interval.
+pub fn living_prey_gain(
+    uptake_per_sec: f32,
+    remaining_hp: f32,
+    max_hp: f32,
+) -> (f32, f32) {
+    if remaining_hp <= 0.0 {
+        return (0.0, 0.0);
+    }
+    if uptake_per_sec >= remaining_hp {
+        (max_hp.max(0.0), remaining_hp)
+    } else {
+        let drain = uptake_per_sec.min(remaining_hp);
+        (drain, drain)
+    }
+}
+
+/// Energy pool left on a corpse: parent's max health as consumable units.
+pub fn corpse_energy_from_max_health(core_max_hp: f32) -> f32 {
+    core_max_hp.max(0.0)
+}
 
 /// Energy gained from local mineral concentration in one tick.
 pub fn minerals_gain_per_tick(
@@ -19,20 +65,6 @@ pub fn minerals_gain_per_tick(
     uptake_per_tick: f32,
 ) -> f32 {
     minerals_effective.max(0.0) * concentration.clamp(0.0, 1.0) * uptake_per_tick.max(0.0)
-}
-
-/// Energy gained from overlapping corpse biomass in one tick.
-pub fn biomass_gain_from_corpse(
-    biomass_effective: f32,
-    corpse_radius: f32,
-    available: f32,
-    uptake_per_radius: f32,
-) -> f32 {
-    if biomass_effective <= 0.0 || available <= 0.0 || corpse_radius <= 0.0 {
-        return 0.0;
-    }
-    let demand = biomass_effective * uptake_per_radius.max(0.0) * corpse_radius;
-    demand.min(available)
 }
 
 /// Config-only soup uptake (transporter loci are future).
@@ -44,15 +76,10 @@ pub fn soup_gain_per_tick(
     biomass_effective.max(0.0) * soup_concentration.clamp(0.0, 1.0) * uptake_rate.max(0.0)
 }
 
-/// Biomass pool left on a corpse from parent vitality at death.
-pub fn corpse_biomass_from_vitals(energy: f32, health: f32, frac: f32) -> f32 {
-    (energy.max(0.0) + health.max(0.0)) * frac.clamp(0.0, 1.0)
-}
-
-/// Bevy system: digest minerals, corpses, and optional soup before metabolism costs.
+/// Bevy system: digest minerals, corpses, living prey, and optional soup before metabolism costs.
 pub fn feeding_v2(
+    tick: Res<SimTick>,
     config: Res<SimConfigResource>,
-    minerals: Res<MineralField>,
     soup: Res<SoupField>,
     mut agents: Query<
         (
@@ -74,65 +101,125 @@ pub fn feeding_v2(
 
     let env = &config.0.environment;
     let feeding = &env.feeding;
+    let uptake_scale = feeding.biomass_uptake_per_radius_per_sec;
+    let biomass_interval = feeding.biomass_feeding_interval_ticks;
+    let run_logic = logic_active_this_tick(tick.tick, &config.0.run);
+    let logic_steps = logic_elapsed_ticks(&config.0.run);
+    let run_biomass = biomass_feeding_active_this_tick(
+        tick.tick,
+        biomass_interval,
+        feeding.biomass_feeding_phase_ticks,
+    ) && uptake_scale > 0.0;
+
+    if !run_logic && !run_biomass {
+        return;
+    }
+
     let mut energy_gain: HashMap<Entity, f32> = HashMap::new();
+    let mut hp_drain: HashMap<Entity, f32> = HashMap::new();
 
-    let agent_snapshots: Vec<(Entity, Vec2, f32, f32, f32, f32)> = agents
-        .iter()
-        .map(|(e, tf, a, p, m, _, _)| {
-            let ph = &p.0;
-            (
-                e,
-                tf.translation.truncate(),
-                a.radius,
-                ph.biomass_effective,
-                ph.minerals_effective,
-                m.concentration,
-            )
-        })
-        .collect();
-
-    for (entity, _, _, bio_eff, minerals_eff, conc) in &agent_snapshots {
-        let mut gain = 0.0;
-        if minerals.is_enabled() {
-            gain += minerals_gain_per_tick(
-                *minerals_eff,
-                *conc,
-                feeding.minerals_uptake_per_tick,
-            );
-        }
-        if soup.is_enabled() && *bio_eff > 0.0 {
-            gain += soup_gain_per_tick(*bio_eff, soup.concentration, feeding.soup_uptake_rate);
-        }
-        if gain > 0.0 {
-            energy_gain.insert(*entity, gain);
+    if run_logic {
+        for (entity, _, _, phenotype, minerals_exp, _, _) in agents.iter() {
+            let ph = &phenotype.0;
+            let mut gain = 0.0;
+            if minerals_exp.concentration > 0.0 {
+                gain += minerals_gain_per_tick(
+                    ph.minerals_effective,
+                    minerals_exp.concentration,
+                    feeding.minerals_uptake_per_tick,
+                ) * logic_steps as f32;
+            }
+            if soup.is_enabled() && ph.biomass_effective > 0.0 {
+                gain += soup_gain_per_tick(
+                    ph.biomass_effective,
+                    soup.concentration,
+                    feeding.soup_uptake_rate,
+                ) * logic_steps as f32;
+            }
+            if gain > 0.0 {
+                energy_gain.insert(entity, gain);
+            }
         }
     }
 
-    if env.corpses_enabled {
-        for (c_tf, mut corpse) in &mut corpses {
-            let cpos = c_tf.translation.truncate();
-            for (entity, apos, ar, bio_eff, _, _) in &agent_snapshots {
-                if *bio_eff <= 0.0 || corpse.remaining_biomass <= 0.0 {
-                    continue;
+    if run_biomass {
+        let predators: Vec<(Entity, Vec2, f32, f32)> = agents
+            .iter()
+            .filter_map(|(e, tf, a, p, _, _, _)| {
+                let ph = &p.0;
+                if ph.biomass_effective <= 0.0 {
+                    return None;
                 }
-                if !circles_overlap(*apos, *ar, cpos, corpse.radius) {
-                    continue;
+                let uptake_sec =
+                    biomass_uptake_per_sec(ph.body_radius, ph.biomass_effective, uptake_scale);
+                if uptake_sec <= 0.0 {
+                    return None;
                 }
-                let taken = biomass_gain_from_corpse(
-                    *bio_eff,
-                    corpse.radius,
-                    corpse.remaining_biomass,
-                    feeding.biomass_uptake_per_radius,
-                );
-                if taken > 0.0 {
-                    corpse.remaining_biomass -= taken;
-                    *energy_gain.entry(*entity).or_insert(0.0) += taken;
+                Some((e, tf.translation.truncate(), a.radius, uptake_sec))
+            })
+            .collect();
+
+        if !predators.is_empty() {
+            let prey_snapshots: Vec<(Entity, Vec2, f32, f32, f32)> = agents
+                .iter()
+                .map(|(e, tf, a, _, _, _, h)| {
+                    (
+                        e,
+                        tf.translation.truncate(),
+                        a.radius,
+                        h.core_hp,
+                        h.core_max_hp,
+                    )
+                })
+                .collect();
+
+            for (pred_e, pred_pos, pred_r, uptake_sec) in &predators {
+                if env.corpses_enabled {
+                    for (c_tf, mut corpse) in &mut corpses {
+                        if corpse.remaining_energy <= 0.0 {
+                            continue;
+                        }
+                        let cpos = c_tf.translation.truncate();
+                        if !circles_overlap(*pred_pos, *pred_r, cpos, corpse.radius) {
+                            continue;
+                        }
+                        let taken = consume_from_pool(*uptake_sec, corpse.remaining_energy);
+                        if taken > 0.0 {
+                            corpse.remaining_energy -= taken;
+                            *energy_gain.entry(*pred_e).or_insert(0.0) += taken;
+                        }
+                    }
+                }
+
+                for (vic_e, vic_pos, vic_r, vic_hp, vic_max_hp) in &prey_snapshots {
+                    if pred_e == vic_e {
+                        continue;
+                    }
+                    let drained_so_far = hp_drain.get(vic_e).copied().unwrap_or(0.0);
+                    let remaining_hp = (*vic_hp - drained_so_far).max(0.0);
+                    if remaining_hp <= 0.0 {
+                        continue;
+                    }
+                    if !circles_overlap(*pred_pos, *pred_r, *vic_pos, *vic_r) {
+                        continue;
+                    }
+                    let (gain, drain) =
+                        living_prey_gain(*uptake_sec, remaining_hp, *vic_max_hp);
+                    if drain > 0.0 {
+                        *hp_drain.entry(*vic_e).or_insert(0.0) += drain;
+                        *energy_gain.entry(*pred_e).or_insert(0.0) += gain;
+                    }
                 }
             }
         }
     }
 
     for (entity, _, _, phenotype, _, mut energy, mut health) in &mut agents {
+        if let Some(drain) = hp_drain.get(&entity).copied() {
+            if drain > 0.0 {
+                health.core_hp = (health.core_hp - drain).max(0.0);
+            }
+        }
         let Some(gain) = energy_gain.get(&entity).copied() else {
             continue;
         };
@@ -150,20 +237,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn uptake_scales_with_body_radius_and_efficiency() {
+        assert_eq!(biomass_uptake_per_sec(10.0, 1.0, 10.0), 100.0);
+        assert_eq!(biomass_uptake_per_sec(10.0, 0.1, 10.0), 10.0);
+        assert_eq!(biomass_uptake_per_sec(20.0, 1.0, 10.0), 200.0);
+        assert_eq!(biomass_uptake_per_sec(10.0, 0.0, 10.0), 0.0);
+    }
+
+    #[test]
+    fn corpse_pool_is_max_health() {
+        assert_eq!(corpse_energy_from_max_health(100.0), 100.0);
+        assert_eq!(corpse_energy_from_max_health(-1.0), 0.0);
+    }
+
+    #[test]
+    fn consume_from_pool_takes_min_of_uptake_and_available() {
+        let uptake = biomass_uptake_per_sec(10.0, 1.0, 10.0);
+        assert_eq!(uptake, 100.0);
+        assert_eq!(consume_from_pool(uptake, 20.0), 20.0);
+    }
+
+    #[test]
+    fn overpowered_predator_gets_max_hp_energy() {
+        let (gain, drain) = living_prey_gain(50.0, 20.0, 100.0);
+        assert_eq!(gain, 100.0);
+        assert_eq!(drain, 20.0);
+    }
+
+    #[test]
+    fn gradual_predation_drains_one_to_one_per_second() {
+        let uptake_sec = 10.0;
+        let (gain, drain) = living_prey_gain(uptake_sec, 100.0, 100.0);
+        assert_eq!(gain, uptake_sec);
+        assert_eq!(drain, uptake_sec);
+    }
+
+    #[test]
+    fn biomass_feeding_runs_once_per_second_offset_from_sensors() {
+        let interval = TICKS_PER_SEC as u32;
+        assert!(!biomass_feeding_active_this_tick(0, interval, 30));
+        assert!(biomass_feeding_active_this_tick(30, interval, 30));
+        assert!(!biomass_feeding_active_this_tick(60, interval, 30));
+        assert!(biomass_feeding_active_this_tick(90, interval, 30));
+    }
+
+    #[test]
     fn minerals_gain_scales_with_efficiency_and_concentration() {
         let g = minerals_gain_per_tick(0.5, 1.0, 0.08);
         assert!((g - 0.04).abs() < 1e-6);
         assert_eq!(minerals_gain_per_tick(0.0, 1.0, 0.08), 0.0);
-    }
-
-    #[test]
-    fn biomass_takes_min_of_demand_and_available() {
-        let taken = biomass_gain_from_corpse(1.0, 10.0, 0.5, 0.15);
-        assert_eq!(taken, 0.5);
-    }
-
-    #[test]
-    fn corpse_biomass_frac_of_pools() {
-        assert_eq!(corpse_biomass_from_vitals(30.0, 20.0, 0.5), 25.0);
     }
 }

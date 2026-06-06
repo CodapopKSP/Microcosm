@@ -36,6 +36,18 @@ pub fn split_endowment_to_child(
     (child_hp, child_energy)
 }
 
+fn take_from_health(health: &mut Health, n: f32) -> f32 {
+    let got = n.min(health.core_hp.max(0.0));
+    health.core_hp -= got;
+    got
+}
+
+fn take_from_energy(energy: &mut Energy, n: f32) -> f32 {
+    let got = n.min(energy.internal_energy.max(0.0));
+    energy.internal_energy -= got;
+    got
+}
+
 /// Deduct up to `amount` from parent pools per [`ReproPaymentOrder`]; returns amount collected.
 pub fn collect_vitality_payment(
     energy: &mut Energy,
@@ -48,22 +60,12 @@ pub fn collect_vitality_payment(
         return 0.0;
     }
 
-    let take_from_health = |health: &mut Health, n: f32| -> f32 {
-        let got = n.min(health.core_hp.max(0.0));
-        health.core_hp -= got;
-        got
-    };
-    let take_from_energy = |energy: &mut Energy, n: f32| -> f32 {
-        let got = n.min(energy.internal_energy.max(0.0));
-        energy.internal_energy -= got;
-        got
-    };
-
     let mut collected = 0.0;
     match order {
         ReproPaymentOrder::HealthFirst => {
-            collected += take_from_health(health, remaining);
-            remaining -= collected;
+            let from_h = take_from_health(health, remaining);
+            collected += from_h;
+            remaining -= from_h;
             collected += take_from_energy(energy, remaining);
         }
         ReproPaymentOrder::EnergyFirst => {
@@ -217,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn health_first_payment_order() {
+    fn energy_first_payment_order_drains_energy_before_health() {
         let mut energy = Energy::new_v2(50.0, 100.0);
         let mut health = Health {
             core_hp: 30.0,
@@ -228,11 +230,11 @@ mod tests {
             &mut energy,
             &mut health,
             40.0,
-            ReproPaymentOrder::HealthFirst,
+            ReproPaymentOrder::EnergyFirst,
         );
         assert!((got - 40.0).abs() < 1e-3);
-        assert!((health.core_hp - 0.0).abs() < 1e-3);
-        assert!((energy.internal_energy - 40.0).abs() < 1e-3);
+        assert!((energy.internal_energy - 10.0).abs() < 1e-3);
+        assert!((health.core_hp - 30.0).abs() < 1e-3);
     }
 
     #[test]
@@ -300,6 +302,67 @@ mod tests {
             }
             other => panic!("expected child, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn energy_first_endowment_conserves_vitality_with_child_energy_overflow() {
+        let mut config = SimConfig::load_default().unwrap();
+        config.economy.p_death_on_repro_base = 0.0;
+        config.economy.p_damage_on_repro_base = 0.0;
+        config.economy.repro_payment_order = ReproPaymentOrder::EnergyFirst;
+
+        let mut parent_genome = GenomeV2::ancestor_from_config(&config).unwrap();
+        let ratio_idx =
+            crate::genome::V2_HEADER_LEN + crate::genome::v2_core::ENERGY_HEALTH_RATIO;
+        parent_genome.bytes[ratio_idx] = 0x80;
+        let phenotype = decode_v2(&parent_genome, &config).unwrap();
+        let child_phenotype = decode_v2(
+            &GenomeV2::from_bytes(
+                {
+                    let mut bytes = parent_genome.bytes.clone();
+                    bytes[ratio_idx] = 0x00;
+                    bytes
+                },
+                &config.genetics,
+            )
+            .unwrap(),
+            &config,
+        )
+        .unwrap();
+
+        let parent_e = phenotype.max_energy;
+        let parent_h = phenotype.max_health;
+        let mut energy = Energy::new_v2(parent_e, phenotype.max_energy);
+        let mut health = Health {
+            core_hp: parent_h,
+            core_max_hp: phenotype.max_health,
+            part_hp: vec![],
+        };
+
+        let spend_target = endowment_budget_cap(&phenotype).min(parent_e + parent_h);
+        let collected = collect_vitality_payment(
+            &mut energy,
+            &mut health,
+            spend_target,
+            ReproPaymentOrder::EnergyFirst,
+        );
+        let (child_hp, child_energy) = split_endowment_to_child(
+            collected,
+            child_phenotype.max_health,
+            child_phenotype.max_energy,
+        );
+
+        let parent_energy_spent = parent_e - energy.internal_energy;
+        assert!(
+            child_energy <= parent_energy_spent + 1e-3,
+            "child energy ({child_energy}) must not exceed parent energy spent ({parent_energy_spent})"
+        );
+        assert!(child_hp > 0.0);
+        assert!(
+            (child_hp + child_energy + energy.internal_energy + health.core_hp - parent_e - parent_h).abs()
+                < 1e-2,
+            "vitality should be conserved"
+        );
     }
 
     #[test]
