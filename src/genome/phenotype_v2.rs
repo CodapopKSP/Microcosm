@@ -285,8 +285,8 @@ mod tests {
         assert_eq!(p.minerals_effective, 0.0);
         assert!((p.energy_cap_fraction - 0.5).abs() < 0.05);
         assert_eq!(p.sensor_eye_count, 0);
-        assert_eq!(p.pursue_slot_count, 0);
-        assert_eq!(p.avoid_slot_count, 0);
+        assert_eq!(p.pursue_slot_count, 1);
+        assert_eq!(p.avoid_slot_count, 1);
     }
 
     #[test]

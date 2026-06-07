@@ -4,7 +4,6 @@ use bevy::prelude::*;
 
 use super::super::components::{Agent, HazardExposure, LightExposure, MineralExposure, VentExposure};
 use super::super::hazards::HazardField;
-use super::super::interval::logic_active_this_tick;
 use super::super::light::LightField;
 use super::super::minerals::MineralField;
 use super::super::vents::VentField;
@@ -26,10 +25,7 @@ pub fn sense_exposure(
         &mut MineralExposure,
     ), With<Agent>>,
 ) {
-    if !logic_active_this_tick(tick.tick, &config.0.run) {
-        return;
-    }
-    let _ = (&vents,);
+    let _ = (tick, &vents);
     for (transform, mut light_exp, mut hazard_exp, mut vent_exp, mut mineral_exp) in &mut query {
         let pos = transform.translation.truncate();
         light_exp.0 = light.sample(pos);
@@ -106,7 +102,7 @@ mod tests {
 
     #[test]
     fn stationary_agent_has_stable_light_across_ticks() {
-        let position = Vec2::new(100.0, -200.0);
+        let position = Vec2::new(100.0, 400.0);
         let mut app = test_app_with_agent_at(position);
 
         app.update();

@@ -73,7 +73,10 @@ pub fn death_and_despawn(
                     corpse_color_from_phenotype(&phenotype.0),
                     lineage.id,
                     Corpse {
-                        remaining_energy: corpse_energy_from_max_health(health.core_max_hp),
+                        remaining_energy: corpse_energy_from_max_health(
+                            health.core_max_hp,
+                            feeding.corpse_energy_fraction_of_max_health,
+                        ),
                         radius: agent.radius,
                         ticks_remaining: if ttl > 0 { ttl } else { u32::MAX },
                     },

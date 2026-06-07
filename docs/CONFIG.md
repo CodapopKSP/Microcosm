@@ -42,7 +42,7 @@ v1 configs keep `[genetics.decode_ranges]` and `[genetics.color_photosynthesis]`
 | `core_length` | validation | Minimum bytes (24 fixed + slot payload); may use `max_genome_bytes` |
 | `ancestor_hex` | worldgen | Full EVO2 genome including header |
 | `max_genome_bytes` | validation | Hard cap on variable pursue/avoid growth |
-| `max_pursue_slots` / `max_avoid_slots` | mutation | Slot count limits |
+| `max_pursue_slots` / `max_avoid_slots` | validation | Fixed slot counts per organism (currently **1** each); must match genome I locus |
 
 ### `[genetics.mutation_v2]` — offspring mutation (v2 only)
 

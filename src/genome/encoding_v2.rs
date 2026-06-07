@@ -122,18 +122,24 @@ impl GenomeV2 {
         if pursue > genetics.max_pursue_slots || avoid > genetics.max_avoid_slots {
             return Err(GenomeError::SlotCountExceedsConfig { pursue, avoid });
         }
+        if pursue != genetics.max_pursue_slots || avoid != genetics.max_avoid_slots {
+            return Err(GenomeError::Config(format!(
+                "pursue/avoid slot counts must be ({}, {}) (got {pursue}, {avoid})",
+                genetics.max_pursue_slots, genetics.max_avoid_slots
+            )));
+        }
 
         let payload_expected = expected_genome_len(self)?;
-        if self.bytes.len() != genetics.core_length {
+        if self.bytes.len() != payload_expected {
             return Err(GenomeError::LengthMismatch {
-                expected: genetics.core_length,
+                expected: payload_expected,
                 actual: self.bytes.len(),
             });
         }
-        if payload_expected != genetics.core_length {
+        if self.bytes.len() < genetics.core_length {
             return Err(GenomeError::LengthMismatch {
-                expected: payload_expected,
-                actual: genetics.core_length,
+                expected: genetics.core_length,
+                actual: self.bytes.len(),
             });
         }
 
@@ -385,7 +391,7 @@ mod tests {
         let genome = GenomeV2::ancestor_from_config(&config).unwrap();
         assert!(genome.is_valid(&config.genetics));
         assert_eq!(&genome.bytes[0..4], MAGIC);
-        assert_eq!(genome.bytes.len(), 27);
+        assert_eq!(genome.bytes.len(), 39);
     }
 
     #[test]
@@ -404,8 +410,8 @@ mod tests {
         assert_eq!(genome.photo_efficiency_raw().unwrap(), 0xFF);
         assert_eq!(genome.biomass_efficiency_raw().unwrap(), 0);
         assert_eq!(genome.minerals_efficiency_raw().unwrap(), 0);
-        assert_eq!(genome.pursue_slot_count().unwrap(), 0);
-        assert_eq!(genome.avoid_slot_count().unwrap(), 0);
+        assert_eq!(genome.pursue_slot_count().unwrap(), 1);
+        assert_eq!(genome.avoid_slot_count().unwrap(), 1);
     }
 
     #[test]
@@ -427,7 +433,7 @@ mod tests {
                 "M 00000000",
                 "E ff0000",
                 "S 0000",
-                "I 0000",
+                "I 0101",
             ]
         );
     }

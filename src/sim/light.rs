@@ -154,13 +154,27 @@ mod tests {
     }
 
     #[test]
-    fn gradient_y_is_linear_midpoint() {
-        let field = light_field_with_mode(LightMode::GradientY);
+    fn gradient_y_is_linear_midpoint_when_dark_at_world_bottom() {
         let config = SimConfig::load_default().unwrap();
+        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+        let mut env = config.environment.clone();
+        env.light_mode = LightMode::GradientY;
+        env.gradient_min_y = None;
+        let field = LightField::from_environment(&env, &bounds);
         let mid = field.sample(Vec2::ZERO);
-        let expected =
-            (config.environment.gradient_min + config.environment.gradient_max) / 2.0;
+        let expected = (env.gradient_min + env.gradient_max) / 2.0;
         assert!((mid - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gradient_min_y_zero_makes_top_bright_and_equator_dark() {
+        let config = SimConfig::load_default().unwrap();
+        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+        let env = &config.environment;
+        let field = LightField::from_environment(env, &bounds);
+        assert_eq!(field.sample(Vec2::new(0.0, bounds.half_y)), env.gradient_max);
+        assert_eq!(field.sample(Vec2::ZERO), env.gradient_min);
+        assert_eq!(field.sample(Vec2::new(0.0, -bounds.half_y)), env.gradient_min);
     }
 
     #[test]

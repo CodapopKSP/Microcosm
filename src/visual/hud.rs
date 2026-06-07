@@ -3,7 +3,15 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
-use crate::sim::Agent;
+use crate::sim::{Agent, Corpse};
+
+const HUD_STAT_SIZE: f32 = 16.0;
+
+fn hud_stat(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text.into())
+        .strong()
+        .size(HUD_STAT_SIZE)
+}
 
 #[derive(Resource, Default)]
 pub struct FpsCounter {
@@ -22,8 +30,14 @@ pub fn tick_fps_counter(time: Res<Time>, mut counter: ResMut<FpsCounter>) {
     }
 }
 
-pub fn draw_sim_hud(mut contexts: EguiContexts, fps: Res<FpsCounter>, agents: Query<(), With<Agent>>) {
+pub fn draw_sim_hud(
+    mut contexts: EguiContexts,
+    fps: Res<FpsCounter>,
+    agents: Query<(), With<Agent>>,
+    corpses: Query<(), With<Corpse>>,
+) {
     let organism_count = agents.iter().count();
+    let corpse_count = corpses.iter().count();
     let ctx = contexts.ctx_mut();
     egui::Area::new(egui::Id::new("sim_hud"))
         .fixed_pos(egui::pos2(12.0, 12.0))
@@ -34,12 +48,9 @@ pub fn draw_sim_hud(mut contexts: EguiContexts, fps: Res<FpsCounter>, agents: Qu
                 .inner_margin(egui::Margin::same(8.0))
                 .rounding(4.0)
                 .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(format!("Organism Count: {organism_count}"))
-                            .strong()
-                            .size(16.0),
-                    );
-                    ui.label(format!("FPS: {:.0}", fps.fps));
+                    ui.label(hud_stat(format!("Organism Count: {organism_count}")));
+                    ui.label(hud_stat(format!("Corpse Count: {corpse_count}")));
+                    ui.label(hud_stat(format!("FPS: {:.0}", fps.fps)));
                 });
         });
 }

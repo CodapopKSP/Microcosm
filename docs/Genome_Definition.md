@@ -114,8 +114,9 @@ Biomass Digestion Efficiency
 - 1 byte
 - 00 = no biomass digestion, FF = 100% biomass digestion
 - Uptake rate (health-energy units per second): `body_radius × biomass_effective × biomass_uptake_per_radius_per_sec` (config default `10.0` — e.g. radius 10 at 10% digestion → 10 units/s; radius 20 at 100% → 200 units/s)
-- Overlapping corpses or living prey: evaluated once per second (`biomass_feeding_interval_ticks`, default 60; `biomass_feeding_phase_ticks`, default 30 — staggered from sensor rays) for agents with `biomass_effective > 0`; drain up to one second of uptake; 1 drained HP becomes 1 predator energy
-- If uptake per second ≥ prey remaining HP, kill prey that tick and grant **max health** as energy (not just remaining HP)
+- Overlapping corpses or living prey: evaluated once per second (`biomass_feeding_interval_ticks`, default 60; `biomass_feeding_phase_ticks`, default 30 — staggered from sensor rays) for agents with `biomass_effective > 0`
+- **Corpses:** drain up to one second of uptake per pulse; 1 drained unit becomes 1 predator energy
+- **Living prey:** no partial/chip damage — consumption only when per-second uptake ≥ prey **current** HP; then kill prey that pulse and grant **max health** as energy (not just remaining HP)
 - Corpses store the dead agent's **max health** as consumable energy
 - Triad coupling still applies to `biomass_effective` vs photo/minerals genes
 
@@ -131,9 +132,10 @@ Sensors
 - Per-nibble maxima: high nibble `F` → **600 + 10** world units distance; low nibble `F` → **30 + 5** degrees half-width (implementation may treat as full cone width — document in config)
 
 Pursue/Avoid list counts
-- 2 bytes (core offsets 22–23)
-- Byte 0: number of **OR slots** on the pursue list (not bytes — slots)
-- Byte 1: number of **OR slots** on the avoid list
+- 2 bytes (core offsets 21–22)
+- Byte 0: pursue list slot count — **fixed at 1** (`max_pursue_slots`)
+- Byte 1: avoid list slot count — **fixed at 1** (`max_avoid_slots`)
+- Slot-count loci do not mutate; each organism always carries exactly one pursue OR-slot and one avoid OR-slot (12 payload bytes after the 24-byte core)
 - If a sensor detects an avoid signature, it will turn 180 degrees away and move at max speed until it has crossed the same distance as its sensor strength or has run out of energy
 - If a sensor detects a pursue signature, it will continuously turn towards the target but move normally
 
@@ -166,12 +168,14 @@ Pursue/avoid payload (when counts > 0) is appended **after** byte 22: all pursue
 
 ### Pursue and Avoid Lists
 
-These lists are identical. They have slots that contain one or more Chromosomes or Chemical signatures. A chromosome could be any of the above listed chromosomes, and a chemical signature could be any of the following:
-- Dead organisms
-- Minerals
-- Higher concentration of sunlight compared to the current location
-- Lower concentration of sunlight compared to the current location
-- Any other hazards or objects to be added in the future
+These lists are identical. They have slots that contain one or more **Chromosome** (trait) signatures or **Environment** signatures (2-byte type + 4-byte boolean `value`; set `value` to `00000001` for true):
+
+| Environment type | `type u16` | Pursue when `value=1` |
+|------------------|------------|------------------------|
+| Corpse | `0x0200` | A corpse lies in the sensor cone |
+| Minerals | `0x0201` | Mineral concentration &gt; 0 at the ray sample |
+| Brighter sunlight | `0x0202` | Light at sample &gt; light at observer |
+| Dimmer sunlight | `0x0203` | Light at sample &lt; light at observer (same light = false) |
 
 Each **simple slot** (one OR branch) is **6 bytes**: `type u16` (big-endian) + `value u32` (big-endian).
 
@@ -202,15 +206,21 @@ Each **simple slot** (one OR branch) is **6 bytes**: `type u16` (big-endian) + `
 | **Structural** | | | |
 | `0x0100` | **AND group** | See AND slot layout above (not a single `u32`) | — |
 | `0x0101`–`0x01FF` | *(reserved)* | — | Future combinators (e.g. NOT, OR-in-slot) |
-| **Chemical / environment** (smell non-agent or local field) | | | |
-| `0x0200` | Dead organism | `0` = any; low 16 bits optional filter (future) | Corpse / dead agent marker in range |
-| `0x0201` | Minerals | Low 16 bits = concentration band target | Local mineral concentration |
-| `0x0202` | Brighter sunlight | Low 16 bits = Δlight target (`u16`; `0xFFFF` = much brighter than here) | Light sample > self light |
-| `0x0203` | Dimmer sunlight | Low 16 bits = Δlight target (`u16`; `0xFFFF` = much dimmer than here) | Light sample < self light |
+| **Environment** (sensor ray field sample; `value` bit 0 = desired bool) | | | |
+| `0x0200` | Corpse | `value & 1`: `1` = corpse in cone | Corpse marker in sensor cone |
+| `0x0201` | Minerals | `value & 1`: `1` = minerals present | Local mineral concentration &gt; 0 |
+| `0x0202` | Brighter sunlight | `value & 1`: `1` = brighter than here | Light at sample &gt; observer light |
+| `0x0203` | Dimmer sunlight | `value & 1`: `1` = dimmer than here | Light at sample &lt; observer light |
 | `0x0204`–`0x02FF` | *(reserved)* | — | Future hazards, vents, soup compounds |
 | `0x0300`–`0xFFFF` | *(reserved)* | — | Do not use until version bump |
 
 #### Examples (hex, spaces for reading)
+
+**Simple — pursue corpses** (`type` `0x0200`, boolean true):
+
+```text
+0200 00000001
+```
 
 **Simple — pursue greenish color** (`00FF05` in low 24 bits):
 
@@ -313,7 +323,7 @@ Applied on asexual reproduction after cloning the parent genome. Config: `[genet
 
 **Per pass:** pick one gene from the [mutable gene registry](EVOLUTION_MODEL_REVISION.md#evo2-mutable-gene-registry) → direction ±1 → magnitude 1 (90%) or `large_step_min..=large_step_max` (10%) → clamp to gene domain → write bytes.
 
-**Not used in v2:** bit flip, locus resample, segment dup/del, `mutations_per_offspring`, `p_bit_flip`, `p_point`, etc. (v1 legacy — [GENOME.md](GENOME.md)).
+**Pursue/avoid slot type:** when a `PursueSlotType` / `AvoidSlotType` gene is picked, the slot is reassigned uniformly to one of **corpse** (`0x0200`), **minerals** (`0x0201`), or **brighter sunlight** (`0x0202`) and `value` is set to `1` (boolean true). New slots start inactive (`type 0`, `value 0`) until this fires. Trait/chromosome signature types are not reachable via slot-type mutation. bit flip, locus resample, segment dup/del, `mutations_per_offspring`, `p_bit_flip`, `p_point`, etc. (v1 legacy — [GENOME.md](GENOME.md)).
 
 Implementation: [`src/genome/mutation_v2.rs`](../src/genome/mutation_v2.rs).
 

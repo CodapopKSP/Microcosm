@@ -124,7 +124,7 @@ mod tests {
     use super::*;
     use crate::config::SimConfig;
     use crate::genome::{decode_v2, GenomeV2};
-    use crate::sim::components::Energy;
+    use crate::sim::components::{Energy, Health};
 
     fn v2_config() -> SimConfig {
         SimConfig::load_from_path(
@@ -286,6 +286,56 @@ mod tests {
         }
 
         assert!(energy.internal_energy <= phenotype.max_energy + 1e-5);
+    }
+
+    #[test]
+    fn per_tick_healing_restores_hp_from_available_energy_in_zero_light() {
+        use crate::config::RepairPolicy;
+        use crate::sim::systems::healing_v2::apply_heal_tick_v2;
+        use crate::sim::world::SIM_DT;
+
+        let config = SimConfig::load_default().unwrap();
+        let phenotype = ancestor_phenotype(&config);
+        let mut energy = Energy::new_v2(19.0, phenotype.max_energy);
+        let mut health = Health {
+            core_hp: 0.5,
+            core_max_hp: phenotype.max_health,
+            part_hp: vec![],
+        };
+        let env = config.environment.clone();
+
+        for _ in 0..600 {
+            apply_metabolism_tick_v2(
+                &mut energy,
+                &mut health,
+                &phenotype,
+                0,
+                0.0,
+                &env,
+                &config.economy,
+                &config,
+                1,
+            );
+            apply_heal_tick_v2(
+                &mut health,
+                &mut energy,
+                &phenotype,
+                RepairPolicy::CoreFirst,
+                &config.economy,
+                SIM_DT,
+                0,
+            );
+        }
+
+        assert!(
+            health.core_hp > 5.0,
+            "expected healing to restore HP from energy; hp={} max_hp={} energy={}",
+            health.core_hp,
+            phenotype.max_health,
+            energy.internal_energy
+        );
+        assert!(energy.internal_energy < 19.0);
+        assert!(health.core_hp < phenotype.max_health);
     }
 
     #[test]

@@ -18,6 +18,7 @@ const STREAM_MUTATION: u64 = 0x4D55_5410;
 const STREAM_REPRO_RISK: u64 = 0x5250_524B;
 const STREAM_MOVEMENT: u64 = 0x4D4F_5645;
 const STREAM_PHYSICS: u64 = 0x5048_5953;
+const STREAM_HAZARDS: u64 = 0x4841_5A44;
 
 /// World half-extents in sim units (1 unit = 1 pixel in visual mode).
 #[derive(Resource, Clone, Copy)]
@@ -140,6 +141,17 @@ impl SimRng {
             mix_seed(
                 master,
                 STREAM_PHYSICS ^ entity_id ^ tick.wrapping_mul(0x517C_C1B7_2722_0A95),
+            )
+        });
+        seed_from_opt_or_thread(seed)
+    }
+
+    /// Per-tick ephemeral hazard spawn rolls.
+    pub fn stream_hazards(&self, tick: u64) -> StdRng {
+        let seed = self.master_seed.map(|master| {
+            mix_seed(
+                master,
+                STREAM_HAZARDS ^ tick.wrapping_mul(0x9E37_79B9_7F4A_7C15),
             )
         });
         seed_from_opt_or_thread(seed)

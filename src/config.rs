@@ -127,6 +127,27 @@ pub enum BoundaryMode {
 pub struct PerformanceConfig {
     pub max_entities: usize,
     pub failsafe_policy: FailsafePolicy,
+    /// Agents removed per failsafe pass when [`FailsafePolicy::DespawnLowestEnergy`] is active.
+    #[serde(default = "default_failsafe_cull_count")]
+    pub failsafe_cull_count: usize,
+    /// Emergency corpse cap; when exceeded, [`corpse_cull_count`](Self::corpse_cull_count) despawn.
+    #[serde(default = "default_corpse_max")]
+    pub corpse_max: usize,
+    /// Corpses removed per pass when count exceeds [`corpse_max`](Self::corpse_max) (lowest biomass first).
+    #[serde(default = "default_corpse_cull_count")]
+    pub corpse_cull_count: usize,
+}
+
+fn default_failsafe_cull_count() -> usize {
+    3000
+}
+
+fn default_corpse_max() -> usize {
+    1000
+}
+
+fn default_corpse_cull_count() -> usize {
+    500
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -168,6 +189,13 @@ pub struct MutationV2Config {
     pub p_large_step: f32,
     pub large_step_min: u32,
     pub large_step_max: u32,
+    /// Scales ±increment on the body-radius u16 locus only (decode span unchanged).
+    #[serde(default = "default_body_radius_step_multiplier")]
+    pub body_radius_step_multiplier: f32,
+}
+
+fn default_body_radius_step_multiplier() -> f32 {
+    1.0
 }
 
 impl MutationV2Config {
@@ -187,6 +215,13 @@ impl MutationV2Config {
                 "genetics.mutation_v2.large_step_min must be >= 1 and <= large_step_max".into(),
             ));
         }
+        if self.body_radius_step_multiplier <= 0.0 || !self.body_radius_step_multiplier.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "genetics.mutation_v2.body_radius_step_multiplier must be positive and finite"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -195,10 +230,10 @@ fn default_max_genome_bytes() -> usize {
     512
 }
 fn default_max_pursue_slots() -> u8 {
-    8
+    1
 }
 fn default_max_avoid_slots() -> u8 {
-    8
+    1
 }
 
 /// Decode scales for EVO2 ([CONFIG.md](../docs/CONFIG.md) `[genetics.decode_v2]`).
@@ -383,6 +418,107 @@ pub struct HazardZone {
     pub chem_flux: f32,
 }
 
+/// Small hazard patches that spawn and despawn randomly in a world-Y band (typically near the top).
+#[derive(Debug, Clone, Deserialize)]
+pub struct DynamicHazardsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Minimum world Y for hazard centers.
+    pub band_y_min: f32,
+    /// Maximum world Y for hazard centers.
+    pub band_y_max: f32,
+    pub radius: f32,
+    pub damage_per_tick: f32,
+    #[serde(default)]
+    pub chem_flux: f32,
+    pub max_active: u32,
+    /// Sim ticks between spawn attempts when below [`max_active`](Self::max_active).
+    pub spawn_interval_ticks: u32,
+    pub lifetime_min_ticks: u32,
+    pub lifetime_max_ticks: u32,
+}
+
+fn default_dynamic_hazards() -> DynamicHazardsConfig {
+    DynamicHazardsConfig {
+        enabled: false,
+        band_y_min: 0.0,
+        band_y_max: 0.0,
+        radius: 40.0,
+        damage_per_tick: 0.0,
+        chem_flux: 0.0,
+        max_active: 0,
+        spawn_interval_ticks: 120,
+        lifetime_min_ticks: 180,
+        lifetime_max_ticks: 600,
+    }
+}
+
+impl DynamicHazardsConfig {
+    pub fn validate(&self, half_x: f32, half_y: f32) -> Result<(), ConfigError> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if !self.band_y_min.is_finite() || !self.band_y_max.is_finite() {
+            return Err(ConfigError::Validation(
+                "environment.dynamic_hazards.band_y_min and band_y_max must be finite".into(),
+            ));
+        }
+        if self.band_y_max < self.band_y_min {
+            return Err(ConfigError::Validation(
+                "environment.dynamic_hazards.band_y_max must be >= band_y_min".into(),
+            ));
+        }
+        if !self.radius.is_finite() || self.radius <= 0.0 {
+            return Err(ConfigError::Validation(
+                "environment.dynamic_hazards.radius must be positive and finite".into(),
+            ));
+        }
+        if !self.damage_per_tick.is_finite() || self.damage_per_tick < 0.0 {
+            return Err(ConfigError::Validation(
+                "environment.dynamic_hazards.damage_per_tick must be finite and >= 0".into(),
+            ));
+        }
+        if !self.chem_flux.is_finite() || self.chem_flux < 0.0 {
+            return Err(ConfigError::Validation(
+                "environment.dynamic_hazards.chem_flux must be finite and >= 0".into(),
+            ));
+        }
+        if self.max_active == 0 {
+            return Err(ConfigError::Validation(
+                "environment.dynamic_hazards.max_active must be at least 1 when enabled".into(),
+            ));
+        }
+        if self.spawn_interval_ticks == 0 {
+            return Err(ConfigError::Validation(
+                "environment.dynamic_hazards.spawn_interval_ticks must be at least 1".into(),
+            ));
+        }
+        if self.lifetime_min_ticks == 0 || self.lifetime_max_ticks < self.lifetime_min_ticks {
+            return Err(ConfigError::Validation(
+                "environment.dynamic_hazards lifetime_min_ticks must be >= 1 and \
+                 lifetime_max_ticks must be >= lifetime_min_ticks"
+                    .into(),
+            ));
+        }
+        let margin = self.radius;
+        if self.band_y_min < -half_y + margin || self.band_y_max > half_y - margin {
+            return Err(ConfigError::Validation(format!(
+                "environment.dynamic_hazards band must stay inside world Y \
+                 [{}, {}] with radius margin",
+                -half_y + margin,
+                half_y - margin
+            )));
+        }
+        if margin >= half_x {
+            return Err(ConfigError::Validation(format!(
+                "environment.dynamic_hazards.radius ({}) must be smaller than world half-width ({half_x})",
+                self.radius
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Axis-aligned circular thermal vent ([PHASE_5.md](../docs/PHASE_5.md) §5.1).
 #[derive(Debug, Clone, Deserialize)]
 pub struct VentZone {
@@ -412,6 +548,9 @@ pub struct FeedingConfig {
     pub biomass_feeding_phase_ticks: u32,
     #[serde(default = "default_corpse_ttl_ticks")]
     pub corpse_ttl_ticks: u32,
+    /// Fraction of the dead agent's max health stored as corpse consumable energy (1.0 = full pool).
+    #[serde(default = "default_corpse_energy_fraction_of_max_health")]
+    pub corpse_energy_fraction_of_max_health: f32,
     /// Global soup pool (Phase 6 minimal scalar field).
     #[serde(default)]
     pub soup_enabled: bool,
@@ -445,6 +584,9 @@ fn default_biomass_feeding_phase_ticks() -> u32 {
 fn default_corpse_ttl_ticks() -> u32 {
     3600
 }
+fn default_corpse_energy_fraction_of_max_health() -> f32 {
+    0.25
+}
 fn default_soup_regen_per_tick() -> f32 {
     0.0005
 }
@@ -466,6 +608,7 @@ fn default_feeding_config() -> FeedingConfig {
         biomass_feeding_interval_ticks: default_biomass_feeding_interval_ticks(),
         biomass_feeding_phase_ticks: default_biomass_feeding_phase_ticks(),
         corpse_ttl_ticks: default_corpse_ttl_ticks(),
+        corpse_energy_fraction_of_max_health: default_corpse_energy_fraction_of_max_health(),
         soup_enabled: false,
         soup_regen_per_tick: default_soup_regen_per_tick(),
         soup_max_concentration: default_soup_max_concentration(),
@@ -480,6 +623,10 @@ impl FeedingConfig {
             ("minerals_vent_flux_scale", self.minerals_vent_flux_scale),
             ("minerals_uptake_per_tick", self.minerals_uptake_per_tick),
             ("biomass_uptake_per_radius_per_sec", self.biomass_uptake_per_radius_per_sec),
+            (
+                "corpse_energy_fraction_of_max_health",
+                self.corpse_energy_fraction_of_max_health,
+            ),
             ("soup_regen_per_tick", self.soup_regen_per_tick),
             ("soup_max_concentration", self.soup_max_concentration),
             ("soup_initial_concentration", self.soup_initial_concentration),
@@ -500,6 +647,11 @@ impl FeedingConfig {
             return Err(ConfigError::Validation(
                 "environment.feeding.soup_initial_concentration must be <= soup_max_concentration"
                     .into(),
+            ));
+        }
+        if self.corpse_energy_fraction_of_max_health > 1.0 {
+            return Err(ConfigError::Validation(
+                "environment.feeding.corpse_energy_fraction_of_max_health must be <= 1".into(),
             ));
         }
         if self.biomass_feeding_interval_ticks == 0 {
@@ -534,6 +686,9 @@ pub struct EnvironmentConfig {
     /// Circular hazard bands; empty ⇒ no zone damage (Phase 4A).
     #[serde(default)]
     pub hazards: Vec<HazardZone>,
+    /// Ephemeral hazard patches spawned randomly in a Y band (typically near the map top).
+    #[serde(default = "default_dynamic_hazards")]
+    pub dynamic_hazards: DynamicHazardsConfig,
     /// Circular thermal vents; empty ⇒ no chemo flux sample (Phase 5A).
     #[serde(default)]
     pub vents: Vec<VentZone>,
@@ -586,7 +741,7 @@ pub enum GradientBrightAt {
 }
 
 impl EnvironmentConfig {
-    pub fn validate(&self, half_y: f32) -> Result<(), ConfigError> {
+    pub fn validate(&self, half_x: f32, half_y: f32) -> Result<(), ConfigError> {
         match self.energy_model {
             EnergyModel::Local | EnergyModel::LegacyFlat => {}
             EnergyModel::Pool => {
@@ -689,6 +844,7 @@ impl EnvironmentConfig {
         }
 
         self.feeding.validate()?;
+        self.dynamic_hazards.validate(half_x, half_y)?;
 
         Ok(())
     }
@@ -926,8 +1082,30 @@ impl SimConfig {
             ));
         }
 
-        self.environment.validate(self.world.height * 0.5)?;
+        self.environment
+            .validate(self.world.width * 0.5, self.world.height * 0.5)?;
         self.run.validate()?;
+
+        if self.performance.max_entities == 0 {
+            return Err(ConfigError::Validation(
+                "performance.max_entities must be at least 1".into(),
+            ));
+        }
+        if self.performance.failsafe_policy == FailsafePolicy::DespawnLowestEnergy
+            && self.performance.failsafe_cull_count == 0
+        {
+            return Err(ConfigError::Validation(
+                "performance.failsafe_cull_count must be at least 1 when failsafe_policy is \
+                 \"despawn_lowest_energy\""
+                    .into(),
+            ));
+        }
+        if self.performance.corpse_max > 0 && self.performance.corpse_cull_count == 0 {
+            return Err(ConfigError::Validation(
+                "performance.corpse_cull_count must be at least 1 when performance.corpse_max is set"
+                    .into(),
+            ));
+        }
 
         Ok(())
     }
@@ -1123,7 +1301,7 @@ mod tests {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs/genome_v2.example.toml");
         let config = SimConfig::load_from_path(&path).expect("genome_v2.example.toml should load");
         assert_eq!(config.genetics.genome_version, GENOME_VERSION_V2);
-        assert_eq!(config.genetics.core_length, 27);
+        assert_eq!(config.genetics.core_length, 39);
         let genome = crate::genome::GenomeV2::ancestor_from_config(&config).unwrap();
         let phenotype = crate::genome::decode_v2(&genome, &config).unwrap();
         assert_eq!(phenotype.max_speed_effective, 0.0);
@@ -1136,8 +1314,8 @@ mod tests {
     fn load_default_toml() {
         let config = SimConfig::load_default().expect("default.toml should load");
         assert_eq!(config.genetics.genome_version, GENOME_VERSION_V2);
-        assert_eq!(config.genetics.core_length, 27);
-        assert_eq!(config.world.initial_population, 80);
+        assert_eq!(config.genetics.core_length, 39);
+        assert_eq!(config.world.initial_population, 10);
         assert!(config.is_seeded());
         assert_eq!(config.environment.energy_model, EnergyModel::Local);
         assert_eq!(config.economy.flat_energy_grant_per_tick, 0.0);

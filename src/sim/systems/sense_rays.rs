@@ -285,11 +285,9 @@ mod tests {
             },
         }];
 
-        let delta = (hit_light - self_light).max(0.0);
-        let target_u16 = (delta.min(1.0) * 65535.0).round() as u32;
         let slots = vec![SignatureSlot::Simple(SignatureAtom {
             ty: SIG_BRIGHTER_SUNLIGHT,
-            value: target_u16,
+            value: 1,
         })];
 
         let matches = evaluate_ray_slot_matches(&samples, observer, &[], &slots, &[], 1);

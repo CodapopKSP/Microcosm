@@ -5,11 +5,15 @@ use rand::Rng;
 use crate::config::{GeneticsConfig, MutationV2Config};
 use crate::genome::encoding_v2::{core, GenomeV2, EFFICIENCY_TRIAD_BUDGET, HEADER_LEN};
 use crate::genome::error::GenomeError;
-use crate::genome::signatures::slot_payload_len;
+use crate::genome::signatures::{
+    enforce_fixed_slot_layout, slot_payload_len, sync_pursue_avoid_payload, AND_TYPE,
+    EVOLVABLE_ENVIRONMENT_SLOT_TYPES,
+};
 
 /// Clone parent and apply `passes_min..=passes_max` independent gene increments.
 pub fn mutate_offspring_v2(genome: &GenomeV2, genetics: &GeneticsConfig, rng: &mut impl Rng) -> GenomeV2 {
     let mut child = genome.clone_genome();
+    let _ = enforce_fixed_slot_layout(&mut child.bytes, genetics);
     let cfg = genetics
         .mutation_v2
         .as_ref()
@@ -23,31 +27,16 @@ pub fn mutate_offspring_v2(genome: &GenomeV2, genetics: &GeneticsConfig, rng: &m
         Ok(g) => g,
         Err(_) => Vec::new(),
     };
-    let mut slot_counts = slot_count_pair(&child);
     for _ in 0..passes {
         if genes.is_empty() {
             break;
         }
         apply_one_gene_increment(&mut child, &genes, cfg, rng);
-        let updated = slot_count_pair(&child);
-        if updated != slot_counts {
-            slot_counts = updated;
-            genes = match build_gene_registry(&child, genetics) {
-                Ok(g) => g,
-                Err(_) => Vec::new(),
-            };
-        }
     }
     let _ = child.sync_color_from_efficiency();
     child
 }
 
-fn slot_count_pair(genome: &GenomeV2) -> (u8, u8) {
-    (
-        genome.pursue_slot_count().unwrap_or(0),
-        genome.avoid_slot_count().unwrap_or(0),
-    )
-}
 
 fn apply_one_gene_increment(
     genome: &mut GenomeV2,
@@ -65,7 +54,13 @@ fn apply_one_gene_increment(
     } else {
         1
     };
-    let delta = flip_delta_if_at_floor(&genome.bytes, gene, direction * magnitude);
+    let mut delta = flip_delta_if_at_floor(&genome.bytes, gene, direction * magnitude);
+    if matches!(gene, MutableGene::U16Core(off) if *off == core::BODY_RADIUS) {
+        delta = (delta as f32 * cfg.body_radius_step_multiplier).round() as i32;
+        if delta == 0 && cfg.body_radius_step_multiplier > 0.0 {
+            delta = if direction >= 0 { 1 } else { -1 };
+        }
+    }
     apply_gene_delta(&mut genome.bytes, gene, delta, rng);
 }
 
@@ -160,8 +155,6 @@ fn build_gene_registry(
         core::MINERALS_EFFICIENCY,
         core::SENSOR_MASK,
         core::SENSOR_STRENGTH,
-        core::PURSUE_SLOT_COUNT,
-        core::AVOID_SLOT_COUNT,
     ] {
         genes.push(MutableGene::U8Core(off));
     }
@@ -262,10 +255,13 @@ fn apply_gene_delta(bytes: &mut [u8], gene: &MutableGene, delta: i32, rng: &mut 
             let pursue = bytes.get(HEADER_LEN + core::PURSUE_SLOT_COUNT).copied().unwrap_or(0);
             let avoid = bytes.get(HEADER_LEN + core::AVOID_SLOT_COUNT).copied().unwrap_or(0);
             let is_pursue = matches!(gene, MutableGene::PursueSlotType(_));
-            if let Ok((type_off, _)) =
+            if let Ok((type_off, value_off)) =
                 resolve_slot_offsets(bytes, pursue, avoid, is_pursue, *idx)
             {
-                step_u16_be(bytes, type_off, delta);
+                let ty = u16::from_be_bytes([bytes[type_off], bytes[type_off + 1]]);
+                if ty != AND_TYPE {
+                    reroll_slot_environment_signature(bytes, type_off, value_off, rng);
+                }
             }
         }
         MutableGene::PursueSlotValue(idx) | MutableGene::AvoidSlotValue(idx) => {
@@ -279,6 +275,21 @@ fn apply_gene_delta(bytes: &mut [u8], gene: &MutableGene, delta: i32, rng: &mut 
             }
         }
     }
+}
+
+fn reroll_slot_environment_signature(
+    bytes: &mut [u8],
+    type_off: usize,
+    value_off: usize,
+    rng: &mut impl Rng,
+) {
+    if type_off + 2 > bytes.len() || value_off + 4 > bytes.len() {
+        return;
+    }
+    let ty = EVOLVABLE_ENVIRONMENT_SLOT_TYPES
+        [rng.gen_range(0..EVOLVABLE_ENVIRONMENT_SLOT_TYPES.len())];
+    bytes[type_off..type_off + 2].copy_from_slice(&ty.to_be_bytes());
+    bytes[value_off..value_off + 4].copy_from_slice(&1_u32.to_be_bytes());
 }
 
 fn step_u8(bytes: &mut [u8], idx: usize, delta: i32) {
@@ -387,7 +398,7 @@ mod tests {
     use crate::config::SimConfig;
     use crate::genome::encoding_v2::MIN_GENOME_LEN;
     use crate::genome::error::GenomeError;
-    use crate::genome::GenomeV2;
+    use crate::genome::encoding_v2::HEADER_LEN;
 
     fn v2_config() -> SimConfig {
         SimConfig::load_from_path(
@@ -403,7 +414,38 @@ mod tests {
             p_large_step: 0.0,
             large_step_min: 3,
             large_step_max: 4,
+            body_radius_step_multiplier: 1.0,
         });
+    }
+
+    #[test]
+    fn body_radius_step_multiplier_scales_mutation_delta() {
+        let mut config = v2_config();
+        let parent = GenomeV2::ancestor_from_config(&config).unwrap();
+        let parent_raw = parent.body_radius_raw().unwrap();
+        let mut cfg = config.genetics.mutation_v2.clone().unwrap();
+        cfg.passes_min = 1;
+        cfg.passes_max = 1;
+        cfg.p_large_step = 0.0;
+        cfg.body_radius_step_multiplier = 10.0;
+        let mut genetics = config.genetics.clone();
+        genetics.mutation_v2 = Some(cfg);
+
+        for seed in 0..500_u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let child = mutate_offspring_v2(&parent, &genetics, &mut rng);
+            if child.body_radius_raw().unwrap() == parent_raw {
+                continue;
+            }
+            let delta = child.body_radius_raw().unwrap() as i32 - parent_raw as i32;
+            assert_eq!(
+                delta.abs(),
+                10,
+                "unit step with 10x multiplier should move body raw by 10 (seed {seed}, got {delta})"
+            );
+            return;
+        }
+        panic!("body radius locus was not hit in 500 mutation trials");
     }
 
     #[test]
@@ -425,6 +467,7 @@ mod tests {
             p_large_step: 0.0,
             large_step_min: 3,
             large_step_max: 4,
+            body_radius_step_multiplier: 1.0,
         });
         let parent = GenomeV2::ancestor_from_config(&config).unwrap();
         let mut rng = StdRng::seed_from_u64(7);
@@ -444,6 +487,51 @@ mod tests {
                 "bounded byte diffs per offspring (got {diff_count})"
             );
             let _ = rng.gen::<u32>();
+        }
+    }
+
+    #[test]
+    fn slot_type_mutation_assigns_environment_signature() {
+        let config = v2_config();
+        let genome = GenomeV2::ancestor_from_config(&config).unwrap();
+
+        for seed in 0..200_u64 {
+            let mut child = genome.clone_genome();
+            let mut r = StdRng::seed_from_u64(seed);
+            apply_gene_delta(
+                &mut child.bytes,
+                &MutableGene::PursueSlotType(0),
+                1,
+                &mut r,
+            );
+            let type_off = HEADER_LEN + crate::genome::encoding_v2::CORE_FIXED_LEN;
+            let ty = u16::from_be_bytes([child.bytes[type_off], child.bytes[type_off + 1]]);
+            let value = u32::from_be_bytes([
+                child.bytes[type_off + 2],
+                child.bytes[type_off + 3],
+                child.bytes[type_off + 4],
+                child.bytes[type_off + 5],
+            ]);
+            if EVOLVABLE_ENVIRONMENT_SLOT_TYPES.contains(&ty) && value == 1 {
+                return;
+            }
+        }
+        panic!("slot type mutation should assign corpse, minerals, or sun with value 1");
+    }
+
+    #[test]
+    fn offspring_keeps_one_pursue_and_one_avoid_slot() {
+        let config = v2_config();
+        let parent = GenomeV2::ancestor_from_config(&config).unwrap();
+        assert_eq!(parent.bytes.len(), 39);
+        let mut rng = StdRng::seed_from_u64(9001);
+        for seed in 0..100_u64 {
+            let mut r = StdRng::seed_from_u64(seed);
+            let child = mutate_offspring_v2(&parent, &config.genetics, &mut r);
+            assert_eq!(child.pursue_slot_count().unwrap(), 1);
+            assert_eq!(child.avoid_slot_count().unwrap(), 1);
+            assert_eq!(child.bytes.len(), 39);
+            assert!(child.is_valid(&config.genetics));
         }
     }
 

@@ -36,26 +36,24 @@ pub fn consume_from_pool(uptake_per_interval: f32, available: f32) -> f32 {
     uptake_per_interval.min(available)
 }
 
-/// Living prey: if uptake/sec covers remaining HP, grant max HP as energy; else drain 1:1 for the interval.
+/// Living prey: consumable only when per-second uptake meets or exceeds current HP; then grant max HP as energy.
 pub fn living_prey_gain(
     uptake_per_sec: f32,
     remaining_hp: f32,
     max_hp: f32,
 ) -> (f32, f32) {
-    if remaining_hp <= 0.0 {
+    if remaining_hp <= 0.0 || uptake_per_sec < remaining_hp {
         return (0.0, 0.0);
     }
-    if uptake_per_sec >= remaining_hp {
-        (max_hp.max(0.0), remaining_hp)
-    } else {
-        let drain = uptake_per_sec.min(remaining_hp);
-        (drain, drain)
-    }
+    (max_hp.max(0.0), remaining_hp)
 }
 
-/// Energy pool left on a corpse: parent's max health as consumable units.
-pub fn corpse_energy_from_max_health(core_max_hp: f32) -> f32 {
-    core_max_hp.max(0.0)
+/// Energy pool left on a corpse: fraction of the parent's max health as consumable units.
+pub fn corpse_energy_from_max_health(core_max_hp: f32, fraction_of_max_health: f32) -> f32 {
+    if core_max_hp <= 0.0 || fraction_of_max_health <= 0.0 {
+        return 0.0;
+    }
+    (core_max_hp * fraction_of_max_health).max(0.0)
 }
 
 /// Energy gained from local mineral concentration in one tick.
@@ -245,9 +243,11 @@ mod tests {
     }
 
     #[test]
-    fn corpse_pool_is_max_health() {
-        assert_eq!(corpse_energy_from_max_health(100.0), 100.0);
-        assert_eq!(corpse_energy_from_max_health(-1.0), 0.0);
+    fn corpse_pool_scales_with_max_health_fraction() {
+        assert_eq!(corpse_energy_from_max_health(100.0, 1.0), 100.0);
+        assert_eq!(corpse_energy_from_max_health(100.0, 0.25), 25.0);
+        assert_eq!(corpse_energy_from_max_health(-1.0, 0.25), 0.0);
+        assert_eq!(corpse_energy_from_max_health(100.0, 0.0), 0.0);
     }
 
     #[test]
@@ -265,11 +265,17 @@ mod tests {
     }
 
     #[test]
-    fn gradual_predation_drains_one_to_one_per_second() {
-        let uptake_sec = 10.0;
-        let (gain, drain) = living_prey_gain(uptake_sec, 100.0, 100.0);
-        assert_eq!(gain, uptake_sec);
-        assert_eq!(drain, uptake_sec);
+    fn living_prey_ignored_when_uptake_below_current_hp() {
+        let (gain, drain) = living_prey_gain(10.0, 100.0, 100.0);
+        assert_eq!(gain, 0.0);
+        assert_eq!(drain, 0.0);
+    }
+
+    #[test]
+    fn living_prey_consumed_when_uptake_meets_current_hp() {
+        let (gain, drain) = living_prey_gain(100.0, 100.0, 100.0);
+        assert_eq!(gain, 100.0);
+        assert_eq!(drain, 100.0);
     }
 
     #[test]

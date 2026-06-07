@@ -12,7 +12,8 @@ use crate::sim::spawn::{
     try_prepare_spawn,
 };
 use crate::sim::{
-    apply_failsafe, apply_metabolism_tick_v2, attempt_reproduction_v2, ReproAttemptResult,
+    apply_failsafe, apply_metabolism_tick_v2, attempt_reproduction_v2, failsafe_cull_count,
+    ReproAttemptResult,
 };
 use crate::sim::light::LightField;
 use crate::sim::world::{NextEntityId, SimRng, WorldBounds};
@@ -245,12 +246,32 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
         agents.extend(new_children);
 
         summary.peak_alive = summary.peak_alive.max(agents.len());
-        let _ = apply_failsafe(
-            agents.len(),
-            config.performance.max_entities,
-            config.performance.failsafe_policy,
-            &mut spawn_blocked,
+        let population = agents.len();
+        let performance = &config.performance;
+        let cull = failsafe_cull_count(
+            population,
+            performance.max_entities,
+            performance.failsafe_policy,
+            performance.failsafe_cull_count,
         );
+        if cull > 0 {
+            agents.sort_by(|a, b| {
+                a.energy
+                    .partial_cmp(&b.energy)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+            agents.drain(0..cull);
+            spawn_blocked = false;
+        } else {
+            let _ = apply_failsafe(
+                population,
+                performance.max_entities,
+                performance.failsafe_policy,
+                performance.failsafe_cull_count,
+                &mut spawn_blocked,
+            );
+        }
     }
 
     summary.alive = agents.len();

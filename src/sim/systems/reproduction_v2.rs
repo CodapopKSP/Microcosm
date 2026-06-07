@@ -262,6 +262,7 @@ mod tests {
             p_large_step: 0.0,
             large_step_min: 3,
             large_step_max: 4,
+            body_radius_step_multiplier: 1.0,
         });
 
         let available = 120.0;
@@ -382,6 +383,7 @@ mod tests {
             p_large_step: 0.0,
             large_step_min: 3,
             large_step_max: 4,
+            body_radius_step_multiplier: 1.0,
         });
         let mut repro_rng = StdRng::seed_from_u64(1);
         let mut mutation_rng = StdRng::seed_from_u64(2);

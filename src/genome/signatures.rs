@@ -21,10 +21,18 @@ pub const SIG_MOVEMENT_EFFICIENCY: u16 = 0x000A;
 pub const SIG_PHOTO_EFFICIENCY: u16 = 0x000B;
 pub const SIG_BIOMASS_EFFICIENCY: u16 = 0x000C;
 pub const SIG_MINERALS_EFFICIENCY: u16 = 0x000D;
+/// Environment signatures (`0x02xx`): `value u32` low bit is the desired boolean (`1` = true, `0` = false).
 pub const SIG_DEAD_ORGANISM: u16 = 0x0200;
 pub const SIG_MINERALS: u16 = 0x0201;
 pub const SIG_BRIGHTER_SUNLIGHT: u16 = 0x0202;
 pub const SIG_DIMMER_SUNLIGHT: u16 = 0x0203;
+
+/// Pursue/avoid slot types assignable by [`crate::genome::mutation_v2`] (uniform random on type mutation).
+pub const EVOLVABLE_ENVIRONMENT_SLOT_TYPES: [u16; 3] =
+    [SIG_DEAD_ORGANISM, SIG_MINERALS, SIG_BRIGHTER_SUNLIGHT];
+
+/// Default simple slot appended when pursue/avoid count increases (inactive until a type mutation fires).
+pub const DEFAULT_NEW_SLOT: SignatureAtom = SignatureAtom { ty: 0, value: 0 };
 
 /// One `(type u16, value u32)` atom in a pursue/avoid slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,11 +231,15 @@ pub fn rgb_fuzzy_match(observed: [u8; 3], value: u32, delta: u8) -> bool {
         && byte_fuzzy_match(observed[2], b, delta)
 }
 
-fn light_delta_to_u16(delta: f32) -> u16 {
-    (delta.max(0.0).min(1.0) * 65535.0).round() as u16
+fn env_bool_value(value: u32) -> bool {
+    value & 1 != 0
 }
 
-fn is_chemical_signature(ty: u16) -> bool {
+fn env_bool_match(observed: bool, value: u32) -> bool {
+    observed == env_bool_value(value)
+}
+
+fn is_environment_signature(ty: u16) -> bool {
     matches!(
         ty,
         SIG_DEAD_ORGANISM | SIG_MINERALS | SIG_BRIGHTER_SUNLIGHT | SIG_DIMMER_SUNLIGHT
@@ -244,45 +256,20 @@ pub fn atom_matches(
     if !is_known_signature_type(atom.ty) {
         return false;
     }
-    if is_chemical_signature(atom.ty) {
+    if is_environment_signature(atom.ty) {
+        let _ = fuzzy_delta;
         return match atom.ty {
             SIG_DEAD_ORGANISM => chemical
-                .map(|chem| {
-                    if atom.value == 0 {
-                        chem.dead_organism
-                    } else {
-                        chem.dead_organism && u16_fuzzy_match(0, atom.value as u16, fuzzy_delta)
-                    }
-                })
+                .map(|chem| env_bool_match(chem.dead_organism, atom.value))
                 .unwrap_or(false),
             SIG_MINERALS => chemical
-                .map(|chem| u16_fuzzy_match(chem.minerals_raw, atom.value as u16, fuzzy_delta))
+                .map(|chem| env_bool_match(chem.minerals_raw > 0, atom.value))
                 .unwrap_or(false),
             SIG_BRIGHTER_SUNLIGHT => chemical
-                .map(|chem| {
-                    if chem.light_delta <= 0.0 {
-                        false
-                    } else {
-                        u16_fuzzy_match(
-                            light_delta_to_u16(chem.light_delta),
-                            atom.value as u16,
-                            fuzzy_delta,
-                        )
-                    }
-                })
+                .map(|chem| env_bool_match(chem.light_delta > 0.0, atom.value))
                 .unwrap_or(false),
             SIG_DIMMER_SUNLIGHT => chemical
-                .map(|chem| {
-                    if chem.light_delta >= 0.0 {
-                        false
-                    } else {
-                        u16_fuzzy_match(
-                            light_delta_to_u16(-chem.light_delta),
-                            atom.value as u16,
-                            fuzzy_delta,
-                        )
-                    }
-                })
+                .map(|chem| env_bool_match(chem.light_delta < 0.0, atom.value))
                 .unwrap_or(false),
             _ => false,
         };
@@ -378,6 +365,118 @@ pub fn slot_list_matches(
         .any(|s| slot_matches(s, target, chemical, fuzzy_delta))
 }
 
+/// Parse up to `max` consecutive OR slots; stops early if bytes run out.
+pub fn parse_up_to_n_slots(
+    bytes: &[u8],
+    mut offset: usize,
+    max: u8,
+) -> Result<(Vec<SignatureSlot>, usize), GenomeError> {
+    let mut slots = Vec::with_capacity(max as usize);
+    for _ in 0..max {
+        if offset >= bytes.len() {
+            break;
+        }
+        let (batch, next) = parse_slot_list(bytes, offset, 1)?;
+        slots.extend(batch);
+        offset = next;
+    }
+    Ok((slots, offset))
+}
+
+fn append_slot_bytes(out: &mut Vec<u8>, slot: &SignatureSlot) {
+    match slot {
+        SignatureSlot::Simple(atom) => {
+            out.extend_from_slice(&atom.ty.to_be_bytes());
+            out.extend_from_slice(&atom.value.to_be_bytes());
+        }
+        SignatureSlot::And(atoms) => {
+            out.push((AND_TYPE >> 8) as u8);
+            out.push(AND_TYPE as u8);
+            out.push(atoms.len() as u8);
+            out.push(0);
+            for atom in atoms {
+                out.extend_from_slice(&atom.ty.to_be_bytes());
+                out.extend_from_slice(&atom.value.to_be_bytes());
+            }
+        }
+    }
+}
+
+/// Resize pursue/avoid payload after slot-count genes change (`old_*` = layout before the step).
+pub fn sync_pursue_avoid_payload(
+    bytes: &mut Vec<u8>,
+    old_pursue: u8,
+    old_avoid: u8,
+    genetics: &crate::config::GeneticsConfig,
+) -> Result<(), GenomeError> {
+    use crate::genome::encoding_v2::CORE_FIXED_LEN;
+
+    let core_start = crate::genome::encoding_v2::HEADER_LEN + CORE_FIXED_LEN;
+    if bytes.len() < core_start {
+        bytes.resize(core_start, 0);
+    }
+
+    let pursue_target = bytes[core_start - 2]
+        .min(genetics.max_pursue_slots);
+    let avoid_target = bytes[core_start - 1]
+        .min(genetics.max_avoid_slots);
+    bytes[core_start - 2] = pursue_target;
+    bytes[core_start - 1] = avoid_target;
+
+    let variable = bytes.get(core_start..).unwrap_or(&[]);
+    let (mut pursue, pursue_end) = parse_up_to_n_slots(variable, 0, old_pursue)?;
+    pursue.truncate(pursue_target as usize);
+    while pursue.len() < pursue_target as usize {
+        pursue.push(SignatureSlot::Simple(DEFAULT_NEW_SLOT));
+    }
+
+    let (mut avoid, _) = parse_up_to_n_slots(variable, pursue_end, old_avoid)?;
+    avoid.truncate(avoid_target as usize);
+    while avoid.len() < avoid_target as usize {
+        avoid.push(SignatureSlot::Simple(DEFAULT_NEW_SLOT));
+    }
+
+    bytes.truncate(core_start);
+    for slot in &pursue {
+        append_slot_bytes(bytes, slot);
+    }
+    for slot in &avoid {
+        append_slot_bytes(bytes, slot);
+    }
+
+    if bytes.len() > genetics.max_genome_bytes {
+        return Err(GenomeError::LengthMismatch {
+            expected: genetics.max_genome_bytes,
+            actual: bytes.len(),
+        });
+    }
+    Ok(())
+}
+
+/// Clamp pursue/avoid counts to config limits and resize payload (keeps first N slots).
+pub fn enforce_fixed_slot_layout(
+    bytes: &mut Vec<u8>,
+    genetics: &crate::config::GeneticsConfig,
+) -> Result<(), GenomeError> {
+    use crate::genome::encoding_v2::{core, CORE_FIXED_LEN, HEADER_LEN};
+
+    let core_start = HEADER_LEN + CORE_FIXED_LEN;
+    if bytes.len() < core_start {
+        bytes.resize(core_start, 0);
+    }
+    let old_pursue = bytes
+        .get(HEADER_LEN + core::PURSUE_SLOT_COUNT)
+        .copied()
+        .unwrap_or(0);
+    let old_avoid = bytes
+        .get(HEADER_LEN + core::AVOID_SLOT_COUNT)
+        .copied()
+        .unwrap_or(0);
+    bytes[HEADER_LEN + core::PURSUE_SLOT_COUNT] = genetics.max_pursue_slots;
+    bytes[HEADER_LEN + core::AVOID_SLOT_COUNT] = genetics.max_avoid_slots;
+    sync_pursue_avoid_payload(bytes, old_pursue, old_avoid, genetics)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,11 +492,11 @@ mod tests {
     }
 
     #[test]
-    fn ancestor_has_zero_slot_payload() {
+    fn ancestor_has_fixed_slot_payload() {
         let config = v2_config();
         let genome = GenomeV2::ancestor_from_config(&config).unwrap();
-        assert_eq!(variable_payload_len(&genome).unwrap(), 0);
-        assert_eq!(expected_genome_len(&genome).unwrap(), 27);
+        assert_eq!(variable_payload_len(&genome).unwrap(), 12);
+        assert_eq!(expected_genome_len(&genome).unwrap(), 39);
     }
 
     #[test]
@@ -422,12 +521,11 @@ mod tests {
         let config = v2_config();
         let mut genetics = config.genetics.clone();
         let mut bytes = genetics.parse_ancestor_bytes().unwrap();
-        bytes[V2_HEADER_LEN + v2_core::PURSUE_SLOT_COUNT] = 1;
-        bytes.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0xFF, 0x05]);
-        genetics.core_length = bytes.len();
+        let slot_off = V2_HEADER_LEN + crate::genome::encoding_v2::CORE_FIXED_LEN;
+        bytes[slot_off..slot_off + 6].copy_from_slice(&[0x00, 0x00, 0x00, 0x00, 0xFF, 0x05]);
         let genome = GenomeV2::from_bytes(bytes, &genetics).unwrap();
         let (pursue, avoid) = parse_pursue_avoid_lists(&genome).unwrap();
-        assert_eq!(avoid.len(), 0);
+        assert_eq!(avoid.len(), 1);
         assert_eq!(pursue.len(), 1);
         let target = GenomeV2::ancestor_from_config(&config).unwrap();
         assert!(slot_list_matches(&pursue, Some(&target), None, 1));
@@ -442,6 +540,80 @@ mod tests {
         let config = v2_config();
         let target = GenomeV2::ancestor_from_config(&config).unwrap();
         assert!(!atom_matches(&atom, Some(&target), None, 1));
+    }
+
+    #[test]
+    fn environment_corpse_signature_is_boolean() {
+        let atom = SignatureAtom {
+            ty: SIG_DEAD_ORGANISM,
+            value: 1,
+        };
+        let hit = ChemicalObservation {
+            dead_organism: true,
+            minerals_raw: 0,
+            light_delta: 0.0,
+        };
+        let miss = ChemicalObservation {
+            dead_organism: false,
+            ..hit
+        };
+        assert!(atom_matches(&atom, None, Some(hit), 0));
+        assert!(!atom_matches(&atom, None, Some(miss), 0));
+    }
+
+    #[test]
+    fn environment_minerals_signature_is_boolean() {
+        let atom = SignatureAtom {
+            ty: SIG_MINERALS,
+            value: 1,
+        };
+        let hit = ChemicalObservation {
+            dead_organism: false,
+            minerals_raw: 100,
+            light_delta: 0.0,
+        };
+        let miss = ChemicalObservation {
+            minerals_raw: 0,
+            ..hit
+        };
+        assert!(atom_matches(&atom, None, Some(hit), 0));
+        assert!(!atom_matches(&atom, None, Some(miss), 0));
+    }
+
+    #[test]
+    fn environment_sunlight_signature_is_boolean() {
+        let brighter = SignatureAtom {
+            ty: SIG_BRIGHTER_SUNLIGHT,
+            value: 1,
+        };
+        let up = ChemicalObservation {
+            dead_organism: false,
+            minerals_raw: 0,
+            light_delta: 0.1,
+        };
+        let flat = ChemicalObservation {
+            light_delta: 0.0,
+            ..up
+        };
+        assert!(atom_matches(&brighter, None, Some(up), 0));
+        assert!(!atom_matches(&brighter, None, Some(flat), 0));
+    }
+
+    #[test]
+    fn sync_payload_resizes_when_counts_change() {
+        let config = v2_config();
+        let genetics = config.genetics.clone();
+        let mut genome = GenomeV2::ancestor_from_config(&config).unwrap();
+        genome.bytes[V2_HEADER_LEN + v2_core::PURSUE_SLOT_COUNT] = 2;
+        sync_pursue_avoid_payload(&mut genome.bytes, 1, 1, &genetics).unwrap();
+        genome.bytes[V2_HEADER_LEN + v2_core::PURSUE_SLOT_COUNT] = 1;
+        enforce_fixed_slot_layout(&mut genome.bytes, &genetics).unwrap();
+        assert_eq!(genome.bytes.len(), 39);
+        assert!(GenomeV2::from_bytes(genome.bytes.clone(), &genetics).is_ok());
+        let genome = GenomeV2::from_bytes(genome.bytes, &genetics).unwrap();
+        let (pursue, avoid) = parse_pursue_avoid_lists(&genome).unwrap();
+        assert_eq!(pursue.len(), 1);
+        assert_eq!(avoid.len(), 1);
     }
 
     #[test]

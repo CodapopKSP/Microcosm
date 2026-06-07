@@ -1,7 +1,8 @@
-//! Bevy visual debug overlays (Phase 2H, hazard overlay Phase 4E).
+//! Bevy visual debug overlays (Phase 2H, hazard overlay Phase 4E, vent overlay Phase 5E).
 //!
 //! - **L** — toggle light-field background gradient
 //! - **H** — toggle hazard zone circles
+//! - **V** — toggle thermal vent circles
 //! - **↑ / ↓** — simulation speed (1×, 2×, 4×, 8×, 16×)
 //! - **Click** — select agent (inspector panel + energy bar + light ring)
 //! - **Esc** — clear selection
@@ -16,7 +17,7 @@ mod inspector;
 
 use crate::sim::{
     run_sim_tick_schedule, Agent, Energy, HazardField, LightExposure, LightField, Phenotype,
-    SensePerception, SimConfigResource, SimSpeed, WorldBounds,
+    SensePerception, SimConfigResource, SimSpeed, VentField, WorldBounds,
 };
 
 /// Child mesh behind the agent fill: black outline (1 world unit min, scales with armor stroke).
@@ -28,6 +29,7 @@ pub struct AgentOutline;
 pub struct DebugVisualState {
     pub show_light_gradient: bool,
     pub show_hazard_overlay: bool,
+    pub show_vent_overlay: bool,
     pub show_sensor_rays: bool,
     pub selected: Option<Entity>,
 }
@@ -37,6 +39,7 @@ impl Default for DebugVisualState {
         Self {
             show_light_gradient: true,
             show_hazard_overlay: true,
+            show_vent_overlay: true,
             show_sensor_rays: true,
             selected: None,
         }
@@ -48,6 +51,9 @@ struct LightGradientBand;
 
 #[derive(Component)]
 struct HazardOverlayDisc;
+
+#[derive(Component)]
+struct VentOverlayDisc;
 
 #[derive(Component)]
 struct DebugSelectionRing;
@@ -83,7 +89,6 @@ impl Plugin for VisualDebugPlugin {
                 Startup,
                 (
                     spawn_light_gradient,
-                    spawn_hazard_overlays,
                     init_sensor_ray_assets,
                     spawn_selection_overlays,
                 ),
@@ -95,7 +100,10 @@ impl Plugin for VisualDebugPlugin {
                 (
                     select_agent_on_click,
                     sync_light_gradient_visibility,
+                    sync_hazard_overlays.after(run_sim_tick_schedule),
                     sync_hazard_overlay_visibility,
+                    sync_vent_overlays.after(run_sim_tick_schedule),
+                    sync_vent_overlay_visibility,
                     update_sensor_ray_overlays,
                     update_selection_overlay,
                     hud::draw_sim_hud,
@@ -128,6 +136,8 @@ const OVERLAY_Z: f32 = 5.0;
 const GRADIENT_Z: f32 = -10.0;
 const HAZARD_Z: f32 = -9.0;
 const HAZARD_FILL: Color = Color::srgba(0.92, 0.18, 0.12, 0.22);
+const VENT_Z: f32 = -8.5;
+const VENT_FILL: Color = Color::srgba(0.12, 0.78, 0.88, 0.28);
 
 fn init_sensor_ray_assets(
     mut commands: Commands,
@@ -173,13 +183,22 @@ fn spawn_light_gradient(
     }
 }
 
-fn spawn_hazard_overlays(
+fn sync_hazard_overlays(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     hazards: Res<HazardField>,
     state: Res<DebugVisualState>,
+    existing: Query<Entity, With<HazardOverlayDisc>>,
 ) {
+    if !hazards.is_changed() && !state.is_changed() {
+        return;
+    }
+
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+
     let visibility = if state.show_hazard_overlay {
         Visibility::Visible
     } else {
@@ -193,6 +212,40 @@ fn spawn_hazard_overlays(
             Mesh2d(meshes.add(Circle::new(zone.radius))),
             MeshMaterial2d(materials.add(ColorMaterial::from(HAZARD_FILL))),
             Transform::from_xyz(center.x, center.y, HAZARD_Z),
+            visibility,
+        ));
+    }
+}
+
+fn sync_vent_overlays(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    vents: Res<VentField>,
+    state: Res<DebugVisualState>,
+    existing: Query<Entity, With<VentOverlayDisc>>,
+) {
+    if !vents.is_changed() && !state.is_changed() {
+        return;
+    }
+
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+
+    let visibility = if state.show_vent_overlay {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+
+    for zone in vents.zones() {
+        let center = Vec2::from_array(zone.center);
+        commands.spawn((
+            VentOverlayDisc,
+            Mesh2d(meshes.add(Circle::new(zone.radius))),
+            MeshMaterial2d(materials.add(ColorMaterial::from(VENT_FILL))),
+            Transform::from_xyz(center.x, center.y, VENT_Z),
             visibility,
         ));
     }
@@ -237,6 +290,9 @@ fn debug_keyboard_input(
     if keyboard.just_pressed(KeyCode::KeyH) {
         state.show_hazard_overlay = !state.show_hazard_overlay;
     }
+    if keyboard.just_pressed(KeyCode::KeyV) {
+        state.show_vent_overlay = !state.show_vent_overlay;
+    }
     if keyboard.just_pressed(KeyCode::KeyS) {
         state.show_sensor_rays = !state.show_sensor_rays;
     }
@@ -278,6 +334,23 @@ fn sync_hazard_overlay_visibility(
         return;
     }
     let visibility = if state.show_hazard_overlay {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    for mut vis in &mut discs {
+        *vis = visibility;
+    }
+}
+
+fn sync_vent_overlay_visibility(
+    state: Res<DebugVisualState>,
+    mut discs: Query<&mut Visibility, With<VentOverlayDisc>>,
+) {
+    if !state.is_changed() {
+        return;
+    }
+    let visibility = if state.show_vent_overlay {
         Visibility::Visible
     } else {
         Visibility::Hidden
@@ -554,12 +627,20 @@ mod tests {
     }
 
     #[test]
-    fn default_config_has_hazard_zones_for_overlay() {
+    fn default_config_has_dynamic_hazards_enabled() {
         let config = SimConfig::load_default().unwrap();
-        let field = crate::sim::HazardField::from_environment(&config.environment);
         assert!(
-            !field.zones().is_empty(),
-            "default.toml should define at least one hazard for debug overlay"
+            config.environment.dynamic_hazards.enabled,
+            "default.toml should enable dynamic hazards near the map top"
+        );
+    }
+
+    #[test]
+    fn default_config_has_bottom_vents() {
+        let config = SimConfig::load_default().unwrap();
+        assert!(
+            !config.environment.vents.is_empty(),
+            "default.toml should define thermal vents for the overlay"
         );
     }
 

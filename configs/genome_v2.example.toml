@@ -23,13 +23,13 @@ failsafe_policy = "stop_spawns"
 
 [genetics]
 genome_version = 2
-# EVO2 header (4) + 24-byte fixed core; no pursue/avoid slots in ancestor
-core_length = 27
+# EVO2 header (4) + 24-byte fixed core + 1 pursue + 1 avoid slot
+core_length = 39
 max_genome_bytes = 512
-max_pursue_slots = 8
-max_avoid_slots = 8
-# 45564f32 + 00FF05 000A 0000 000080 FF0F 00000000 FF0000 0000 0000 (27 B)
-ancestor_hex = "45564f3200ff05000a0000000080ff0f00000000ff000000000000"
+max_pursue_slots = 1
+max_avoid_slots = 1
+# 45564f32 + 00FF05 000A … 0000 0101 + 12 B slot payload (39 B)
+ancestor_hex = "45564f3200ff05000a0000000080ff0f00000000ff000000000101000000000000000000000000"
 [genetics.mutation_v2]
 passes_min = 0
 passes_max = 4

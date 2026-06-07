@@ -37,9 +37,14 @@ impl MineralField {
         Self {
             vents_enabled,
             vent_zones: vents.zones().to_vec(),
-            hazard_zones: hazards.zones().to_vec(),
+            hazard_zones: hazards.zones(),
             vent_flux_scale: feeding.minerals_vent_flux_scale,
         }
+    }
+
+    /// Refresh hazard chem-flux zones after ephemeral hazards change.
+    pub fn sync_hazard_zones(&mut self, hazards: &HazardField) {
+        self.hazard_zones = hazards.zones();
     }
 
     pub fn is_enabled(&self) -> bool {

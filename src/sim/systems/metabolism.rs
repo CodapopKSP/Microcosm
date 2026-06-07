@@ -7,7 +7,6 @@ use crate::config::EconomyConfig;
 use super::metabolism_v2::apply_metabolism_tick_v2;
 
 use super::super::components::{Age, Energy, Health, LightExposure, Phenotype, VentExposure};
-use super::super::interval::{logic_active_this_tick, logic_elapsed_ticks};
 use super::super::world::{SimConfigResource, SimTick};
 
 /// Logarithmic age multiplier on base metabolism (1.0 at birth → cap at old age).
@@ -56,11 +55,7 @@ pub fn metabolism_and_gains(
         &mut Health,
     )>,
 ) {
-    let run = &config.0.run;
-    if !logic_active_this_tick(tick.tick, run) {
-        return;
-    }
-    let steps = logic_elapsed_ticks(run);
+    let _ = tick;
     let environment = &config.0.environment;
     let economy = &config.0.economy;
 
@@ -74,7 +69,7 @@ pub fn metabolism_and_gains(
             environment,
             economy,
             &config.0,
-            steps,
+            1,
         );
     }
 }

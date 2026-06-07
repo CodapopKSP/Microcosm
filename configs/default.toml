@@ -4,7 +4,7 @@
 width = 1000.0
 height = 1500.0
 boundary = "bounce"
-initial_population = 1
+initial_population = 80
 default_agent_radius = 12.0
 min_speed = 10.0
 max_speed = 255.0
@@ -16,22 +16,26 @@ gravity_speed = 10.0
 
 [performance]
 max_entities = 5000
-failsafe_policy = "stop_spawns"
+failsafe_policy = "despawn_lowest_energy"
+failsafe_cull_count = 3000
+corpse_max = 1000
+corpse_cull_count = 500
 
 [genetics]
 genome_version = 2
-core_length = 27
+core_length = 39
 max_genome_bytes = 512
-max_pursue_slots = 8
-max_avoid_slots = 8
-# EVO2 + 24-byte sessile photo ancestor (docs/Genome_Definition.md)
-ancestor_hex = "45564f3200ff0502ff0000000080ff0f00000000f00f0000000000"
+max_pursue_slots = 1
+max_avoid_slots = 1
+# EVO2 + 24-byte core + 1 pursue + 1 avoid slot (6 B each); I = 01 01
+ancestor_hex = "45564f3200ff0502ff0000000080ff8000000000f00f0000000101000000000000000000000000"
 [genetics.mutation_v2]
-passes_min = 2
+passes_min = 4
 passes_max = 8
 p_large_step = 0.50
-large_step_min = 3
-large_step_max = 4
+large_step_min = 5
+large_step_max = 10
+body_radius_step_multiplier = 10.0
 
 [genetics.decode_v2]
 nibble_levels = 16
@@ -76,7 +80,7 @@ metabolism_floor = 0.001
 spawn_energy = 400.0
 flat_energy_grant_per_tick = 0.0
 core_max_hp = 100.0
-repro_cooldown_ticks = 192
+repro_cooldown_ticks = 500
 repro_safety_margin = 0.25
 p_death_on_repro_base = 0.12
 p_damage_on_repro_base = 0.35
@@ -85,59 +89,66 @@ repro_payment_order = "energy_first"
 repair_energy_per_hp = 1.0
 repair_hp_per_tick_at_rate_1 = 50.0
 repair_policy = "core_first"
-move_energy_units_per_radius = 0.01
+move_energy_units_per_radius = 5.0
 age_metabolism_cap_multiplier = 3.0
 age_metabolism_cap_ticks = 18000.0
 age_metabolism_ref_ticks = 3600.0
 
 [environment]
 energy_model = "local"
-solar_constant = 1.5
+solar_constant = 0.5
 light_mode = "gradient_y"
 gradient_axis = "y"
 gradient_min = 0.0
 gradient_max = 1.0
-# World Y where light = gradient_min (default: bottom edge at -height/2). Example: -450.0
-# gradient_min_y = -150.0
+# World Y where light = gradient_min. Omitted ⇒ world edge opposite gradient_bright_at (-height/2 here).
+gradient_min_y = 0.0
 gradient_bright_at = "top"
 minerals_enabled = true
 corpses_enabled = true
 
+[environment.dynamic_hazards]
+enabled = true
+# Upper band near bright top (world Y; map top ≈ +750 for height 1500).
+band_y_min = 0.0
+band_y_max = 700.0
+radius = 30.0
+damage_per_tick = 0.025
+chem_flux = 0.0
+max_active = 5
+spawn_interval_ticks = 1000
+lifetime_min_ticks = 4000
+lifetime_max_ticks = 6000
+
+# Chemosynthetic vents in the dark lower band (world Y; map bottom ≈ -750 for height 1500).
+[[environment.vents]]
+center = [-300.0, -600.0]
+radius = 120.0
+vent_flux = 0.1
+
+[[environment.vents]]
+center = [0.0, -650.0]
+radius = 150.0
+vent_flux = 0.1
+
+[[environment.vents]]
+center = [300.0, -600.0]
+radius = 120.0
+vent_flux = 0.1
+
 [environment.feeding]
-minerals_vent_flux_scale = 25.0
-minerals_uptake_per_tick = 5.0
+minerals_vent_flux_scale = 1.0
+minerals_uptake_per_tick = 10.0
 biomass_uptake_per_radius_per_sec = 50.0
 biomass_feeding_interval_ticks = 60
 biomass_feeding_phase_ticks = 30
 corpse_ttl_ticks = 3600
+corpse_energy_fraction_of_max_health = 0.25
 soup_enabled = false
 soup_regen_per_tick = 0.0005
 soup_max_concentration = 1.0
 soup_initial_concentration = 0.0
 soup_uptake_rate = 0.04
-
-[[environment.hazards]]
-center = [300.0, -200.0]
-radius = 200.0
-damage_per_tick = 0.0
-chem_flux = 1.0
-
-[[environment.hazards]]
-center = [200.0, -650.0]
-radius = 200.0
-damage_per_tick = 0.0
-chem_flux = 1.0
-
-[[environment.hazards]]
-center = [-200.0, -650.0]
-radius = 200.0
-damage_per_tick = 0.0
-chem_flux = 1.0
-
-[[environment.vents]]
-center = [0.0, -450.0]
-radius = 150.0
-vent_flux = 0.032
 
 [run]
 master_seed = 42

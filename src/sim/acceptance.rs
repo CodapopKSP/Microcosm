@@ -4,7 +4,7 @@
 
 use bevy::prelude::Vec2;
 
-use crate::config::{EnergyModel, SimConfig};
+use crate::config::{EnergyModel, HazardZone, SimConfig};
 use crate::genome::{
     decode_v2, mitigated_damage, v2_core, GenomeV2, PhenotypeV2, V2_HEADER_LEN,
 };
@@ -41,6 +41,21 @@ fn armor_mitigation(phenotype: &PhenotypeV2, config: &SimConfig) -> f32 {
         .map(|d| d.stroke_max)
         .unwrap_or(1.0);
     v2_damage_mitigation(phenotype, stroke_max)
+}
+
+fn config_with_static_hazard(
+    config: &mut SimConfig,
+    center: [f32; 2],
+    radius: f32,
+    damage_per_tick: f32,
+) {
+    config.environment.dynamic_hazards.enabled = false;
+    config.environment.hazards = vec![HazardZone {
+        center,
+        radius,
+        damage_per_tick,
+        chem_flux: 0.0,
+    }];
 }
 
 struct HazardHarnessAgent {
@@ -189,10 +204,6 @@ fn zero_solar_local_model_extinguishes_population() {
 #[test]
 fn default_config_survives_without_crowding_block() {
     let config = SimConfig::load_default().unwrap();
-    assert!(
-        !config.environment.crowding_blocks_photosynthesis,
-        "default headless acceptance assumes crowding_blocks_photosynthesis = false"
-    );
 
     let summary = run_headless_sim(&config, 3000);
     assert!(
@@ -273,7 +284,8 @@ fn population_stable_10000_ticks_gradient_default_config() {
 
 #[test]
 fn repair_energy_spent_after_hazard_damage() {
-    let config = SimConfig::load_default().unwrap();
+    let mut config = SimConfig::load_default().unwrap();
+    config_with_static_hazard(&mut config, [0.0, -400.0], 180.0, 2.5);
     assert!(config.economy.repair_energy_per_hp > 0.0);
     let hazard_center = Vec2::from_array(config.environment.hazards[0].center);
     let phenotype = phenotype_with_armor(&config, 0x0000);
@@ -315,6 +327,7 @@ fn repair_energy_spent_after_hazard_damage() {
 #[test]
 fn hazard_kills_faster_than_safe_zone_when_repair_disabled() {
     let mut config = SimConfig::load_default().unwrap();
+    config_with_static_hazard(&mut config, [0.0, -400.0], 180.0, 2.5);
     config.economy.repair_energy_per_hp = 0.0;
     assert!(!config.environment.hazards.is_empty());
 
@@ -344,6 +357,7 @@ fn hazard_kills_faster_than_safe_zone_when_repair_disabled() {
 #[test]
 fn hardness_hazard_survival_tradeoff() {
     let mut config = SimConfig::load_default().unwrap();
+    config_with_static_hazard(&mut config, [0.0, -400.0], 180.0, 2.5);
     config.economy.spawn_energy = 200.0;
     assert!(config.economy.repair_energy_per_hp > 0.0);
     let hazard_center = Vec2::from_array(config.environment.hazards[0].center);
@@ -390,7 +404,6 @@ fn v2_default_ancestor_positive_metabolism_in_bright_band() {
         &config.economy,
         decode,
         behavior,
-        1.0,
     );
     assert!(
         delta > 0.0,

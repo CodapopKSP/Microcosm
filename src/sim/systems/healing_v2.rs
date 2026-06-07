@@ -9,9 +9,8 @@ use super::healing::{
     apply_hp_to_slot, collect_damaged_slots, pick_slot_index, repair_energy_cost,
 };
 use super::super::components::{Energy, Health, Phenotype};
-use super::super::interval::{logic_active_this_tick, logic_elapsed_ticks};
 use super::super::metrics::RepairStats;
-use super::super::world::{SimConfigResource, SimTick};
+use super::super::world::{SimConfigResource, SimTick, SIM_DT};
 
 /// Max HP restorable this tick from decoded heal rate (per-second → `dt`).
 pub fn heal_hp_cap_per_tick(heal_hp_per_sec: f32, dt: f32) -> f32 {
@@ -92,13 +91,10 @@ pub fn healing_v2(
     mut repair_stats: ResMut<RepairStats>,
     mut query: Query<(Entity, &Phenotype, &mut Health, &mut Energy)>,
 ) {
-    let run = &config.0.run;
-    if !logic_active_this_tick(tick.tick, run) {
-        return;
-    }
+    let _ = tick;
     let economy = &config.0.economy;
     let policy = economy.repair_policy;
-    let dt = super::super::world::SIM_DT * logic_elapsed_ticks(run) as f32;
+    let dt = SIM_DT;
 
     for (entity, phenotype, mut health, mut energy) in &mut query {
         let phenotype_v2 = &phenotype.0;
