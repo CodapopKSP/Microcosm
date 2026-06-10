@@ -7,6 +7,7 @@ use crate::config::{BoundaryMode, EconomyConfig};
 use crate::genome::{wants_to_move_this_tick, PhenotypeV2};
 
 use super::movement::{apply_world_bounds, clamp_velocity_to_max_speed, MOVE_SPEED_EPS};
+use super::super::structures::WorldStructures;
 use super::super::behavior::{
     apply_avoid_distance_traveled, turn_toward, BehaviorMode, BehaviorState,
 };
@@ -66,6 +67,7 @@ pub fn apply_movement_tick_v2(
     economy: &EconomyConfig,
     radius: f32,
     bounds: &WorldBounds,
+    structures: &WorldStructures,
     boundary: BoundaryMode,
     dt: f32,
     attempt_move: bool,
@@ -100,6 +102,7 @@ pub fn apply_movement_tick_v2(
 
     *pos += delta;
     apply_world_bounds(pos, vel, radius, bounds, boundary);
+    structures.resolve_circle_collisions(pos, vel, radius);
     heading.set_from_velocity(*vel);
     true
 }
@@ -109,6 +112,7 @@ pub fn behavior_movement_v2(
     tick: Res<SimTick>,
     config: Res<SimConfigResource>,
     bounds: Res<WorldBounds>,
+    structures: Res<WorldStructures>,
     sim_rng: Res<SimRng>,
     mut query: Query<(
         &mut Transform,
@@ -169,6 +173,7 @@ pub fn behavior_movement_v2(
             economy,
             agent.radius,
             &bounds,
+            &structures,
             boundary,
             dt,
             attempt_move,
@@ -219,6 +224,7 @@ mod tests {
         let mut vel = Vec2::new(100.0, 0.0);
         let mut energy = Energy::new_v2(100.0, 100.0);
         let bounds = WorldBounds::from_world_size(200.0, 200.0);
+        let structures = WorldStructures::default();
         let config = v2_config();
         apply_movement_tick_v2(
             &mut pos,
@@ -229,6 +235,7 @@ mod tests {
             &config.economy,
             p.body_radius,
             &bounds,
+            &structures,
             BoundaryMode::Bounce,
             1.0 / 60.0,
             true,
@@ -253,6 +260,7 @@ mod tests {
         let mut pos = Vec2::ZERO;
         let mut energy = Energy::new_v2(10_000.0, 10_000.0);
         let bounds = WorldBounds::from_world_size(500.0, 500.0);
+        let structures = WorldStructures::default();
         let start = energy.internal_energy;
 
         apply_movement_tick_v2(
@@ -264,6 +272,7 @@ mod tests {
             &config.economy,
             p.body_radius,
             &bounds,
+            &structures,
             BoundaryMode::Bounce,
             dt,
             true,

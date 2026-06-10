@@ -196,7 +196,10 @@ pub fn draw_agent_inspector(
             if energy.max_internal_energy.is_finite() {
                 vitality.push((
                     "Repro at",
-                    format!("{:.2}", phenotype.repro_threshold_energy()),
+                    format!(
+                        "{:.2}",
+                        crate::sim::repro_energy_gate(&phenotype.0)
+                    ),
                 ));
             }
             if health.has_part_hp() {

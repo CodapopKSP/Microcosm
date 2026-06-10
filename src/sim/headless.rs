@@ -8,14 +8,18 @@ use crate::config::SimConfig;
 use crate::genome::{GenomeV2, PhenotypeV2};
 use crate::sim::components::Energy;
 use crate::sim::spawn::{
-    build_initial_spawn_params, build_offspring_spawn_params, place_near_parent, randomize_placement,
-    try_prepare_spawn,
+    build_initial_spawn_params, build_offspring_spawn_params, placement_near_parent,
+    randomize_placement, try_prepare_spawn,
 };
 use crate::sim::{
     apply_failsafe, apply_metabolism_tick_v2, attempt_reproduction_v2, failsafe_cull_count,
-    ReproAttemptResult,
+    meets_repro_energy_threshold, position_overlaps_any, separate_overlapping_circles,
+    AgentCircle, ReproAttemptResult,
 };
+use crate::sim::interval::interval_active_this_tick;
+use crate::genome::{mutate_offspring_v2, phenotype_max_speed};
 use crate::sim::light::LightField;
+use crate::sim::structures::WorldStructures;
 use crate::sim::world::{NextEntityId, SimRng, WorldBounds};
 
 /// Summary of a headless run (metabolism → reproduction → energy death).
@@ -70,6 +74,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
 
     let ancestor = GenomeV2::ancestor_from_config(config).unwrap();
     let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+    let structures = WorldStructures::from_config(&config.world.structures);
     let light_field = LightField::from_environment(&config.environment, &bounds);
     let mut sim_rng = SimRng::from_config(config);
     let mut next_id = NextEntityId::new(1);
@@ -83,7 +88,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
         };
         let id = next_id.next();
         let mut params = build_initial_spawn_params(genome, phenotype, config, id, 0);
-        randomize_placement(&mut params, spawn_rng, &bounds, &config.world);
+        randomize_placement(&mut params, spawn_rng, &bounds, &structures, &config.world);
 
         let p = &params.life.phenotype.0;
         agents.push(SimAgent {
@@ -114,8 +119,41 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
     let mut spawn_blocked = false;
 
     for tick in 0..ticks {
+        if config.world.physics.crowding_enabled
+            && interval_active_this_tick(
+                tick,
+                config.world.physics.crowding_interval_ticks,
+                config.world.physics.crowding_interval_phase_ticks,
+            )
+        {
+            let mut circles: Vec<AgentCircle> = agents
+                .iter()
+                .map(|a| AgentCircle {
+                    id: a.id,
+                    pos: a.position,
+                    radius: a.phenotype.body_radius,
+                })
+                .collect();
+            circles.sort_by_key(|c| c.id);
+            separate_overlapping_circles(
+                &mut circles,
+                &bounds,
+                config.world.boundary,
+                4,
+            );
+            for agent in agents.iter_mut() {
+                if let Some(circle) = circles.iter().find(|c| c.id == agent.id) {
+                    agent.position = circle.pos;
+                }
+            }
+        }
+
         for agent in agents.iter_mut() {
-            let light = light_field.sample(agent.position);
+            let light = light_field.sample_with_structures(
+                agent.position,
+                &config.environment,
+                &structures,
+            );
             let mut energy = Energy::new_v2(agent.energy, agent.max_energy);
             let mut health = crate::sim::components::Health {
                 core_hp: agent.core_hp,
@@ -139,6 +177,16 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
 
         agents.sort_by_key(|a| a.id);
         let mut new_children: Vec<SimAgent> = Vec::new();
+        let crowding_enabled = config.world.physics.crowding_enabled;
+        let occupied: Vec<AgentCircle> = agents
+            .iter()
+            .map(|a| AgentCircle {
+                id: a.id,
+                pos: a.position,
+                radius: a.phenotype.body_radius,
+            })
+            .collect();
+        let mut occupied = occupied;
 
         for agent in &mut agents {
             if agent.pending_fatal {
@@ -153,17 +201,52 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
             if spawn_blocked {
                 continue;
             }
-            let threshold = agent.phenotype.max_energy * agent.phenotype.repro_threshold_frac;
-            if agent.energy < threshold {
+            if !meets_repro_energy_threshold(agent.energy, &agent.phenotype) {
                 continue;
             }
 
             let parent_pos = agent.position;
             let parent_radius = agent.phenotype.body_radius;
 
-            let mut repro_rng = sim_rng.stream_repro_risk(agent.id, tick);
             let mut mutation_rng =
                 sim_rng.stream_mutation(agent.id, agent.generation.saturating_add(1), tick);
+            let child_genome = mutate_offspring_v2(&agent.genome, &config.genetics, &mut mutation_rng);
+            let Some((child_genome, child_phenotype)) = try_prepare_spawn(child_genome, config) else {
+                agent.repro_cooldown = config.economy.repro_cooldown_ticks;
+                summary.stillborns += 1;
+                continue;
+            };
+            let child_phenotype_v2 = &child_phenotype;
+
+            let mut placement_rng = sim_rng.stream_placement(agent.id, tick);
+            let (placement, velocity, heading) = placement_near_parent(
+                parent_pos,
+                parent_radius,
+                child_phenotype_v2.body_radius,
+                phenotype_max_speed(child_phenotype_v2),
+                config.world.min_speed,
+                &mut placement_rng,
+                &bounds,
+                &structures,
+            );
+            let _ = (velocity, heading);
+
+            if structures.overlaps_circle(placement, child_phenotype_v2.body_radius) {
+                continue;
+            }
+
+            if crowding_enabled
+                && position_overlaps_any(
+                    placement,
+                    child_phenotype_v2.body_radius,
+                    &occupied,
+                    Some(agent.id),
+                )
+            {
+                continue;
+            }
+
+            let mut repro_rng = sim_rng.stream_repro_risk(agent.id, tick);
             let mut energy = Energy::new_v2(agent.energy, agent.max_energy);
             let mut health = crate::sim::components::Health {
                 core_hp: agent.core_hp,
@@ -179,6 +262,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                 config,
                 &mut repro_rng,
                 &mut mutation_rng,
+                Some((child_genome.clone_genome(), child_phenotype.clone())),
             ) {
                 ReproAttemptResult::Skipped => {}
                 ReproAttemptResult::ParentFatal => {
@@ -200,7 +284,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                     summary.births += 1;
                     summary.child_genome_fold ^= fold_genome_bytes(&child_genome);
 
-                    let mut child_params = build_offspring_spawn_params(
+                    let child_params = build_offspring_spawn_params(
                         child_genome.clone_genome(),
                         child_phenotype.clone(),
                         config,
@@ -210,13 +294,11 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                         child_start_energy,
                         child_start_hp,
                     );
-                    place_near_parent(
-                        &mut child_params,
-                        parent_pos,
-                        parent_radius,
-                        sim_rng.spawn_rng(),
-                        &bounds,
-                    );
+                    occupied.push(AgentCircle {
+                        id: child_id,
+                        pos: placement,
+                        radius: child_phenotype_v2.body_radius,
+                    });
 
                     new_children.push(SimAgent {
                         id: child_id,
@@ -227,7 +309,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                         core_hp: child_params.life.health.core_hp,
                         core_max_hp: child_params.life.health.core_max_hp,
                         max_energy: child_params.life.phenotype.0.max_energy,
-                        position: child_params.position,
+                        position: placement,
                         repro_cooldown: 0,
                         pending_fatal: false,
                         age_ticks: 0,

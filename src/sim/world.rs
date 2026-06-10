@@ -19,6 +19,7 @@ const STREAM_REPRO_RISK: u64 = 0x5250_524B;
 const STREAM_MOVEMENT: u64 = 0x4D4F_5645;
 const STREAM_PHYSICS: u64 = 0x5048_5953;
 const STREAM_HAZARDS: u64 = 0x4841_5A44;
+const STREAM_PLACEMENT: u64 = 0x504C_434D;
 
 /// World half-extents in sim units (1 unit = 1 pixel in visual mode).
 #[derive(Resource, Clone, Copy)]
@@ -141,6 +142,17 @@ impl SimRng {
             mix_seed(
                 master,
                 STREAM_PHYSICS ^ entity_id ^ tick.wrapping_mul(0x517C_C1B7_2722_0A95),
+            )
+        });
+        seed_from_opt_or_thread(seed)
+    }
+
+    /// Per-reproduction child placement rolls (offset angle, gap, initial speed).
+    pub fn stream_placement(&self, entity_id: u64, tick: u64) -> StdRng {
+        let seed = self.master_seed.map(|master| {
+            mix_seed(
+                master,
+                STREAM_PLACEMENT ^ entity_id ^ tick.wrapping_mul(0x27D4_EB2F_1656_67C5),
             )
         });
         seed_from_opt_or_thread(seed)

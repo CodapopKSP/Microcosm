@@ -1,14 +1,15 @@
 //! Asexual reproduction, mutation, and repro-risk rolls (v2).
 
 use bevy::prelude::*;
-use rand::Rng;
 
-use crate::config::SimConfig;
-use crate::genome::AnyGenome;
+use crate::genome::{mutate_offspring_v2, phenotype_max_speed, AnyGenome};
 
-use super::reproduction_v2::{attempt_reproduction_v2, repro_threshold_energy};
+use super::crowding::{position_overlaps_any, AgentCircle};
+use super::reproduction_v2::{
+    attempt_reproduction_v2, meets_repro_energy_threshold, repro_threshold_energy,
+};
 use crate::sim::spawn::{
-    build_offspring_spawn_params, place_near_parent, spawn_agent_entity, try_prepare_spawn,
+    build_offspring_spawn_params, placement_near_parent, spawn_agent_entity, try_prepare_spawn,
 };
 
 use super::super::components::{
@@ -17,6 +18,7 @@ use super::super::components::{
 use super::super::spawn::SpawnParams;
 use super::super::interval::{logic_active_this_tick, logic_elapsed_ticks};
 use super::super::metrics::MetricsPeriodCounters;
+use super::super::structures::WorldStructures;
 use super::super::world::{NextEntityId, SimConfigResource, SimRng, SimTick, SpawnBlocked, WorldBounds};
 
 /// Parent death probability on reproduce.
@@ -73,10 +75,11 @@ pub fn reproduction(
     config: Res<SimConfigResource>,
     tick: Res<SimTick>,
     bounds: Res<WorldBounds>,
+    structures: Res<WorldStructures>,
     spawn_blocked: Res<SpawnBlocked>,
     mut counters: ResMut<MetricsPeriodCounters>,
     mut next_id: ResMut<NextEntityId>,
-    mut sim_rng: ResMut<SimRng>,
+    sim_rng: Res<SimRng>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<super::super::agent_material::AgentColorMaterial>>,
     mut query: Query<(
@@ -95,7 +98,17 @@ pub fn reproduction(
         return;
     }
     let logic_steps = logic_elapsed_ticks(&sim_config.run);
-    let mut children_to_spawn: Vec<(Vec2, f32, SpawnParams)> = Vec::new();
+    let mut children_to_spawn: Vec<SpawnParams> = Vec::new();
+    let crowding_enabled = sim_config.world.physics.crowding_enabled;
+
+    let mut occupied: Vec<AgentCircle> = query
+        .iter()
+        .map(|(_, transform, _, phenotype, _, _, _, lineage)| AgentCircle {
+            id: lineage.id,
+            pos: transform.translation.truncate(),
+            radius: phenotype.body_radius(),
+        })
+        .collect();
 
     // Cooldowns tick for everyone; only threshold-ready agents enter the repro pass.
     let mut candidates: Vec<(Entity, u64)> = Vec::new();
@@ -107,8 +120,7 @@ pub fn reproduction(
         if cooldowns.repro_ticks_remaining > 0 || spawn_blocked.0 {
             continue;
         }
-        let threshold = repro_threshold_energy(&phenotype.0);
-        if energy.internal_energy >= threshold {
+        if meets_repro_energy_threshold(energy.internal_energy, &phenotype.0) {
             candidates.push((entity, lineage.id));
         }
     }
@@ -122,11 +134,47 @@ pub fn reproduction(
         };
         let phenotype_v2 = &phenotype.0;
         let genome_v2 = &genome.0;
+        let parent_pos = transform.translation.truncate();
+        let parent_radius = phenotype.body_radius();
 
-        let mut repro_rng = sim_rng.stream_repro_risk(lineage.id, tick.tick);
         let mut mutation_rng =
             sim_rng.stream_mutation(lineage.id, lineage.generation.saturating_add(1), tick.tick);
+        let child_genome = mutate_offspring_v2(genome_v2, &sim_config.genetics, &mut mutation_rng);
+        let Some((child_genome, child_phenotype)) = try_prepare_spawn(child_genome, sim_config)
+        else {
+            cooldowns.repro_ticks_remaining = sim_config.economy.repro_cooldown_ticks;
+            continue;
+        };
+        let child_phenotype_v2 = &child_phenotype;
 
+        let mut placement_rng = sim_rng.stream_placement(lineage.id, tick.tick);
+        let (placement, velocity, heading) = placement_near_parent(
+            parent_pos,
+            parent_radius,
+            child_phenotype_v2.body_radius,
+            phenotype_max_speed(child_phenotype_v2),
+            sim_config.world.min_speed,
+            &mut placement_rng,
+            &bounds,
+            &structures,
+        );
+
+        if structures.overlaps_circle(placement, child_phenotype_v2.body_radius) {
+            continue;
+        }
+
+        if crowding_enabled
+            && position_overlaps_any(
+                placement,
+                child_phenotype_v2.body_radius,
+                &occupied,
+                Some(lineage.id),
+            )
+        {
+            continue;
+        }
+
+        let mut repro_rng = sim_rng.stream_repro_risk(lineage.id, tick.tick);
         let result = attempt_reproduction_v2(
             &mut energy,
             &mut health,
@@ -135,6 +183,7 @@ pub fn reproduction(
             sim_config,
             &mut repro_rng,
             &mut mutation_rng,
+            Some((child_genome.clone_genome(), child_phenotype.clone())),
         );
 
         match result {
@@ -154,8 +203,7 @@ pub fn reproduction(
                 child_start_hp,
             } => {
                 let child_id = next_id.next();
-                let parent_radius = phenotype.body_radius();
-                let params = build_offspring_spawn_params(
+                let mut params = build_offspring_spawn_params(
                     child_genome,
                     child_phenotype,
                     sim_config,
@@ -165,19 +213,21 @@ pub fn reproduction(
                     child_start_energy,
                     child_start_hp,
                 );
+                params.position = placement;
+                params.velocity = velocity;
+                params.heading = heading;
                 cooldowns.repro_ticks_remaining = sim_config.economy.repro_cooldown_ticks;
-                children_to_spawn.push((
-                    transform.translation.truncate(),
-                    parent_radius,
-                    params,
-                ));
+                occupied.push(AgentCircle {
+                    id: child_id,
+                    pos: placement,
+                    radius: params.body_radius,
+                });
+                children_to_spawn.push(params);
             }
         }
     }
 
-    let spawn_rng = sim_rng.spawn_rng();
-    for (parent_pos, parent_radius, mut params) in children_to_spawn {
-        place_near_parent(&mut params, parent_pos, parent_radius, spawn_rng, &bounds);
+    for params in children_to_spawn {
         spawn_agent_entity(&mut commands, &mut meshes, &mut materials, params);
         counters.record_birth();
     }

@@ -7,6 +7,7 @@
 use bevy::prelude::*;
 
 use crate::config::{EnvironmentConfig, GradientBrightAt, LightMode};
+use crate::sim::structures::WorldStructures;
 use crate::sim::world::WorldBounds;
 
 /// Static light field built from config and world bounds (centered origin).
@@ -44,6 +45,23 @@ impl LightField {
         }
     }
 
+    /// Sample light with structure shadow occlusion (no sun ⇒ [`gradient_min`](Self::gradient_min)).
+    pub fn sample_with_structures(
+        &self,
+        pos: Vec2,
+        env: &EnvironmentConfig,
+        structures: &WorldStructures,
+    ) -> f32 {
+        let base = self.sample(pos);
+        if env.light_mode != LightMode::GradientY || !structures.casts_sun_shadows() {
+            return base;
+        }
+        if structures.occludes_sun(pos, sun_direction(env.gradient_bright_at)) {
+            return self.gradient_min;
+        }
+        base
+    }
+
     fn sample_gradient_y(&self, y: f32) -> f32 {
         let span = self.bright_y - self.dark_y;
         if span.abs() <= 1e-6 {
@@ -52,6 +70,27 @@ impl LightField {
 
         let t = ((y - self.dark_y) / span).clamp(0.0, 1.0);
         self.gradient_min + t * (self.gradient_max - self.gradient_min)
+    }
+}
+
+/// Unit direction from a world point toward the sun for `gradient_y`.
+pub fn sun_direction(bright_at: GradientBrightAt) -> Vec2 {
+    match bright_at {
+        GradientBrightAt::Top => Vec2::new(0.0, 1.0),
+        GradientBrightAt::Bottom => Vec2::new(0.0, -1.0),
+    }
+}
+
+/// Direction shadows are cast away from the sun (parallel light).
+pub fn shadow_cast_direction(bright_at: GradientBrightAt) -> Vec2 {
+    -sun_direction(bright_at)
+}
+
+/// World Y where structure shadows are extruded to for `gradient_y`.
+pub fn shadow_far_y(bright_at: GradientBrightAt, half_y: f32) -> f32 {
+    match bright_at {
+        GradientBrightAt::Top => -half_y,
+        GradientBrightAt::Bottom => half_y,
     }
 }
 
@@ -185,6 +224,34 @@ mod tests {
         let above = Vec2::new(0.0, bounds.half_y * 2.0);
         let top = Vec2::new(0.0, bounds.half_y);
         assert_eq!(field.sample(above), field.sample(top));
+    }
+
+    #[test]
+    fn structure_below_point_blocks_sunlight_sample() {
+        use crate::config::StructureColor;
+        use crate::config::StructureConfig;
+        use crate::sim::structures::WorldStructures;
+
+        let config = SimConfig::load_default().unwrap();
+        let bounds = WorldBounds::from_world_size(config.world.width, config.world.height);
+        let field = LightField::from_environment(&config.environment, &bounds);
+        let structures = WorldStructures::from_config(&[StructureConfig {
+            center: [0.0, 200.0],
+            width: 100.0,
+            height: 40.0,
+            angle_deg: 0.0,
+            color: StructureColor::default(),
+        }]);
+        let shaded = Vec2::new(0.0, 0.0);
+        let lit = Vec2::new(200.0, 0.0);
+        assert_eq!(
+            field.sample_with_structures(shaded, &config.environment, &structures),
+            config.environment.gradient_min
+        );
+        assert!(
+            field.sample_with_structures(lit, &config.environment, &structures)
+                > config.environment.gradient_min
+        );
     }
 
     #[test]

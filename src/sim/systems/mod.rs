@@ -2,7 +2,8 @@
 //!
 //! Phase 4+ pipeline: `environment_tick` → `sense_exposure` → `sense_rays` (interval) → `behavior_v2` →
 //! `feeding_v2` → `metabolism_and_gains` → `behavior_movement_v2` → `passive_physics` →
-//! `interactions` → `healing_v2` → `reproduction` → `advance_age` → `death_and_despawn` →
+//! `interactions` → `healing_v2` → `crowding_separation` → `reproduction` → `advance_age` →
+//! `death_and_despawn` →
 //! `performance_failsafe` → `metrics_sample`.
 //!
 //! Most non-movement systems run on [`RunConfig::logic_interval_ticks`](crate::config::RunConfig::logic_interval_ticks)
@@ -10,6 +11,7 @@
 //! biomass feeding keep their own longer intervals.
 
 mod age;
+mod crowding;
 mod death;
 mod environment_tick;
 mod failsafe;
@@ -32,6 +34,9 @@ mod sense_rays;
 pub use crate::sim::metrics::metrics_sample;
 
 pub use age::*;
+pub use crowding::{
+    position_overlaps_any, separate_overlapping_circles, AgentCircle, crowding_separation,
+};
 pub use death::*;
 pub use failsafe::*;
 pub use headless::*;
@@ -53,7 +58,8 @@ pub use healing_v2::{apply_heal_tick_v2, healing_v2};
 pub use reproduction::*;
 pub use reproduction_v2::{
     attempt_reproduction_v2, collect_vitality_payment, endowment_budget_cap,
-    repro_threshold_energy, split_endowment_to_child,
+    meets_repro_energy_threshold, repro_energy_gate, repro_threshold_energy,
+    split_endowment_to_child, REPRO_THRESHOLD_FULL_FUDGE,
 };
 pub use sense::*;
 pub use sense_rays::sense_rays;

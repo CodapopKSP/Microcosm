@@ -13,6 +13,7 @@ use super::super::minerals::MineralField;
 use super::super::perception::{
     perceive_agent, stimulus_bearing, AgentSenseTarget, CorpseSenseTarget, SenseRaySample,
 };
+use super::super::structures::WorldStructures;
 use super::super::interval::interval_active_this_tick;
 use super::super::world::{SimConfigResource, SimTick};
 
@@ -96,6 +97,7 @@ pub fn sense_rays(
     config: Res<SimConfigResource>,
     tick: Res<SimTick>,
     light: Res<LightField>,
+    structures: Res<WorldStructures>,
     minerals: Res<MineralField>,
     corpses: Query<(&Transform, &Corpse)>,
     mut query: Query<
@@ -202,6 +204,8 @@ pub fn sense_rays(
                     &light,
                     &minerals,
                     *self_light,
+                    environment,
+                    &structures,
                 );
                 let (pursue, avoid) =
                     parse_pursue_avoid_lists(genome).unwrap_or((Vec::new(), Vec::new()));

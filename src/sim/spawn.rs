@@ -13,6 +13,7 @@ use super::components::{
     Velocity,
 };
 use super::perception::SensePerception;
+use super::structures::WorldStructures;
 use super::world::{NextEntityId, SimRng, WorldBounds};
 
 /// Agent mesh Z (draw order comes from [`AgentColorMaterial::depth_bias`](super::agent_material::AgentColorMaterial)).
@@ -26,9 +27,15 @@ pub fn agent_outline_width(armor_stroke: f32) -> f32 {
     armor_stroke.max(MIN_AGENT_OUTLINE_WIDTH)
 }
 
-/// Outer radius of the outline mesh sitting behind the body fill.
+/// Outer radius of the armor annulus (inner radius = body radius).
 pub fn agent_outline_ring_radius(body_radius: f32, armor_stroke: f32) -> f32 {
     body_radius + agent_outline_width(armor_stroke)
+}
+
+/// Build a ring mesh for armor stroke (drawn on top of the body fill).
+pub fn agent_armor_ring_mesh(meshes: &mut Assets<Mesh>, body_radius: f32, armor_stroke: f32) -> Handle<Mesh> {
+    let outer = agent_outline_ring_radius(body_radius, armor_stroke);
+    meshes.add(Annulus::new(body_radius, outer).mesh().resolution(32).build())
 }
 
 /// Outcome of one spawn attempt.
@@ -212,11 +219,23 @@ fn vitality_spawn_pools(phenotype: &AnyPhenotype, config: &SimConfig) -> (f32, f
     crate::sim::components::vitality_spawn_pools_for(phenotype, config)
 }
 
-/// Random position inside world bounds (`stream_spawn` RNG).
-pub fn randomize_position(params: &mut SpawnParams, rng: &mut impl Rng, bounds: &WorldBounds) {
+/// Random position inside world bounds, avoiding structures when possible (`stream_spawn` RNG).
+pub fn randomize_position(
+    params: &mut SpawnParams,
+    rng: &mut impl Rng,
+    bounds: &WorldBounds,
+    structures: &WorldStructures,
+) {
     let radius = params.body_radius;
     let (min_x, max_x) = axis_range(bounds.half_x, radius);
     let (min_y, max_y) = axis_range(bounds.half_y, radius);
+    for _ in 0..48 {
+        let pos = Vec2::new(rng.gen_range(min_x..max_x), rng.gen_range(min_y..max_y));
+        if !structures.overlaps_circle(pos, radius) {
+            params.position = pos;
+            return;
+        }
+    }
     params.position = Vec2::new(rng.gen_range(min_x..max_x), rng.gen_range(min_y..max_y));
 }
 
@@ -225,9 +244,10 @@ pub fn randomize_placement(
     params: &mut SpawnParams,
     rng: &mut impl Rng,
     bounds: &WorldBounds,
+    structures: &WorldStructures,
     world: &WorldConfig,
 ) {
-    randomize_position(params, rng, bounds);
+    randomize_position(params, rng, bounds, structures);
     let angle = rng.gen_range(0.0..std::f32::consts::TAU);
     let speed = random_initial_speed(
         params.life.phenotype.max_speed(),
@@ -238,6 +258,64 @@ pub fn randomize_placement(
     params.heading = Heading::from_angle(angle);
 }
 
+/// Random placement for a child disc beside its parent.
+pub fn placement_near_parent(
+    parent_pos: Vec2,
+    parent_radius: f32,
+    child_radius: f32,
+    child_max_speed: f32,
+    min_speed: f32,
+    rng: &mut impl Rng,
+    bounds: &WorldBounds,
+    structures: &WorldStructures,
+) -> (Vec2, Vec2, Heading) {
+    let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+    let speed = random_initial_speed(child_max_speed, min_speed, rng);
+    let velocity = Vec2::from_angle(angle) * speed;
+    let heading = Heading::from_angle(angle);
+
+    if child_radius >= bounds.half_x || child_radius >= bounds.half_y {
+        return (parent_pos, velocity, heading);
+    }
+
+    let gap = rng.gen_range(2.0..12.0);
+    let standoff = parent_radius + child_radius + gap;
+    let ideal = parent_pos + Vec2::from_angle(angle) * standoff;
+
+    let (min_x, max_x) = axis_range(bounds.half_x, child_radius);
+    let (min_y, max_y) = axis_range(bounds.half_y, child_radius);
+    let mut pos = Vec2::new(ideal.x.clamp(min_x, max_x), ideal.y.clamp(min_y, max_y));
+    if structures.overlaps_circle(pos, child_radius) {
+        for _ in 0..24 {
+            let try_angle = rng.gen_range(0.0..std::f32::consts::TAU);
+            let try_ideal = parent_pos + Vec2::from_angle(try_angle) * standoff;
+            let try_pos = Vec2::new(
+                try_ideal.x.clamp(min_x, max_x),
+                try_ideal.y.clamp(min_y, max_y),
+            );
+            if !structures.overlaps_circle(try_pos, child_radius) {
+                pos = try_pos;
+                break;
+            }
+        }
+    }
+
+    // When the child is larger than the world half-extent, axis clamping collapses to (0, 0)
+    // and can teleport offspring to the map center — keep them beside the parent instead.
+    let max_drift = standoff * 2.0;
+    if pos.distance_squared(parent_pos) > max_drift * max_drift {
+        pos = parent_pos;
+        if child_radius < bounds.half_x {
+            pos.x = pos.x.clamp(min_x, max_x);
+        }
+        if child_radius < bounds.half_y {
+            pos.y = pos.y.clamp(min_y, max_y);
+        }
+    }
+
+    (pos, velocity, heading)
+}
+
 /// Place child near parent (uses `stream_spawn` RNG semantics via caller-provided rng).
 pub fn place_near_parent(
     params: &mut SpawnParams,
@@ -245,31 +323,21 @@ pub fn place_near_parent(
     parent_radius: f32,
     rng: &mut impl Rng,
     bounds: &WorldBounds,
+    structures: &WorldStructures,
 ) {
-    let child_radius = params.body_radius;
-    let gap = rng.gen_range(2.0..12.0);
-    let standoff = parent_radius + child_radius + gap;
-    let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-    let ideal = parent_pos + Vec2::from_angle(angle) * standoff;
-
-    let (min_x, max_x) = axis_range(bounds.half_x, child_radius);
-    let (min_y, max_y) = axis_range(bounds.half_y, child_radius);
-    let mut pos = Vec2::new(ideal.x.clamp(min_x, max_x), ideal.y.clamp(min_y, max_y));
-
-    // When the child is larger than the world half-extent, axis clamping collapses to (0, 0)
-    // and can teleport offspring to the map center — keep them beside the parent instead.
-    let max_drift = standoff * 2.0;
-    if pos.distance_squared(parent_pos) > max_drift * max_drift {
-        pos = parent_pos;
-        pos.x = pos.x.clamp(min_x, max_x);
-        pos.y = pos.y.clamp(min_y, max_y);
-    }
-
+    let (pos, velocity, heading) = placement_near_parent(
+        parent_pos,
+        parent_radius,
+        params.body_radius,
+        params.life.phenotype.max_speed(),
+        5.0,
+        rng,
+        bounds,
+        structures,
+    );
     params.position = pos;
-
-    let speed = random_initial_speed(params.life.phenotype.max_speed(), 5.0, rng);
-    params.velocity = Vec2::from_angle(angle) * speed;
-    params.heading = Heading::from_angle(angle);
+    params.velocity = velocity;
+    params.heading = heading;
 }
 
 /// Spawn velocity magnitude from decoded [`Phenotype::max_speed`](crate::genome::Phenotype::max_speed).
@@ -307,10 +375,9 @@ pub fn spawn_agent_entity(
     } = params;
     let lineage_id = life.lineage.id;
     let armor_stroke = life.phenotype.0.armor_stroke;
-    let outline_radius = agent_outline_ring_radius(body_radius, armor_stroke);
-    // Paired sort keys: outline must draw before fill (lower depth_bias).
+    // Annulus ring sits on top of the fill; do not rely on depth_bias (broken in Bevy 0.15).
     let fill_sort = lineage_id.saturating_mul(2);
-    let outline_sort = fill_sort.saturating_sub(1);
+    let outline_sort = fill_sort.saturating_add(1);
     commands
         .spawn((
             life,
@@ -329,12 +396,12 @@ pub fn spawn_agent_entity(
         .with_children(|parent| {
             parent.spawn((
                 crate::visual::AgentOutline,
-                Mesh2d(meshes.add(Circle::new(outline_radius))),
+                Mesh2d(agent_armor_ring_mesh(meshes, body_radius, armor_stroke)),
                 MeshMaterial2d(materials.add(AgentColorMaterial::new(
                     Color::srgb(0.0, 0.0, 0.0),
                     outline_sort,
                 ))),
-                Transform::from_xyz(0.0, 0.0, -0.05),
+                Transform::from_xyz(0.0, 0.0, 0.05),
             ));
         })
         .id()
@@ -354,6 +421,7 @@ pub fn spawn_initial_population(
     config: &SimConfig,
     ancestor: &AnyGenome,
     bounds: &WorldBounds,
+    structures: &WorldStructures,
     next_id: &mut NextEntityId,
     sim_rng: &mut SimRng,
 ) -> InitialPopulationStats {
@@ -373,7 +441,7 @@ pub fn spawn_initial_population(
 
         let id = next_id.next();
         let mut params = build_initial_spawn_params(genome, phenotype, config, id, 0);
-        randomize_placement(&mut params, rng, bounds, &config.world);
+        randomize_placement(&mut params, rng, bounds, structures, &config.world);
         debug_assert_eq!(params.life.agent.radius, params.body_radius);
 
         spawn_agent_entity(commands, meshes, materials, params);
@@ -414,6 +482,13 @@ mod tests {
     fn outline_width_scales_with_armor_stroke() {
         assert_eq!(agent_outline_width(25.5), 25.5);
         assert_eq!(agent_outline_ring_radius(10.0, 25.5), 35.5);
+    }
+
+    #[test]
+    fn armor_ring_mesh_is_created_for_nonzero_stroke() {
+        let mut meshes = Assets::<Mesh>::default();
+        let handle = agent_armor_ring_mesh(&mut meshes, 10.0, 25.5);
+        assert!(meshes.get(&handle).is_some());
     }
 
     #[test]
@@ -482,7 +557,15 @@ mod tests {
         params.life.agent.radius = params.body_radius;
 
         let mut rng = StdRng::seed_from_u64(7);
-        place_near_parent(&mut params, parent_pos, parent_radius, &mut rng, &bounds);
+        let structures = WorldStructures::from_config(&config.world.structures);
+        place_near_parent(
+            &mut params,
+            parent_pos,
+            parent_radius,
+            &mut rng,
+            &bounds,
+            &structures,
+        );
 
         assert!(
             params.position.distance(parent_pos) < 100.0,

@@ -141,8 +141,10 @@ fn chemical_at_point(
     minerals: &MineralField,
     point: Vec2,
     self_light: f32,
+    env: &crate::config::EnvironmentConfig,
+    structures: &crate::sim::structures::WorldStructures,
 ) -> ChemicalObservation {
-    let sample_light = light_field.sample(point);
+    let sample_light = light_field.sample_with_structures(point, env, structures);
     ChemicalObservation {
         dead_organism: false,
         minerals_raw: minerals.minerals_raw_at(point),
@@ -163,6 +165,8 @@ pub fn cast_sensor_ray(
     light_field: &LightField,
     minerals: &MineralField,
     self_light: f32,
+    env: &crate::config::EnvironmentConfig,
+    structures: &crate::sim::structures::WorldStructures,
 ) -> RayHit {
     let half_rad = cone_half_angle_rad(half_width_deg);
     let mut best: Option<(f32, usize)> = None;
@@ -202,7 +206,7 @@ pub fn cast_sensor_ray(
         (None, None) => (reach, None, endpoint, false),
     };
 
-    let mut chemical = chemical_at_point(light_field, minerals, hit_pos, self_light);
+    let mut chemical = chemical_at_point(light_field, minerals, hit_pos, self_light, env, structures);
     if corpse_hit {
         chemical.dead_organism = true;
     }
@@ -210,7 +214,7 @@ pub fn cast_sensor_ray(
     RayHit {
         distance,
         agent_index,
-        light_at_hit: light_field.sample(hit_pos),
+        light_at_hit: light_field.sample_with_structures(hit_pos, env, structures),
         chemical,
     }
 }
@@ -228,6 +232,8 @@ pub fn perceive_agent(
     light_field: &LightField,
     minerals: &MineralField,
     self_light: f32,
+    env: &crate::config::EnvironmentConfig,
+    structures: &crate::sim::structures::WorldStructures,
 ) -> Vec<SenseRaySample> {
     let eyes = sensor_eyes_from_mask(phenotype.sensor_mask, heading, decode.sensor_ray_count);
     eyes.into_iter()
@@ -244,6 +250,8 @@ pub fn perceive_agent(
                 light_field,
                 minerals,
                 self_light,
+                env,
+                structures,
             );
             let endpoint = origin + eye.direction * phenotype.sensor_reach_per_eye;
             SenseRaySample {
@@ -264,6 +272,7 @@ mod tests {
     use crate::genome::decode_v2;
     use crate::genome::GenomeV2;
     use crate::sim::minerals::MineralField;
+    use crate::sim::structures::WorldStructures;
     use crate::sim::world::WorldBounds;
 
     fn v2_config() -> SimConfig {
@@ -319,6 +328,7 @@ mod tests {
         ];
 
         let d2 = config.genetics.decode_v2.as_ref().unwrap();
+        let structures = WorldStructures::default();
         let samples = perceive_agent(
             1,
             Vec2::ZERO,
@@ -331,6 +341,8 @@ mod tests {
             &light,
             &minerals,
             0.5,
+            &config.environment,
+            &structures,
         );
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].hit.agent_index, Some(0));
@@ -354,6 +366,7 @@ mod tests {
             position: Vec2::new(80.0, 0.0),
             radius: 6.0,
         }];
+        let structures = WorldStructures::default();
         let samples = perceive_agent(
             0,
             Vec2::ZERO,
@@ -366,6 +379,8 @@ mod tests {
             &light,
             &minerals,
             0.5,
+            &config.environment,
+            &structures,
         );
         assert_eq!(samples.len(), 1);
         assert!(samples[0].hit.chemical.dead_organism);
@@ -395,6 +410,7 @@ mod tests {
         let genome = GenomeV2::ancestor_from_config(&config).unwrap();
         let p = decode_v2(&genome, &config).unwrap();
         let d2 = config.genetics.decode_v2.as_ref().unwrap();
+        let structures = WorldStructures::default();
         let samples = perceive_agent(
             0,
             Vec2::ZERO,
@@ -407,6 +423,8 @@ mod tests {
             &light,
             &minerals,
             0.5,
+            &config.environment,
+            &structures,
         );
         assert!(samples.is_empty());
     }

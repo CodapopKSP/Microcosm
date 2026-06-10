@@ -23,6 +23,24 @@ pub fn repro_threshold_energy(phenotype: &PhenotypeV2) -> f32 {
     phenotype.max_energy * phenotype.repro_threshold_frac
 }
 
+/// When repro threshold is 100%, metabolism/minerals prevent holding exact max energy.
+pub const REPRO_THRESHOLD_FULL_FUDGE: f32 = 0.01;
+
+/// Effective energy floor for reproduction eligibility (nominal threshold minus fudge at 100%).
+pub fn repro_energy_gate(phenotype: &PhenotypeV2) -> f32 {
+    let threshold = repro_threshold_energy(phenotype);
+    if phenotype.repro_threshold_frac >= 1.0 - 1e-6 {
+        (threshold - REPRO_THRESHOLD_FULL_FUDGE).max(0.0)
+    } else {
+        threshold
+    }
+}
+
+/// Whether current energy qualifies for a reproduction attempt.
+pub fn meets_repro_energy_threshold(energy: f32, phenotype: &PhenotypeV2) -> bool {
+    energy >= repro_energy_gate(phenotype)
+}
+
 /// Split spent vitality into child health (first) and overflow energy.
 pub fn split_endowment_to_child(
     spent: f32,
@@ -97,6 +115,8 @@ pub fn collect_vitality_payment(
 }
 
 /// Attempt v2 reproduction (mutates parent `energy` and `health`).
+///
+/// When `precomputed_child` is `Some`, skips mutation and uses that offspring genome/phenotype.
 pub fn attempt_reproduction_v2(
     energy: &mut Energy,
     health: &mut Health,
@@ -105,9 +125,10 @@ pub fn attempt_reproduction_v2(
     config: &SimConfig,
     repro_rng: &mut impl Rng,
     mutation_rng: &mut impl Rng,
+    precomputed_child: Option<(AnyGenome, AnyPhenotype)>,
 ) -> ReproAttemptResult {
     let threshold = repro_threshold_energy(phenotype);
-    if energy.internal_energy < threshold {
+    if !meets_repro_energy_threshold(energy.internal_energy, phenotype) {
         return ReproAttemptResult::Skipped;
     }
 
@@ -118,9 +139,15 @@ pub fn attempt_reproduction_v2(
         return ReproAttemptResult::Skipped;
     }
 
-    let child_genome = mutate_offspring_v2(parent_genome, &config.genetics, mutation_rng);
-    let Some((child_genome, child_phenotype)) = try_prepare_spawn(child_genome, config) else {
-        return ReproAttemptResult::Stillborn;
+    let (child_genome, child_phenotype) = match precomputed_child {
+        Some(pair) => pair,
+        None => {
+            let child_genome = mutate_offspring_v2(parent_genome, &config.genetics, mutation_rng);
+            let Some(pair) = try_prepare_spawn(child_genome, config) else {
+                return ReproAttemptResult::Stillborn;
+            };
+            pair
+        }
     };
 
     let collected = collect_vitality_payment(
@@ -198,6 +225,24 @@ mod tests {
     fn ancestor_threshold_is_full_max_energy() {
         let (_, p, _) = v2_setup();
         assert!((repro_threshold_energy(&p) - p.max_energy).abs() < 1e-3);
+    }
+
+    #[test]
+    fn full_threshold_fudge_allows_energy_slightly_below_max() {
+        let (_, p, _) = v2_setup();
+        assert!((p.repro_threshold_frac - 1.0).abs() < 1e-3);
+        let threshold = repro_threshold_energy(&p);
+        let gate = repro_energy_gate(&p);
+        assert!((gate - (threshold - REPRO_THRESHOLD_FULL_FUDGE)).abs() < 1e-5);
+        assert!(meets_repro_energy_threshold(threshold - 0.005, &p));
+        assert!(!meets_repro_energy_threshold(threshold - 0.02, &p));
+    }
+
+    #[test]
+    fn partial_threshold_has_no_fudge() {
+        let (_, mut p, _) = v2_setup();
+        p.repro_threshold_frac = 0.5;
+        assert_eq!(repro_energy_gate(&p), repro_threshold_energy(&p));
     }
 
     #[test]
@@ -290,6 +335,7 @@ mod tests {
             &config,
             &mut repro_rng,
             &mut mutation_rng,
+            None,
         ) {
             ReproAttemptResult::Child {
                 child_start_energy,
@@ -396,6 +442,7 @@ mod tests {
             &config,
             &mut repro_rng,
             &mut mutation_rng,
+            None,
         ) {
             ReproAttemptResult::Child {
                 child_start_energy,

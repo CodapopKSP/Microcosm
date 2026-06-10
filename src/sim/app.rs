@@ -20,13 +20,14 @@ use super::vents::VentField;
 use super::spawn::{spawn_initial_population, InitialPopulationStats};
 use super::metrics::{MetricsPeriodCounters, MetricsWriter, RepairStats};
 use super::systems::{
-    advance_age, behavior_movement_v2, behavior_v2, death_and_despawn,
+    advance_age, behavior_movement_v2, behavior_v2, crowding_separation, death_and_despawn,
     environment_tick, exit_headless_when_done, feeding_v2, healing_v2, sense_rays,
     interactions, metabolism_and_gains, metrics_sample, passive_physics, performance_failsafe,
     reproduction, sense_exposure,
     FailsafeWarnLatch,
 };
 use super::speed::SimSpeed;
+use super::structures::WorldStructures;
 use super::world::{
     advance_sim_tick, NextEntityId, SimConfigResource, SimRng, SimTick, SpawnBlocked, WorldBounds,
 };
@@ -88,6 +89,7 @@ pub fn build_sim_app(sim_config: SimConfig, ancestor: AnyGenome, mode: SimRunMod
 pub fn insert_sim_resources(app: &mut App, sim_config: SimConfig, ancestor: AnyGenome, metrics_enabled: bool) {
     let metrics_path = sim_config.run.metrics_path.clone();
     let world_bounds = WorldBounds::from_world_size(sim_config.world.width, sim_config.world.height);
+    let world_structures = WorldStructures::from_config(&sim_config.world.structures);
     let light_field = LightField::from_environment(&sim_config.environment, &world_bounds);
     let hazard_field = HazardField::from_environment(&sim_config.environment);
     let vent_field = VentField::from_environment(&sim_config.environment);
@@ -103,6 +105,7 @@ pub fn insert_sim_resources(app: &mut App, sim_config: SimConfig, ancestor: AnyG
     app.insert_resource(SimConfigResource(sim_config))
         .insert_resource(AncestorGenome(ancestor))
         .insert_resource(world_bounds)
+        .insert_resource(world_structures)
         .insert_resource(light_field)
         .insert_resource(hazard_field)
         .insert_resource(vent_field)
@@ -141,6 +144,7 @@ pub fn add_sim_systems(app: &mut App) {
             passive_physics,
             interactions,
             healing_v2,
+            crowding_separation,
             reproduction,
             advance_age,
             death_and_despawn,
@@ -170,6 +174,7 @@ fn startup_visual(
     mut next_id: ResMut<NextEntityId>,
     mut sim_rng: ResMut<SimRng>,
     bounds: Res<WorldBounds>,
+    structures: Res<WorldStructures>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<super::AgentColorMaterial>>,
 ) {
@@ -181,6 +186,7 @@ fn startup_visual(
         &mut next_id,
         &mut sim_rng,
         &bounds,
+        &structures,
         &mut meshes,
         &mut materials,
     ));
@@ -196,6 +202,7 @@ fn startup_headless(
     mut next_id: ResMut<NextEntityId>,
     mut sim_rng: ResMut<SimRng>,
     bounds: Res<WorldBounds>,
+    structures: Res<WorldStructures>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<super::AgentColorMaterial>>,
     mut metrics: ResMut<MetricsWriter>,
@@ -219,6 +226,7 @@ fn startup_headless(
         &mut next_id,
         &mut sim_rng,
         &bounds,
+        &structures,
         &mut meshes,
         &mut materials,
     ));
@@ -232,6 +240,7 @@ fn startup_population(
     next_id: &mut NextEntityId,
     sim_rng: &mut SimRng,
     bounds: &WorldBounds,
+    structures: &WorldStructures,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<super::AgentColorMaterial>,
 ) -> InitialPopulationStats {
@@ -242,6 +251,7 @@ fn startup_population(
         &config.0,
         &ancestor.0,
         bounds,
+        structures,
         next_id,
         sim_rng,
     )

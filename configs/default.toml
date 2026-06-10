@@ -1,18 +1,73 @@
 # Evolution Sim — default configuration (EVO2 / genome v2)
 # Canonical traits: docs/Genome_Definition.md
 [world]
-width = 1000.0
+width = 3000.0
 height = 1500.0
 boundary = "bounce"
-initial_population = 80
+initial_population = 5
 default_agent_radius = 12.0
 min_speed = 10.0
 max_speed = 255.0
+
+# Angled terrain obstacles (center, size, rotation in degrees, optional color).
+# color: [r, g, b, a] in 0.0–1.0, or "#rrggbb" / "#rrggbbaa" hex (default dark stone).
+[[world.structures]]
+center = [-1150.0, 250.0]
+width = 70.0
+height = 520.0
+angle_deg = 28.0
+color = "#5c4a3a"
+
+[[world.structures]]
+center = [-950.0, 200.0]
+width = 260.0
+height = 55.0
+angle_deg = 18.0
+color = "#5c4a3a"
+
+[[world.structures]]
+center = [1180.0, -180.0]
+width = 90.0
+height = 440.0
+angle_deg = -34.0
+color = "#5c4a3a"
+
+
+[[world.structures]]
+center = [820.0, 700.0]
+width = 220.0
+height = 48.0
+angle_deg = -22.0
+color = "#5c4a3a"
+
+[[world.structures]]
+center = [350.0, 320.0]
+width = 180.0
+height = 420.0
+angle_deg = 55.0
+color = "#5c4a3a"
+
+[[world.structures]]
+center = [-350.0, 0.0]
+width = 140.0
+height = 36.0
+angle_deg = 40.0
+color = "#5c4a3a"
+
+[[world.structures]]
+center = [450.0, -620.0]
+width = 420.0
+height = 42.0
+angle_deg = 90.0
+color = "#5c4a3a"
 
 [world.physics]
 radius_threshold = 10.0
 brownian_speed = 10.0
 gravity_speed = 10.0
+crowding_enabled = true
+crowding_interval_ticks = 120
+crowding_interval_phase_ticks = 0
 
 [performance]
 max_entities = 5000
@@ -28,19 +83,19 @@ max_genome_bytes = 512
 max_pursue_slots = 1
 max_avoid_slots = 1
 # EVO2 + 24-byte core + 1 pursue + 1 avoid slot (6 B each); I = 01 01
-ancestor_hex = "45564f3200ff0502ff0000000080ff8000000000f00f0000000101000000000000000000000000"
+ancestor_hex = "45564f3200ff05000f0000000080ff8000000000f00f0000000101000000000000000000000000"
 [genetics.mutation_v2]
 passes_min = 4
 passes_max = 8
 p_large_step = 0.50
 large_step_min = 5
 large_step_max = 10
-body_radius_step_multiplier = 10.0
+body_radius_step_multiplier = 30.0
 
 [genetics.decode_v2]
 nibble_levels = 16
 channel_max = 255.0
-radius_at_zero = 0.01
+radius_at_zero = 9.0
 radius_at_max = 800.00
 energy_bonus_at_max = 6553.5
 metabolism_bonus_at_max = 1.0
@@ -112,17 +167,17 @@ enabled = true
 # Upper band near bright top (world Y; map top ≈ +750 for height 1500).
 band_y_min = 0.0
 band_y_max = 700.0
-radius = 30.0
+radius = 50.0
 damage_per_tick = 0.025
 chem_flux = 0.0
-max_active = 5
-spawn_interval_ticks = 1000
+max_active = 15
+spawn_interval_ticks = 500
 lifetime_min_ticks = 4000
 lifetime_max_ticks = 6000
 
 # Chemosynthetic vents in the dark lower band (world Y; map bottom ≈ -750 for height 1500).
 [[environment.vents]]
-center = [-300.0, -600.0]
+center = [-900.0, -600.0]
 radius = 120.0
 vent_flux = 0.1
 
@@ -132,7 +187,7 @@ radius = 150.0
 vent_flux = 0.1
 
 [[environment.vents]]
-center = [300.0, -600.0]
+center = [900.0, -600.0]
 radius = 120.0
 vent_flux = 0.1
 

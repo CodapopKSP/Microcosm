@@ -7,6 +7,7 @@ use crate::config::WorldPhysicsConfig;
 
 use super::movement::apply_world_bounds;
 use super::super::components::{Agent, Corpse, Lineage, Phenotype};
+use super::super::structures::WorldStructures;
 use super::super::world::{SimConfigResource, SimRng, SimTick, WorldBounds};
 
 /// Displacement from passive physics this tick (no energy cost).
@@ -40,6 +41,7 @@ fn apply_passive_delta(
     dt: f32,
     rng: &mut impl Rng,
     bounds: &WorldBounds,
+    structures: &WorldStructures,
     boundary: crate::config::BoundaryMode,
 ) {
     let delta = passive_physics_delta(body_radius, physics, dt, rng);
@@ -50,6 +52,7 @@ fn apply_passive_delta(
     let mut pos = transform.translation.truncate() + delta;
     let mut vel = Vec2::ZERO;
     apply_world_bounds(&mut pos, &mut vel, hull_radius, bounds, boundary);
+    structures.resolve_circle_collisions(&mut pos, &mut vel, hull_radius);
     transform.translation = pos.extend(transform.translation.z);
 }
 
@@ -58,6 +61,7 @@ pub fn passive_physics(
     tick: Res<SimTick>,
     config: Res<SimConfigResource>,
     bounds: Res<WorldBounds>,
+    structures: Res<WorldStructures>,
     sim_rng: Res<SimRng>,
     mut agents: Query<(&mut Transform, &Phenotype, &Agent, &Lineage)>,
     mut corpses: Query<(Entity, &mut Transform, &Corpse), Without<Agent>>,
@@ -77,6 +81,7 @@ pub fn passive_physics(
             dt,
             &mut rng,
             &bounds,
+            &structures,
             boundary,
         );
     }
@@ -91,6 +96,7 @@ pub fn passive_physics(
             dt,
             &mut rng,
             &bounds,
+            &structures,
             boundary,
         );
     }

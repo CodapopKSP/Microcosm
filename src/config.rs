@@ -47,6 +47,105 @@ pub struct WorldConfig {
     pub max_speed: f32,
     #[serde(default)]
     pub physics: WorldPhysicsConfig,
+    /// Static oriented rectangles (terrain obstacles).
+    #[serde(default)]
+    pub structures: Vec<StructureConfig>,
+}
+
+/// Display RGBA for world structures. TOML: `color = [r, g, b, a]` (0–1) or `color = "#rrggbb"`.
+#[derive(Debug, Clone, Copy)]
+pub struct StructureColor {
+    pub rgba: [f32; 4],
+}
+
+impl Default for StructureColor {
+    fn default() -> Self {
+        Self {
+            rgba: [0.28, 0.24, 0.22, 0.92],
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StructureColor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Rgba([f32; 4]),
+            Rgb([f32; 3]),
+            Hex(String),
+        }
+
+        let color = match Raw::deserialize(deserializer)? {
+            Raw::Rgba(rgba) => Self { rgba },
+            Raw::Rgb([r, g, b]) => Self {
+                rgba: [r, g, b, 1.0],
+            },
+            Raw::Hex(hex) => Self::from_hex(&hex).map_err(serde::de::Error::custom)?,
+        };
+        color.validate().map_err(serde::de::Error::custom)?;
+        Ok(color)
+    }
+}
+
+impl StructureColor {
+    pub fn validate(&self) -> Result<(), String> {
+        for (i, &c) in self.rgba.iter().enumerate() {
+            if !c.is_finite() || !(0.0..=1.0).contains(&c) {
+                return Err(format!(
+                    "structure color component {i} must be finite and in [0, 1], got {c}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn from_hex(hex: &str) -> Result<Self, String> {
+        let digits = hex.trim().trim_start_matches('#');
+        let parse_byte = |start: usize| -> Result<f32, String> {
+            u8::from_str_radix(&digits[start..start + 2], 16)
+                .map(|b| b as f32 / 255.0)
+                .map_err(|e| e.to_string())
+        };
+        let rgba = match digits.len() {
+            6 => [
+                parse_byte(0)?,
+                parse_byte(2)?,
+                parse_byte(4)?,
+                1.0,
+            ],
+            8 => [
+                parse_byte(0)?,
+                parse_byte(2)?,
+                parse_byte(4)?,
+                parse_byte(6)?,
+            ],
+            _ => {
+                return Err(
+                    "structure color hex must be #rrggbb or #rrggbbaa (optional leading #)"
+                        .into(),
+                );
+            }
+        };
+        Ok(Self { rgba })
+    }
+}
+
+/// Oriented rectangle obstacle in world space ([`WorldConfig::structures`]).
+#[derive(Debug, Clone, Deserialize)]
+pub struct StructureConfig {
+    pub center: [f32; 2],
+    pub width: f32,
+    pub height: f32,
+    /// Rotation in degrees (0 = axis-aligned with world X/Y).
+    #[serde(default)]
+    pub angle_deg: f32,
+    /// Visual fill color (collision geometry is unchanged).
+    #[serde(default)]
+    pub color: StructureColor,
 }
 
 /// Passive forces applied each tick from body size (Brownian vs gravity).
@@ -61,6 +160,22 @@ pub struct WorldPhysicsConfig {
     /// Downward drift speed for large bodies (world units / sec).
     #[serde(default = "default_gravity_speed")]
     pub gravity_speed: f32,
+    /// Push apart overlapping agents on a fixed interval.
+    #[serde(default = "default_crowding_enabled")]
+    pub crowding_enabled: bool,
+    /// Separation cadence in sim ticks (default 120 = 2 s at 60 Hz).
+    #[serde(default = "default_crowding_interval_ticks")]
+    pub crowding_interval_ticks: u32,
+    #[serde(default)]
+    pub crowding_interval_phase_ticks: u32,
+}
+
+fn default_crowding_enabled() -> bool {
+    true
+}
+
+fn default_crowding_interval_ticks() -> u32 {
+    120
 }
 
 impl Default for WorldPhysicsConfig {
@@ -69,7 +184,49 @@ impl Default for WorldPhysicsConfig {
             radius_threshold: default_physics_radius_threshold(),
             brownian_speed: default_brownian_speed(),
             gravity_speed: default_gravity_speed(),
+            crowding_enabled: default_crowding_enabled(),
+            crowding_interval_ticks: default_crowding_interval_ticks(),
+            crowding_interval_phase_ticks: 0,
         }
+    }
+}
+
+impl WorldConfig {
+    pub fn validate_structures(&self, half_x: f32, half_y: f32) -> Result<(), ConfigError> {
+        for (i, s) in self.structures.iter().enumerate() {
+            if !s.center[0].is_finite() || !s.center[1].is_finite() {
+                return Err(ConfigError::Validation(format!(
+                    "world.structures[{i}].center must be finite"
+                )));
+            }
+            if !s.width.is_finite() || s.width <= 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "world.structures[{i}].width must be positive and finite"
+                )));
+            }
+            if !s.height.is_finite() || s.height <= 0.0 {
+                return Err(ConfigError::Validation(format!(
+                    "world.structures[{i}].height must be positive and finite"
+                )));
+            }
+            if !s.angle_deg.is_finite() {
+                return Err(ConfigError::Validation(format!(
+                    "world.structures[{i}].angle_deg must be finite"
+                )));
+            }
+            s.color
+                .validate()
+                .map_err(|msg| ConfigError::Validation(format!("world.structures[{i}].{msg}")))?;
+            let cx = s.center[0].abs();
+            let cy = s.center[1].abs();
+            if cx > half_x + s.width || cy > half_y + s.height {
+                return Err(ConfigError::Validation(format!(
+                    "world.structures[{i}] center {:?} is far outside world bounds",
+                    s.center
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -88,6 +245,11 @@ impl WorldPhysicsConfig {
         if !self.gravity_speed.is_finite() || self.gravity_speed < 0.0 {
             return Err(ConfigError::Validation(
                 "world.physics.gravity_speed must be non-negative and finite".into(),
+            ));
+        }
+        if self.crowding_interval_ticks == 0 {
+            return Err(ConfigError::Validation(
+                "world.physics.crowding_interval_ticks must be at least 1".into(),
             ));
         }
         Ok(())
@@ -1003,6 +1165,7 @@ impl SimConfig {
         }
 
         self.world.physics.validate()?;
+        self.world.validate_structures(self.world.width * 0.5, self.world.height * 0.5)?;
 
         if self.economy.repair_hp_per_tick_at_rate_1 <= 0.0 {
             return Err(ConfigError::Validation(
@@ -1315,7 +1478,9 @@ mod tests {
         let config = SimConfig::load_default().expect("default.toml should load");
         assert_eq!(config.genetics.genome_version, GENOME_VERSION_V2);
         assert_eq!(config.genetics.core_length, 39);
-        assert_eq!(config.world.initial_population, 10);
+        assert_eq!(config.world.width, 3000.0);
+        assert_eq!(config.world.initial_population, 80);
+        assert_eq!(config.world.structures.len(), 7);
         assert!(config.is_seeded());
         assert_eq!(config.environment.energy_model, EnergyModel::Local);
         assert_eq!(config.economy.flat_energy_grant_per_tick, 0.0);

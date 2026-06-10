@@ -14,6 +14,7 @@ mod vents;
 mod light;
 mod metrics;
 mod spawn;
+mod structures;
 mod systems;
 mod world;
 
@@ -35,6 +36,7 @@ pub use vents::*;
 pub use light::*;
 pub use metrics::*;
 pub use spawn::*;
+pub use structures::*;
 pub use speed::*;
 pub use systems::*;
 pub use world::*;

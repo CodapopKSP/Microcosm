@@ -8,6 +8,8 @@
 //! - **Esc** — clear selection
 
 use bevy::prelude::*;
+use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::render::render_asset::RenderAssetUsages;
 use bevy::sprite::ColorMaterial;
 use bevy_egui::EguiPlugin;
 use std::collections::HashMap;
@@ -15,12 +17,14 @@ use std::collections::HashMap;
 mod hud;
 mod inspector;
 
+use crate::config::LightMode;
 use crate::sim::{
-    run_sim_tick_schedule, Agent, Energy, HazardField, LightExposure, LightField, Phenotype,
-    SensePerception, SimConfigResource, SimSpeed, VentField, WorldBounds,
+    run_sim_tick_schedule, shadow_cast_direction, shadow_far_y, Agent, Energy, HazardField,
+    LightExposure, LightField, Phenotype, SensePerception, SimConfigResource, SimSpeed, VentField,
+    WorldBounds, WorldStructures,
 };
 
-/// Child mesh behind the agent fill: black outline (1 world unit min, scales with armor stroke).
+/// Child mesh on top of the agent fill: black armor annulus (1 world unit min, scales with armor stroke).
 #[derive(Component, Clone, Copy, Debug)]
 pub struct AgentOutline;
 
@@ -48,6 +52,12 @@ impl Default for DebugVisualState {
 
 #[derive(Component)]
 struct LightGradientBand;
+
+#[derive(Component)]
+struct WorldStructureMesh;
+
+#[derive(Component)]
+struct StructureShadowMesh;
 
 #[derive(Component)]
 struct HazardOverlayDisc;
@@ -89,6 +99,8 @@ impl Plugin for VisualDebugPlugin {
                 Startup,
                 (
                     spawn_light_gradient,
+                    spawn_structure_shadows,
+                    spawn_world_structures,
                     init_sensor_ray_assets,
                     spawn_selection_overlays,
                 ),
@@ -134,6 +146,8 @@ const SENSOR_RAY_THICKNESS: f32 = 2.0;
 const SENSOR_RAY_Z: f32 = 4.0;
 const OVERLAY_Z: f32 = 5.0;
 const GRADIENT_Z: f32 = -10.0;
+const STRUCTURE_Z: f32 = -9.8;
+const SHADOW_Z: f32 = -9.9;
 const HAZARD_Z: f32 = -9.0;
 const HAZARD_FILL: Color = Color::srgba(0.92, 0.18, 0.12, 0.22);
 const VENT_Z: f32 = -8.5;
@@ -148,6 +162,90 @@ fn init_sensor_ray_assets(
         unit_rect: meshes.add(Rectangle::new(1.0, 1.0)),
         material: materials.add(ColorMaterial::from(Color::srgba(0.35, 0.9, 1.0, 0.65))),
     });
+}
+
+fn polygon_mesh(vertices: &[Vec2]) -> Mesh {
+    let positions: Vec<[f32; 3]> = vertices.iter().map(|v| [v.x, v.y, 0.0]).collect();
+    let mut indices = Vec::new();
+    for i in 1..vertices.len().saturating_sub(1) {
+        indices.extend([0, i as u32, (i + 1) as u32]);
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    if !indices.is_empty() {
+        mesh.insert_indices(Indices::U32(indices));
+    }
+    mesh
+}
+
+fn spawn_structure_shadows(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    structures: Res<WorldStructures>,
+    config: Res<SimConfigResource>,
+    bounds: Res<WorldBounds>,
+    state: Res<DebugVisualState>,
+) {
+    let env = &config.0.environment;
+    if env.light_mode != LightMode::GradientY || !structures.casts_sun_shadows() {
+        return;
+    }
+
+    let shadow_dir = shadow_cast_direction(env.gradient_bright_at);
+    let far_y = shadow_far_y(env.gradient_bright_at, bounds.half_y);
+    let polygons = structures.shadow_polygons(shadow_dir, far_y);
+    if polygons.is_empty() {
+        return;
+    }
+
+    let base = light_sample_to_display_color(env.gradient_min, env.gradient_min, env.gradient_max);
+    let base_srgba = base.to_srgba();
+    let shadow_color = Color::srgba(base_srgba.red, base_srgba.green, base_srgba.blue, 0.82);
+    let visibility = if state.show_light_gradient {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+
+    eprintln!(
+        "shadows: {} structure(s) occlude the sun and cast {} shadow region(s)",
+        polygons.len(),
+        polygons.len()
+    );
+
+    for polygon in polygons {
+        if polygon.len() < 3 {
+            continue;
+        }
+        commands.spawn((
+            StructureShadowMesh,
+            Mesh2d(meshes.add(polygon_mesh(&polygon))),
+            MeshMaterial2d(materials.add(ColorMaterial::from(shadow_color))),
+            Transform::from_xyz(0.0, 0.0, SHADOW_Z),
+            visibility,
+        ));
+    }
+}
+
+fn spawn_world_structures(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    structures: Res<WorldStructures>,
+) {
+    for structure in structures.iter() {
+        let width = structure.half_width * 2.0;
+        let height = structure.half_height * 2.0;
+        let [r, g, b, a] = structure.color.rgba;
+        commands.spawn((
+            WorldStructureMesh,
+            Mesh2d(meshes.add(Rectangle::new(width, height))),
+            MeshMaterial2d(materials.add(ColorMaterial::from(Color::srgba(r, g, b, a)))),
+            Transform::from_xyz(structure.center.x, structure.center.y, STRUCTURE_Z)
+                .with_rotation(Quat::from_rotation_z(structure.angle)),
+        ));
+    }
 }
 
 fn spawn_light_gradient(
@@ -311,7 +409,14 @@ fn debug_keyboard_input(
 
 fn sync_light_gradient_visibility(
     state: Res<DebugVisualState>,
-    mut bands: Query<&mut Visibility, With<LightGradientBand>>,
+    mut bands: Query<
+        &mut Visibility,
+        (With<LightGradientBand>, Without<StructureShadowMesh>),
+    >,
+    mut shadows: Query<
+        &mut Visibility,
+        (With<StructureShadowMesh>, Without<LightGradientBand>),
+    >,
 ) {
     if !state.is_changed() {
         return;
@@ -322,6 +427,9 @@ fn sync_light_gradient_visibility(
         Visibility::Hidden
     };
     for mut vis in &mut bands {
+        *vis = visibility;
+    }
+    for mut vis in &mut shadows {
         *vis = visibility;
     }
 }
@@ -581,7 +689,7 @@ fn update_selection_overlay(
 
     let bar_width = agent.radius * 2.0;
     let bar_y = pos.y + agent.radius + ENERGY_BAR_GAP;
-    let threshold = phenotype.repro_threshold_energy().max(1e-3);
+    let threshold = crate::sim::repro_energy_gate(&phenotype.0).max(1e-3);
     let ratio = (energy.internal_energy / threshold).clamp(0.0, 1.0);
     let fill_width = bar_width * ratio;
 

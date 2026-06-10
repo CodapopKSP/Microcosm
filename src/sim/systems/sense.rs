@@ -6,6 +6,7 @@ use super::super::components::{Agent, HazardExposure, LightExposure, MineralExpo
 use super::super::hazards::HazardField;
 use super::super::light::LightField;
 use super::super::minerals::MineralField;
+use super::super::structures::WorldStructures;
 use super::super::vents::VentField;
 use super::super::world::{SimConfigResource, SimTick};
 
@@ -14,6 +15,7 @@ pub fn sense_exposure(
     tick: Res<SimTick>,
     config: Res<SimConfigResource>,
     light: Res<LightField>,
+    structures: Res<WorldStructures>,
     hazards: Res<HazardField>,
     vents: Res<VentField>,
     minerals: Res<MineralField>,
@@ -28,7 +30,7 @@ pub fn sense_exposure(
     let _ = (tick, &vents);
     for (transform, mut light_exp, mut hazard_exp, mut vent_exp, mut mineral_exp) in &mut query {
         let pos = transform.translation.truncate();
-        light_exp.0 = light.sample(pos);
+        light_exp.0 = light.sample_with_structures(pos, &config.0.environment, &structures);
         hazard_exp.damage_raw = hazards.damage_at(pos);
         vent_exp.vent_flux = 0.0;
         mineral_exp.concentration = minerals.concentration_at(pos);
