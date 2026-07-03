@@ -31,6 +31,7 @@ pub struct MetricsPeriodCounters {
     pub deaths_energy_depleted: u32,
     pub deaths_core_destroyed: u32,
     pub deaths_repro_fatality: u32,
+    pub deaths_predation: u32,
     pub deaths_age_exceeded: u32,
 }
 
@@ -40,6 +41,7 @@ impl MetricsPeriodCounters {
             DeathReason::EnergyDepleted => self.deaths_energy_depleted += 1,
             DeathReason::CoreDestroyed => self.deaths_core_destroyed += 1,
             DeathReason::ReproFatality => self.deaths_repro_fatality += 1,
+            DeathReason::Predation => self.deaths_predation += 1,
             DeathReason::AgeExceeded => self.deaths_age_exceeded += 1,
         }
     }
@@ -52,6 +54,7 @@ impl MetricsPeriodCounters {
         self.deaths_energy_depleted
             .saturating_add(self.deaths_core_destroyed)
             .saturating_add(self.deaths_repro_fatality)
+            .saturating_add(self.deaths_predation)
             .saturating_add(self.deaths_age_exceeded)
     }
 
@@ -117,6 +120,7 @@ pub struct MetricsLine {
     pub deaths_energy_depleted: u32,
     pub deaths_core_destroyed: u32,
     pub deaths_repro_fatality: u32,
+    pub deaths_predation: u32,
     pub deaths_age_exceeded: u32,
     #[serde(serialize_with = "serialize_rounded_f32")]
     pub mean_energy: f32,
@@ -305,6 +309,7 @@ pub fn build_metrics_line(
         deaths_energy_depleted: counters.deaths_energy_depleted,
         deaths_core_destroyed: counters.deaths_core_destroyed,
         deaths_repro_fatality: counters.deaths_repro_fatality,
+        deaths_predation: counters.deaths_predation,
         deaths_age_exceeded: counters.deaths_age_exceeded,
         mean_energy,
         median_energy,
@@ -469,6 +474,7 @@ mod tests {
             line.deaths_energy_depleted
                 + line.deaths_core_destroyed
                 + line.deaths_repro_fatality
+                + line.deaths_predation
                 + line.deaths_age_exceeded,
             line.deaths
         );
@@ -506,6 +512,7 @@ mod tests {
             "deaths_energy_depleted",
             "deaths_core_destroyed",
             "deaths_repro_fatality",
+            "deaths_predation",
             "deaths_age_exceeded",
             "mean_energy",
             "median_energy",

@@ -12,8 +12,7 @@ use super::super::world::{SimConfigResource, SimRng, SimTick, WorldBounds};
 
 /// Advance global soup, expire corpse markers, and tick ephemeral hazard patches.
 ///
-/// Corpses despawn only when TTL elapses. Depleted energy (`remaining_energy == 0`)
-/// stops feeding but leaves the visual marker until expiry.
+/// Corpses despawn when depleted (`remaining_energy == 0`) or when TTL elapses.
 pub fn environment_tick(
     tick: Res<SimTick>,
     config: Res<SimConfigResource>,
@@ -43,8 +42,12 @@ pub fn environment_tick(
     }
 
     let ttl_default = config.0.environment.feeding.corpse_ttl_ticks;
-    if ttl_default != 0 {
-        for (entity, mut corpse) in &mut corpses {
+    for (entity, mut corpse) in &mut corpses {
+        if corpse.remaining_energy <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        if ttl_default != 0 {
             if corpse.ticks_remaining > 0 {
                 corpse.ticks_remaining = corpse.ticks_remaining.saturating_sub(steps);
             }
@@ -112,7 +115,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_biomass_corpse_survives_until_ttl() {
+    fn depleted_corpse_despawns_immediately() {
         let mut config = SimConfig::load_default().unwrap();
         config.run.logic_interval_ticks = 1;
         config.environment.dynamic_hazards.enabled = false;
@@ -123,20 +126,9 @@ mod tests {
             .spawn(Corpse {
                 remaining_energy: 0.0,
                 radius: 10.0,
-                ticks_remaining: 2,
+                ticks_remaining: 3600,
             })
             .id();
-
-        app.update();
-        assert!(app.world().get_entity(corpse).is_ok());
-        assert_eq!(
-            app.world()
-                .entity(corpse)
-                .get::<Corpse>()
-                .unwrap()
-                .ticks_remaining,
-            1
-        );
 
         app.update();
         assert!(app.world().get_entity(corpse).is_err());

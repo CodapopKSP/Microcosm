@@ -211,8 +211,10 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
             let mut mutation_rng =
                 sim_rng.stream_mutation(agent.id, agent.generation.saturating_add(1), tick);
             let child_genome = mutate_offspring_v2(&agent.genome, &config.genetics, &mut mutation_rng);
+            let parent_cooldown =
+                crate::sim::repro_cooldown_ticks_for_body_radius(parent_radius, &config.economy);
             let Some((child_genome, child_phenotype)) = try_prepare_spawn(child_genome, config) else {
-                agent.repro_cooldown = config.economy.repro_cooldown_ticks;
+                agent.repro_cooldown = parent_cooldown;
                 summary.stillborns += 1;
                 continue;
             };
@@ -270,7 +272,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                     summary.repro_fatalities += 1;
                 }
                 ReproAttemptResult::Stillborn => {
-                    agent.repro_cooldown = config.economy.repro_cooldown_ticks;
+                    agent.repro_cooldown = parent_cooldown;
                     summary.stillborns += 1;
                 }
                 ReproAttemptResult::Child {
@@ -280,7 +282,7 @@ pub fn run_headless_sim(config: &SimConfig, ticks: u64) -> HeadlessRunSummary {
                     child_start_hp,
                 } => {
                     let child_id = next_id.next();
-                    agent.repro_cooldown = config.economy.repro_cooldown_ticks;
+                    agent.repro_cooldown = parent_cooldown;
                     summary.births += 1;
                     summary.child_genome_fold ^= fold_genome_bytes(&child_genome);
 

@@ -5,7 +5,9 @@ use std::collections::HashMap;
 
 use super::metabolism_v2::clamp_vitality_pools;
 use super::metabolism::circles_overlap;
-use super::super::components::{Agent, Corpse, Energy, Health, MineralExposure, Phenotype};
+use super::super::components::{
+    Agent, Corpse, DeathReason, Energy, Health, MineralExposure, PendingDeath, Phenotype,
+};
 use super::super::soup::SoupField;
 use super::metabolism_v2::TICKS_PER_SEC;
 use super::super::interval::{interval_active_this_tick, logic_active_this_tick, logic_elapsed_ticks};
@@ -76,6 +78,7 @@ pub fn soup_gain_per_tick(
 
 /// Bevy system: digest minerals, corpses, living prey, and optional soup before metabolism costs.
 pub fn feeding_v2(
+    mut commands: Commands,
     tick: Res<SimTick>,
     config: Res<SimConfigResource>,
     soup: Res<SoupField>,
@@ -91,7 +94,7 @@ pub fn feeding_v2(
         ),
         With<Agent>,
     >,
-    mut corpses: Query<(&Transform, &mut Corpse)>,
+    mut corpses: Query<(Entity, &Transform, &mut Corpse)>,
 ) {
     if config.0.genetics.genome_version != 2 {
         return;
@@ -158,6 +161,7 @@ pub fn feeding_v2(
             .collect();
 
         if !predators.is_empty() {
+            let mut depleted_corpses: Vec<Entity> = Vec::new();
             let prey_snapshots: Vec<(Entity, Vec2, f32, f32, f32)> = agents
                 .iter()
                 .map(|(e, tf, a, _, _, _, h)| {
@@ -173,7 +177,7 @@ pub fn feeding_v2(
 
             for (pred_e, pred_pos, pred_r, uptake_sec) in &predators {
                 if env.corpses_enabled {
-                    for (c_tf, mut corpse) in &mut corpses {
+                    for (c_entity, c_tf, mut corpse) in &mut corpses {
                         if corpse.remaining_energy <= 0.0 {
                             continue;
                         }
@@ -185,6 +189,9 @@ pub fn feeding_v2(
                         if taken > 0.0 {
                             corpse.remaining_energy -= taken;
                             *energy_gain.entry(*pred_e).or_insert(0.0) += taken;
+                            if corpse.remaining_energy <= 0.0 {
+                                depleted_corpses.push(c_entity);
+                            }
                         }
                     }
                 }
@@ -209,6 +216,10 @@ pub fn feeding_v2(
                     }
                 }
             }
+
+            for entity in depleted_corpses {
+                commands.entity(entity).despawn();
+            }
         }
     }
 
@@ -216,6 +227,9 @@ pub fn feeding_v2(
         if let Some(drain) = hp_drain.get(&entity).copied() {
             if drain > 0.0 {
                 health.core_hp = (health.core_hp - drain).max(0.0);
+                commands
+                    .entity(entity)
+                    .insert(PendingDeath(DeathReason::Predation));
             }
         }
         let Some(gain) = energy_gain.get(&entity).copied() else {

@@ -169,6 +169,8 @@ pub enum DeathReason {
     EnergyDepleted,
     CoreDestroyed,
     ReproFatality,
+    /// Killed by another agent's biomass digestion (no corpse left).
+    Predation,
     /// Reserved (legacy old-age); not used while death is energy/HP/repro-driven.
     AgeExceeded,
 }

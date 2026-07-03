@@ -136,6 +136,13 @@ spawn_energy = 400.0
 flat_energy_grant_per_tick = 0.0
 core_max_hp = 100.0
 repro_cooldown_ticks = 500
+# Cooldown at repro_cooldown_reference_radius; scaled by (radius / reference)^exponent.
+repro_cooldown_reference_radius = 10.0
+# >1 steepens size effect (2.0 → half radius ≈ quarter cooldown, double radius ≈ 4× cooldown).
+repro_cooldown_radius_exponent = 2.0
+repro_cooldown_min_ticks = 1
+# 0 = no upper cap; set e.g. 10000 to limit huge organisms.
+repro_cooldown_max_ticks = 0
 repro_safety_margin = 0.25
 p_death_on_repro_base = 0.12
 p_damage_on_repro_base = 0.35

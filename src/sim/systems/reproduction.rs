@@ -2,6 +2,7 @@
 
 use bevy::prelude::*;
 
+use crate::config::EconomyConfig;
 use crate::genome::{mutate_offspring_v2, phenotype_max_speed, AnyGenome};
 
 use super::crowding::{position_overlaps_any, AgentCircle};
@@ -20,6 +21,23 @@ use super::super::interval::{logic_active_this_tick, logic_elapsed_ticks};
 use super::super::metrics::MetricsPeriodCounters;
 use super::super::structures::WorldStructures;
 use super::super::world::{NextEntityId, SimConfigResource, SimRng, SimTick, SpawnBlocked, WorldBounds};
+
+/// Per-agent reproduction cooldown from body radius (`reference_radius` → base ticks).
+///
+/// `cooldown = repro_cooldown_ticks × (body_radius / reference_radius)^exponent`, then clamped.
+pub fn repro_cooldown_ticks_for_body_radius(body_radius: f32, economy: &EconomyConfig) -> u32 {
+    let base = economy.repro_cooldown_ticks as f32;
+    let reference = economy.repro_cooldown_reference_radius;
+    let radius = body_radius.max(1e-6);
+    let factor = (radius / reference).powf(economy.repro_cooldown_radius_exponent);
+    let scaled = (base * factor).max(economy.repro_cooldown_min_ticks as f32);
+    let capped = if economy.repro_cooldown_max_ticks > 0 {
+        scaled.min(economy.repro_cooldown_max_ticks as f32)
+    } else {
+        scaled
+    };
+    capped.round().clamp(1.0, u32::MAX as f32) as u32
+}
 
 /// Parent death probability on reproduce.
 pub fn repro_death_probability(
@@ -140,9 +158,11 @@ pub fn reproduction(
         let mut mutation_rng =
             sim_rng.stream_mutation(lineage.id, lineage.generation.saturating_add(1), tick.tick);
         let child_genome = mutate_offspring_v2(genome_v2, &sim_config.genetics, &mut mutation_rng);
+        let parent_cooldown =
+            repro_cooldown_ticks_for_body_radius(parent_radius, &sim_config.economy);
         let Some((child_genome, child_phenotype)) = try_prepare_spawn(child_genome, sim_config)
         else {
-            cooldowns.repro_ticks_remaining = sim_config.economy.repro_cooldown_ticks;
+            cooldowns.repro_ticks_remaining = parent_cooldown;
             continue;
         };
         let child_phenotype_v2 = &child_phenotype;
@@ -194,7 +214,7 @@ pub fn reproduction(
                     .insert(PendingDeath(DeathReason::ReproFatality));
             }
             ReproAttemptResult::Stillborn => {
-                cooldowns.repro_ticks_remaining = sim_config.economy.repro_cooldown_ticks;
+                cooldowns.repro_ticks_remaining = parent_cooldown;
             }
             ReproAttemptResult::Child {
                 genome: child_genome,
@@ -216,7 +236,7 @@ pub fn reproduction(
                 params.position = placement;
                 params.velocity = velocity;
                 params.heading = heading;
-                cooldowns.repro_ticks_remaining = sim_config.economy.repro_cooldown_ticks;
+                cooldowns.repro_ticks_remaining = parent_cooldown;
                 occupied.push(AgentCircle {
                     id: child_id,
                     pos: placement,
@@ -271,5 +291,41 @@ mod tests {
         let mut energy = Energy::new_v2(50.0, 100.0);
         assert!(!pay_reproduction_energy_cost(&mut energy, 100.0));
         assert_eq!(energy.internal_energy, 50.0);
+    }
+
+    #[test]
+    fn repro_cooldown_matches_base_at_reference_radius() {
+        let (config, phenotype) = setup();
+        let cooldown = repro_cooldown_ticks_for_body_radius(
+            config.economy.repro_cooldown_reference_radius,
+            &config.economy,
+        );
+        assert_eq!(cooldown, config.economy.repro_cooldown_ticks);
+        let _ = phenotype;
+    }
+
+    #[test]
+    fn repro_cooldown_scales_inversely_with_radius() {
+        let (mut config, _) = setup();
+        config.economy.repro_cooldown_ticks = 500;
+        config.economy.repro_cooldown_reference_radius = 10.0;
+        config.economy.repro_cooldown_radius_exponent = 2.0;
+        let economy = &config.economy;
+        assert_eq!(repro_cooldown_ticks_for_body_radius(10.0, economy), 500);
+        assert_eq!(repro_cooldown_ticks_for_body_radius(5.0, economy), 125);
+        assert_eq!(repro_cooldown_ticks_for_body_radius(20.0, economy), 2000);
+    }
+
+    #[test]
+    fn repro_cooldown_respects_min_and_max() {
+        let (mut config, _) = setup();
+        config.economy.repro_cooldown_ticks = 500;
+        config.economy.repro_cooldown_reference_radius = 10.0;
+        config.economy.repro_cooldown_radius_exponent = 3.0;
+        config.economy.repro_cooldown_min_ticks = 200;
+        config.economy.repro_cooldown_max_ticks = 800;
+        let economy = &config.economy;
+        assert_eq!(repro_cooldown_ticks_for_body_radius(5.0, economy), 200);
+        assert_eq!(repro_cooldown_ticks_for_body_radius(20.0, economy), 800);
     }
 }

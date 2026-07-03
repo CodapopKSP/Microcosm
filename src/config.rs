@@ -519,8 +519,20 @@ pub struct EconomyConfig {
     pub flat_energy_grant_per_tick: f32,
     pub core_max_hp: f32,
     pub repro_safety_margin: f32,
-    /// Ticks before another reproduction attempt after success or stillbirth (config-only; byte 16 reserved).
+    /// Ticks before another reproduction attempt at [`repro_cooldown_reference_radius`](Self::repro_cooldown_reference_radius).
     pub repro_cooldown_ticks: u32,
+    /// Body radius that receives [`repro_cooldown_ticks`](Self::repro_cooldown_ticks) unchanged (smaller → faster, larger → slower).
+    #[serde(default = "default_repro_cooldown_reference_radius")]
+    pub repro_cooldown_reference_radius: f32,
+    /// Exponent on `(body_radius / reference_radius)`; >1 amplifies size differences (e.g. 2.0 halves cooldown at half radius).
+    #[serde(default = "default_repro_cooldown_radius_exponent")]
+    pub repro_cooldown_radius_exponent: f32,
+    /// Floor on per-agent cooldown after size scaling.
+    #[serde(default = "default_repro_cooldown_min_ticks")]
+    pub repro_cooldown_min_ticks: u32,
+    /// Ceiling on per-agent cooldown (`0` = no cap).
+    #[serde(default)]
+    pub repro_cooldown_max_ticks: u32,
     pub p_death_on_repro_base: f32,
     pub p_damage_on_repro_base: f32,
     /// Fraction of [`Phenotype::repro_threshold`] applied when a repro damage roll succeeds.
@@ -567,6 +579,18 @@ fn default_repair_hp_per_tick_at_rate_1() -> f32 {
 
 fn default_spawn_health_frac() -> f32 {
     1.0
+}
+
+fn default_repro_cooldown_reference_radius() -> f32 {
+    10.0
+}
+
+fn default_repro_cooldown_radius_exponent() -> f32 {
+    2.0
+}
+
+fn default_repro_cooldown_min_ticks() -> u32 {
+    1
 }
 
 /// Axis-aligned circular hazard zone ([PHASE_4.md](../docs/PHASE_4.md) §4.1).
@@ -1184,6 +1208,37 @@ impl SimConfig {
         if self.economy.repro_cooldown_ticks == 0 {
             return Err(ConfigError::Validation(
                 "economy.repro_cooldown_ticks must be positive".into(),
+            ));
+        }
+
+        if self.economy.repro_cooldown_reference_radius <= 0.0
+            || !self.economy.repro_cooldown_reference_radius.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "economy.repro_cooldown_reference_radius must be positive and finite".into(),
+            ));
+        }
+
+        if self.economy.repro_cooldown_radius_exponent <= 0.0
+            || !self.economy.repro_cooldown_radius_exponent.is_finite()
+        {
+            return Err(ConfigError::Validation(
+                "economy.repro_cooldown_radius_exponent must be positive and finite".into(),
+            ));
+        }
+
+        if self.economy.repro_cooldown_min_ticks == 0 {
+            return Err(ConfigError::Validation(
+                "economy.repro_cooldown_min_ticks must be positive".into(),
+            ));
+        }
+
+        if self.economy.repro_cooldown_max_ticks > 0
+            && self.economy.repro_cooldown_max_ticks < self.economy.repro_cooldown_min_ticks
+        {
+            return Err(ConfigError::Validation(
+                "economy.repro_cooldown_max_ticks must be >= repro_cooldown_min_ticks when set"
+                    .into(),
             ));
         }
 

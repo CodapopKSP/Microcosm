@@ -62,7 +62,7 @@ pub fn death_and_despawn(
 
         if let Some(reason) = reason {
             counters.record_death(reason);
-            if corpses_on {
+            if corpses_on && reason != DeathReason::Predation {
                 let ttl = feeding.corpse_ttl_ticks;
                 spawn_corpse_entity(
                     &mut commands,
