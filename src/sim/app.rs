@@ -32,6 +32,11 @@ use super::world::{
     advance_sim_tick, NextEntityId, SimConfigResource, SimRng, SimTick, SpawnBlocked, WorldBounds,
 };
 
+/// Window size relative to world size (visual mode only). The camera's
+/// orthographic projection is scaled by `1 / WINDOW_SCALE` so the full
+/// world stays visible at the smaller window size.
+const WINDOW_SCALE: f32 = 0.5;
+
 /// Label for one full simulation pipeline pass (see [`add_sim_systems`]).
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SimTickSchedule;
@@ -57,7 +62,7 @@ pub fn build_sim_app(sim_config: SimConfig, ancestor: AnyGenome, mode: SimRunMod
             app.add_plugins(DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Evolution Sim".into(),
-                    resolution: (world_w, world_h).into(),
+                    resolution: (world_w * WINDOW_SCALE, world_h * WINDOW_SCALE).into(),
                     ..default()
                 }),
                 ..default()
@@ -178,7 +183,13 @@ fn startup_visual(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<super::AgentColorMaterial>>,
 ) {
-    commands.spawn(Camera2d);
+    commands.spawn((
+        Camera2d,
+        OrthographicProjection {
+            scale: 1.0 / WINDOW_SCALE,
+            ..OrthographicProjection::default_2d()
+        },
+    ));
     log_spawn(startup_population(
         &mut commands,
         &config,
