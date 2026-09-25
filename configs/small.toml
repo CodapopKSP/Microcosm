@@ -1,0 +1,21 @@
+# A smaller world for quick experiments or slower machines.
+# Only overrides are listed; everything else comes from the built-in defaults (= default.toml).
+
+[world]
+width = 6000.0
+height = 3000.0
+
+[terrain]
+floor_height = 700.0
+floor_roughness = 200.0
+shelf_depth = 600.0
+trench_depth = 500.0
+rocks = 7
+rock_size = 180.0
+
+[vents]
+count = 2
+min_depth = 1500.0
+
+[population]
+initial = 800

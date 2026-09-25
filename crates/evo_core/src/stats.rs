@@ -1,0 +1,128 @@
+//! Time series statistics, the event log, and milestones.
+
+use std::collections::VecDeque;
+
+use serde::{Deserialize, Serialize};
+
+use crate::organism::DeathCause;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatSample {
+    pub tick: u64,
+    pub time: f64,
+    pub population: u32,
+    /// Established species alive right now.
+    pub species: u32,
+    pub biomass: f32,
+    /// Organisms by main diet: photo, chemo, scavenge, hunt.
+    pub diets: [u32; 4],
+    pub motile: u32,
+    pub mean_radius: f32,
+    pub max_radius: f32,
+    pub births: u32,
+    pub deaths: u32,
+    pub sun: f32,
+    pub surface_temp: f32,
+    /// (species id, population) for established living species.
+    pub species_populations: Vec<(u32, u32)>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Stats {
+    pub samples: Vec<StatSample>,
+    pub total_births: u64,
+    pub total_deaths: u64,
+    pub deaths_by_cause: [u64; 8],
+    pub births_since_sample: u32,
+    pub deaths_since_sample: u32,
+    pub since_sample: f32,
+}
+
+impl Stats {
+    pub fn record_death(&mut self, cause: DeathCause) {
+        self.total_deaths += 1;
+        self.deaths_since_sample += 1;
+        let i = DeathCause::ALL.iter().position(|&c| c == cause).unwrap();
+        self.deaths_by_cause[i] += 1;
+    }
+
+    pub fn record_birth(&mut self) {
+        self.total_births += 1;
+        self.births_since_sample += 1;
+    }
+
+    /// Push a sample, thinning older history (every other sample) when over `max`.
+    pub fn push(&mut self, sample: StatSample, max: usize) {
+        self.samples.push(sample);
+        if self.samples.len() > max.max(16) {
+            let mut keep = true;
+            self.samples.retain(|_| {
+                keep = !keep;
+                keep
+            });
+        }
+        self.births_since_sample = 0;
+        self.deaths_since_sample = 0;
+        self.since_sample = 0.0;
+    }
+
+    pub fn latest(&self) -> Option<&StatSample> {
+        self.samples.last()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EventKind {
+    Species,
+    Extinction,
+    Milestone,
+    Environment,
+    Recolonization,
+    Disaster,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Event {
+    pub tick: u64,
+    pub time: f64,
+    pub kind: EventKind,
+    pub text: String,
+    /// Organism or species the event is about, if any (for "follow" links).
+    pub organism: Option<u64>,
+    pub species: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EventLog {
+    pub entries: VecDeque<Event>,
+    /// Total events ever logged (entries may be trimmed).
+    pub count: u64,
+}
+
+impl EventLog {
+    pub fn push(&mut self, event: Event, max: usize) {
+        self.entries.push_back(event);
+        self.count += 1;
+        while self.entries.len() > max.max(1) {
+            self.entries.pop_front();
+        }
+    }
+}
+
+/// One-time "firsts" worth announcing.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Milestones {
+    pub first_swimmer: bool,
+    pub first_kill: bool,
+    pub first_chemotroph: bool,
+    pub first_scavenger: bool,
+    pub first_hunter: bool,
+    pub first_eyes: bool,
+    pub first_armor: bool,
+    /// Largest adult radius ever born.
+    pub size_record: f32,
+}
