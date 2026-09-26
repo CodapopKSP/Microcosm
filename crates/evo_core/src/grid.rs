@@ -20,6 +20,10 @@ pub struct Entry {
     pub saturation: u8,
     /// Light absorptance (organisms only; used for the light deposit).
     pub absorptance: f32,
+    /// Half-width that catches light (body plus fronds).
+    pub light_radius: f32,
+    /// Lure glow (0 = none).
+    pub lure: f32,
 }
 
 #[derive(Clone, Debug)]

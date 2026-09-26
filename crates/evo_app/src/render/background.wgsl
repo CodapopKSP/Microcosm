@@ -1,5 +1,5 @@
 // Ocean background: water lit by the simulated light field, rock from the terrain SDF,
-// minerals, marine snow, and vents.
+// minerals, marine snow, vents, and the water chemistry (dead zones, red tides, oxygen bubbles).
 
 #import bevy_sprite::mesh2d_vertex_output::VertexOutput
 
@@ -9,7 +9,8 @@ struct Background {
     world: vec4<f32>, // width, height, time, world units per pixel
     sun: vec4<f32>,   // sun (0..1), surface temp, day phase, vent count
     vents: array<vec4<f32>, 16>,
-    effects: vec4<f32>, // impact-winter darkness, event count
+    effects: vec4<f32>, // impact-winter darkness, event count, map mode
+    air: vec4<f32>, // air oxygen, air CO2 (1 = today)
     events: array<vec4<f32>, 8>, // x, width, kind (1 upwelling, 2 wall), param
 };
 
@@ -20,6 +21,8 @@ struct Background {
 @group(#{MATERIAL_BIND_GROUP}) @binding(4) var light_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var fields_tex: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(6) var fields_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(7) var chem_tex: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(8) var chem_sampler: sampler;
 
 fn hash21(p: vec2<f32>) -> f32 {
     let q = fract(p * vec2<f32>(123.34, 456.21));
@@ -69,7 +72,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let h = clamp((wp.y - size.y) / 1200.0, 0.0, 1.0);
         let sky_day = mix(vec3<f32>(0.35, 0.55, 0.75), vec3<f32>(0.12, 0.28, 0.55), h);
         let sky_night = mix(vec3<f32>(0.02, 0.03, 0.07), vec3<f32>(0.005, 0.008, 0.02), h);
-        var sky = mix(sky_night, sky_day * 0.7, clamp(bg.sun.x * 1.3, 0.0, 1.0));
+        // Without oxygen (and its ozone) the day sky is a hazy orange; lots of CO2 adds haze.
+        let o2 = clamp(bg.air.x, 0.0, 1.5);
+        let haze_day = mix(vec3<f32>(0.62, 0.42, 0.25), vec3<f32>(0.35, 0.34, 0.33), h);
+        var day = mix(haze_day, sky_day, smoothstep(0.05, 0.6, o2));
+        day = mix(day, vec3<f32>(0.5, 0.48, 0.42), clamp((bg.air.y - 1.5) * 0.25, 0.0, 0.5));
+        var sky = mix(sky_night, day * 0.7, clamp(bg.sun.x * 1.3, 0.0, 1.0));
         // Stars at night (hidden by impact dust).
         let winter = bg.effects.x;
         let star = step(0.9985, hash21(floor(wp / max(2.0, 1.5 * px)))) * (1.0 - clamp(bg.sun.x * 3.0, 0.0, 1.0));
@@ -93,6 +101,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let fields = textureSample(fields_tex, fields_sampler, uv);
     let minerals = fields.r;
     let detritus = fields.g;
+    let chem = textureSample(chem_tex, chem_sampler, uv);
+    let oxygen = chem.r * 1.5;
+    let nutrients = chem.g;
+    let toxin = chem.b;
 
     // Water: deep navy to sunlit teal, following the simulated light (shadows included).
     // `lin` is irradiance relative to the brightest noon; perceived brightness is roughly log.
@@ -128,6 +140,22 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let flake = (1.0 - smoothstep(flake_r * 0.5, flake_r, fd)) * step(hash21(sc + 7.3), detritus * 0.8)
         * (1.0 - smoothstep(1.5, 4.0, px));
     water += vec3<f32>(0.22, 0.2, 0.16) * flake;
+
+    // Dead zones (almost no oxygen) turn the water murky purple-brown; blooms of toxin
+    // redden it (red tides).
+    let anoxic = (1.0 - smoothstep(0.05, 0.3, oxygen)) * select(1.0, 0.0, outside);
+    let murk = 0.8 + 0.2 * fbm(wp * 0.01 + vec2<f32>(time * 0.01, 0.0));
+    water = mix(water, vec3<f32>(0.035, 0.015, 0.03) * murk + water * 0.3, anoxic * 0.7);
+    water += vec3<f32>(0.25, 0.02, 0.02) * toxin * (0.7 + 0.3 * fbm(wp * 0.02 - vec2<f32>(0.0, time * 0.05)));
+    // Water supersaturated with oxygen fizzes with tiny rising bubbles.
+    let fizz = smoothstep(1.02, 1.25, oxygen) * (1.0 - smoothstep(1.5, 4.0, px));
+    if fizz > 0.0 {
+        let bp = vec2<f32>(wp.x + sin(wp.y * 0.05 + time) * 3.0, wp.y - time * 18.0) / 9.0;
+        let bc = floor(bp);
+        let bj = vec2<f32>(hash21(bc + 3.1), hash21(bc + 9.7));
+        let bubble = (1.0 - smoothstep(0.08, 0.14, length(bp - bc - bj))) * step(hash21(bc), fizz * 0.35);
+        water += vec3<f32>(0.35, 0.5, 0.5) * bubble;
+    }
 
     // Vents: hot glow and a shimmering plume.
     let vent_count = u32(bg.sun.w);
@@ -205,6 +233,22 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let carpet = (1.0 - smoothstep(0.0, 10.0 + 25.0 * detritus, sdf)) * up * clamp(detritus * 3.0, 0.0, 1.0);
     let fluff = 0.7 + 0.3 * value_noise(wp * 0.3);
     water = mix(water, vec3<f32>(0.16, 0.12, 0.08) * fluff * (0.4 + lin), carpet * 0.8);
+
+    // Chemistry map (key M): oxygen, nutrients or toxin laid over the water.
+    let map_mode = u32(bg.effects.z + 0.5);
+    if map_mode != 0u && !outside {
+        var map_col = vec3<f32>(0.0);
+        if map_mode == 1u {
+            let o = clamp(oxygen, 0.0, 1.5) / 1.5;
+            map_col = mix(vec3<f32>(0.45, 0.05, 0.4), vec3<f32>(0.1, 0.35, 0.95), smoothstep(0.0, 0.6, o));
+            map_col = mix(map_col, vec3<f32>(0.6, 0.95, 1.0), smoothstep(0.66, 1.0, o));
+        } else if map_mode == 2u {
+            map_col = mix(vec3<f32>(0.03, 0.03, 0.05), vec3<f32>(0.3, 1.0, 0.25), nutrients);
+        } else {
+            map_col = mix(vec3<f32>(0.03, 0.03, 0.05), vec3<f32>(1.0, 0.15, 0.1), toxin);
+        }
+        water = mix(water, map_col * 0.6, 0.75);
+    }
 
     let edge = smoothstep(-px, px, sdf);
     var col = mix(rock, water, edge);

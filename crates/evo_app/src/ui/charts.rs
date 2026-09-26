@@ -14,18 +14,161 @@ pub enum ChartTab {
     #[default]
     Population,
     Tree,
+    Chemistry,
 }
 
 pub fn draw(ui: &mut egui::Ui, world: &World, selection: &mut Selection, tab: &mut ChartTab) {
     ui.horizontal(|ui| {
         ui.selectable_value(tab, ChartTab::Population, "Population");
         ui.selectable_value(tab, ChartTab::Tree, "Family tree");
+        ui.selectable_value(tab, ChartTab::Chemistry, "Chemistry");
     });
     ui.separator();
     match tab {
         ChartTab::Population => population(ui, world, selection),
         ChartTab::Tree => tree(ui, world, selection),
+        ChartTab::Chemistry => chemistry(ui, world),
     }
+}
+
+/// A named, colored series read from each statistics sample.
+type Series<'a> = (
+    &'a str,
+    egui::Color32,
+    fn(&evo_core::stats::StatSample) -> f32,
+);
+
+/// Line chart of several series over the sample history (each `f(sample)`), scaled to `max`.
+fn lines(
+    ui: &mut egui::Ui,
+    samples: &[evo_core::stats::StatSample],
+    series: &[Series],
+    max: f32,
+    unit: &str,
+) {
+    let t0 = samples.first().unwrap().time;
+    let t1 = samples.last().unwrap().time.max(t0 + 1.0);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 120.0),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, egui::Color32::from_gray(20));
+    let max = series
+        .iter()
+        .flat_map(|(_, _, f)| samples.iter().map(f))
+        .fold(max, f32::max);
+    let x_of = |t: f64| rect.left() + ((t - t0) / (t1 - t0)) as f32 * rect.width();
+    let y_of = |v: f32| rect.bottom() - 2.0 - v / max * (rect.height() - 6.0);
+    // A reference line at 1.0 (today's air, saturated water).
+    if unit == "%" && max >= 1.0 {
+        let y = y_of(1.0);
+        painter.line_segment(
+            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
+        );
+    }
+    for (_, color, f) in series {
+        let points: Vec<egui::Pos2> = samples
+            .iter()
+            .map(|s| egui::pos2(x_of(s.time), y_of(f(s))))
+            .collect();
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.5, *color)));
+    }
+    let top = if unit == "%" {
+        format!("{:.0}%", max * 100.0)
+    } else {
+        format!("{max:.2}")
+    };
+    painter.text(
+        rect.left_top() + egui::vec2(4.0, 2.0),
+        egui::Align2::LEFT_TOP,
+        top,
+        egui::FontId::proportional(11.0),
+        egui::Color32::GRAY,
+    );
+    ui.horizontal_wrapped(|ui| {
+        for (name, color, f) in series {
+            let now = f(samples.last().unwrap());
+            let value = if unit == "%" {
+                format!("{:.0}%", now * 100.0)
+            } else {
+                format!("{now:.2}")
+            };
+            ui.colored_label(*color, format!("■ {name} {value}"));
+        }
+    });
+}
+
+fn chemistry(ui: &mut egui::Ui, world: &World) {
+    let samples = &world.stats.samples;
+    if samples.len() < 2 {
+        ui.label("Collecting data…");
+        return;
+    }
+    let t0 = samples.first().unwrap().time;
+    let t1 = samples.last().unwrap().time;
+    ui.label(egui::RichText::new(format!("Last {}", format_duration((t1 - t0) as f32))).weak());
+    ui.label("The air (100% = today's Earth)");
+    lines(
+        ui,
+        samples,
+        &[
+            ("Oxygen", egui::Color32::from_rgb(110, 170, 255), |s| {
+                s.air_oxygen
+            }),
+            ("CO₂", egui::Color32::from_rgb(230, 170, 90), |s| {
+                s.air_co2
+            }),
+        ],
+        1.2,
+        "%",
+    );
+    ui.add_space(6.0);
+    ui.label("Sunlit water");
+    lines(
+        ui,
+        samples,
+        &[
+            ("Oxygen", egui::Color32::from_rgb(110, 170, 255), |s| {
+                s.surface_oxygen
+            }),
+            ("Dead zones", egui::Color32::from_rgb(170, 90, 170), |s| {
+                s.anoxic_fraction
+            }),
+        ],
+        1.2,
+        "%",
+    );
+    lines(
+        ui,
+        samples,
+        &[("Nutrients", egui::Color32::from_rgb(120, 210, 110), |s| {
+            s.surface_nutrients
+        })],
+        0.1,
+        "",
+    );
+    ui.add_space(6.0);
+    ui.label("Body plans");
+    lines(
+        ui,
+        samples,
+        &[("With parts", egui::Color32::from_rgb(220, 200, 120), |s| {
+            s.with_parts as f32 / s.population.max(1) as f32
+        })],
+        1.0,
+        "%",
+    );
+    lines(
+        ui,
+        samples,
+        &[("Mean parts", egui::Color32::from_rgb(200, 150, 220), |s| {
+            s.mean_parts
+        })],
+        1.0,
+        "",
+    );
 }
 
 /// Phylogeny over time: each established species is a line from founding to extinction (or now),

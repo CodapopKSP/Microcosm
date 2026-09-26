@@ -19,6 +19,8 @@ use bevy::window::PrimaryWindow;
 
 use crate::camera::CameraState;
 use crate::sim::{Selection, SimState};
+use evo_core::Genome;
+use evo_core::parts::{self, BodyShape, Instance, PartKind};
 
 pub const ATTRIBUTE_SHAPE: MeshVertexAttribute =
     MeshVertexAttribute::new("Organism_Shape", 0x5EED_0001, VertexFormat::Float32x4);
@@ -30,12 +32,12 @@ pub const ATTRIBUTE_DIET: MeshVertexAttribute =
     MeshVertexAttribute::new("Organism_Diet", 0x5EED_0004, VertexFormat::Unorm8x4);
 pub const ATTRIBUTE_STATE: MeshVertexAttribute =
     MeshVertexAttribute::new("Organism_State", 0x5EED_0005, VertexFormat::Unorm8x4);
-/// speed gene, agility gene, eating flash, hurt flash
+/// movement (speed / max speed), walking, eating flash, hurt flash
 pub const ATTRIBUTE_MOTION: MeshVertexAttribute =
     MeshVertexAttribute::new("Organism_Motion", 0x5EED_0006, VertexFormat::Unorm8x4);
-/// sense range gene, field-of-view gene, 0, 0
-pub const ATTRIBUTE_SENSE: MeshVertexAttribute =
-    MeshVertexAttribute::new("Organism_Sense", 0x5EED_0007, VertexFormat::Unorm8x4);
+/// oxygenic share, toxin, nitrogen fixation, lure
+pub const ATTRIBUTE_CHEM: MeshVertexAttribute =
+    MeshVertexAttribute::new("Organism_Chem", 0x5EED_0007, VertexFormat::Unorm8x4);
 
 /// Flags packed into the state attribute's blue channel.
 const FLAG_SELECTED: u8 = 1;
@@ -46,6 +48,8 @@ const FLAG_MOTILE: u8 = 8;
 const FLAG_FX: u8 = 16;
 /// Member of a species struck by plague.
 const FLAG_SICK: u8 = 32;
+/// A body part (kind, size, mirror/index, seed in the body attribute).
+const FLAG_PART: u8 = 64;
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 pub struct OrganismMaterial {
@@ -81,7 +85,7 @@ impl Material2d for OrganismMaterial {
             ATTRIBUTE_DIET.at_shader_location(5),
             ATTRIBUTE_STATE.at_shader_location(6),
             ATTRIBUTE_MOTION.at_shader_location(7),
-            ATTRIBUTE_SENSE.at_shader_location(8),
+            ATTRIBUTE_CHEM.at_shader_location(8),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         Ok(())
@@ -98,8 +102,11 @@ pub struct BackgroundUniform {
     pub sun: Vec4,
     /// x, y, strength, radius
     pub vents: [Vec4; MAX_VENTS],
-    /// impact-winter darkness (0..1), number of events, 0, 0
+    /// impact-winter darkness (0..1), number of events, map mode (0 none, 1 oxygen,
+    /// 2 nutrients, 3 toxin), 0
     pub effects: Vec4,
+    /// air oxygen, air CO₂ (1 = today), 0, 0
+    pub air: Vec4,
     /// Active visible events: x, width, kind (1 upwelling, 2 wall), param
     /// (upwelling: remaining strength; wall: top y, negative while rising).
     pub events: [Vec4; MAX_EVENTS],
@@ -120,6 +127,10 @@ pub struct BackgroundMaterial {
     #[texture(5)]
     #[sampler(6)]
     pub fields: Handle<Image>,
+    /// oxygen, nutrients, toxin, CO₂
+    #[texture(7)]
+    #[sampler(8)]
+    pub chem: Handle<Image>,
 }
 
 impl Material2d for BackgroundMaterial {
@@ -137,6 +148,7 @@ struct RenderHandles {
     terrain_version: u64,
     light_image: Handle<Image>,
     fields_image: Handle<Image>,
+    chem_image: Handle<Image>,
     frame: u64,
 }
 
@@ -217,6 +229,12 @@ fn setup(
         TextureFormat::Rgba8Unorm,
         4,
     ));
+    let chem_image = images.add(empty_image(
+        m.nx as u32,
+        m.ny as u32,
+        TextureFormat::Rgba8Unorm,
+        4,
+    ));
     let terrain = images.add(terrain);
 
     let background_material = background_materials.add(BackgroundMaterial {
@@ -224,6 +242,7 @@ fn setup(
         terrain: terrain.clone(),
         light: light_image.clone(),
         fields: fields_image.clone(),
+        chem: chem_image.clone(),
     });
     // A little larger than the world so the edges don't show a seam.
     let margin = 4000.0;
@@ -253,6 +272,7 @@ fn setup(
         terrain_version: world.terrain.version,
         light_image,
         fields_image,
+        chem_image,
         frame: 0,
     });
 }
@@ -260,6 +280,7 @@ fn setup(
 fn update_background(
     state: Res<SimState>,
     cam: Res<CameraState>,
+    ui: Res<crate::ui::UiState>,
     time: Res<Time<Real>>,
     mut handles: ResMut<RenderHandles>,
     mut images: ResMut<Assets<Image>>,
@@ -312,6 +333,27 @@ fn update_background(
                     data[i + 1] = ((1.0 - (-detritus * 40.0).exp()) * 255.0) as u8;
                     data[i + 2] = ((temp / 50.0).clamp(0.0, 1.0) * 255.0) as u8;
                     data[i + 3] = 255;
+                }
+            }
+        }
+    }
+    if handles.frame % 8 == 1 {
+        let env = &world.env;
+        if let Some(mut image) = images.get_mut(&handles.chem_image)
+            && let Some(data) = image.data.as_mut()
+        {
+            let f = &env.oxygen;
+            let (nx, ny) = (f.nx, f.ny);
+            let scale = |v: f32, max: f32| ((v / max).clamp(0.0, 1.0) * 255.0) as u8;
+            let deep = cfg.chemistry.nutrient_deep.max(1e-3);
+            for y in 0..ny {
+                for x in 0..nx {
+                    let k = f.index(x, y);
+                    let i = ((ny - 1 - y) * nx + x) * 4;
+                    data[i] = scale(f.data[k], 1.5);
+                    data[i + 1] = scale(env.nutrients.data[k], deep * 1.5);
+                    data[i + 2] = ((1.0 - (-env.toxin.data[k] * 20.0).exp()) * 255.0) as u8;
+                    data[i + 3] = scale(env.co2.data[k], 2.0);
                 }
             }
         }
@@ -378,7 +420,14 @@ fn update_background(
                 n += 1;
             }
         }
-        u.effects = Vec4::new(1.0 - world.happenings.sun_factor(now), n as f32, 0.0, 0.0);
+        u.effects = Vec4::new(
+            1.0 - world.happenings.sun_factor(now),
+            n as f32,
+            ui.map_mode as u32 as f32,
+            0.0,
+        );
+        let air = &world.env.atmosphere;
+        u.air = Vec4::new(air.oxygen, air.co2, 0.0, 0.0);
     }
 }
 
@@ -412,7 +461,7 @@ struct Quad {
     diet: [u8; 4],
     state: [u8; 4],
     motion: [u8; 4],
-    sense: [u8; 4],
+    chem: [u8; 4],
 }
 
 #[derive(Default)]
@@ -425,14 +474,21 @@ struct QuadBuffers {
     diet: Vec<[u8; 4]>,
     state: Vec<[u8; 4]>,
     motion: Vec<[u8; 4]>,
-    sense: Vec<[u8; 4]>,
+    chem: Vec<[u8; 4]>,
 }
 
 impl QuadBuffers {
+    /// An axis-aligned square quad.
     fn push(&mut self, center: glam::Vec2, half: f32, q: Quad) {
+        self.push_oriented(center, glam::Vec2::splat(half), glam::Vec2::X, q);
+    }
+
+    /// A rectangle with half extents `half` whose local x axis points along `axis` (unit).
+    fn push_oriented(&mut self, center: glam::Vec2, half: glam::Vec2, axis: glam::Vec2, q: Quad) {
+        let side = glam::Vec2::new(-axis.y, axis.x);
         for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-            self.positions
-                .push([center.x + dx * half, center.y + dy * half, 0.0]);
+            let p = center + axis * (dx * half.x) + side * (dy * half.y);
+            self.positions.push([p.x, p.y, 0.0]);
             self.uvs.push([dx, dy]);
             self.shape.push(q.shape);
             self.tint.push(q.tint);
@@ -440,11 +496,104 @@ impl QuadBuffers {
             self.diet.push(q.diet);
             self.state.push(q.state);
             self.motion.push(q.motion);
-            self.sense.push(q.sense);
+            self.chem.push(q.chem);
         }
     }
 }
 
+/// Laid-out body parts per genome (many organisms share a genome exactly).
+#[derive(Default)]
+struct LayoutCache {
+    map: std::collections::HashMap<Genome, std::sync::Arc<Vec<Instance>>>,
+}
+
+impl LayoutCache {
+    fn get(&mut self, genome: &Genome) -> std::sync::Arc<Vec<Instance>> {
+        if self.map.len() > 50_000 {
+            self.map.clear();
+        }
+        self.map
+            .entry(*genome)
+            .or_insert_with(|| {
+                let body = BodyShape::from_genome(genome);
+                let mut out = Vec::new();
+                parts::layout(&parts::decode_parts(genome), &body, &mut out);
+                std::sync::Arc::new(out)
+            })
+            .clone()
+    }
+}
+
+/// Extra room around a part (in part lengths) for its bending animation.
+fn part_margin(kind: PartKind) -> f32 {
+    match kind {
+        PartKind::Flagellum => 0.2,
+        PartKind::Cilia => 0.25,
+        PartKind::Tentacle => 0.4,
+        PartKind::Frond => 0.15,
+        PartKind::Fin => 0.2,
+        PartKind::Fluke => 0.25,
+        PartKind::Leg => 0.45,
+        PartKind::Holdfast => 0.1,
+        PartKind::Stalk => 0.12,
+        PartKind::Eye => 0.02,
+        PartKind::Antenna => 0.3,
+        PartKind::Lure => 0.6,
+        PartKind::Spine => 0.05,
+        PartKind::Jaw => 0.35,
+        PartKind::Shell => 0.08,
+    }
+}
+
+/// Everything about the owner that its part quads share.
+struct PartOwner {
+    pos: glam::Vec2,
+    radius: f32,
+    heading: f32,
+    seed: f32,
+    quad: Quad,
+}
+
+/// Push the quads of `instances` that are behind (`front == false`) or in front of the body.
+fn push_parts(
+    b: &mut QuadBuffers,
+    instances: &[Instance],
+    owner: &PartOwner,
+    front: bool,
+    px: f32,
+) {
+    let rot = glam::Vec2::from_angle(owner.heading);
+    for inst in instances {
+        if inst.kind.in_front() != front {
+            continue;
+        }
+        let length = inst.length * owner.radius;
+        if length < 1.2 * px {
+            continue;
+        }
+        let axis = glam::Vec2::from_angle(owner.heading + inst.dir);
+        let base = owner.pos + rot.rotate(inst.base * owner.radius);
+        let center = base + axis * (length * 0.5);
+        let half_width = inst.width / inst.length * 0.5;
+        let margin = part_margin(inst.kind) + 2.0 * px / length;
+        let hx = 0.5 + margin.min(0.3);
+        let hy = half_width + margin;
+        let mut quad = owner.quad;
+        quad.shape = [hx, hy, half_width, length / px];
+        let mirror = if inst.mirror < 0.0 { 1u8 } else { 0 };
+        let seed = (owner.seed * 255.0) as u8;
+        quad.body = [
+            inst.kind.code(),
+            unorm(inst.size),
+            mirror | inst.index.min(100) << 1,
+            seed.wrapping_add(inst.slot as u8 * 37),
+        ];
+        quad.state[2] |= FLAG_PART;
+        b.push_oriented(center, glam::Vec2::new(hx, hy) * length, axis, quad);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn update_organisms(
     state: Res<SimState>,
     selection: Res<Selection>,
@@ -452,6 +601,7 @@ fn update_organisms(
     time: Res<Time<Real>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     handles: Res<RenderHandles>,
+    mut cache: Local<LayoutCache>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<OrganismMaterial>>,
 ) {
@@ -462,6 +612,8 @@ fn update_organisms(
     let half_view = Vec2::new(window.width(), window.height()) * 0.5 * px;
     let (view_min, view_max) = (cam.center - half_view, cam.center + half_view);
     let min_half = 1.6 * px; // never smaller than ~3 px across
+    // Parts are drawn once a body is at least this many pixels in radius.
+    let parts_from = 2.5 * px;
 
     let mut b = QuadBuffers::default();
     let capacity = world.organisms.len() + world.carcasses.len() + world.fx.len();
@@ -481,25 +633,62 @@ fn update_organisms(
             || p.y + half < view_min.y
             || p.y - half > view_max.y)
     };
+    // Half extents of a body quad (radius units): the ellipse plus room for rings and halos.
+    let body_extent = |shape: &BodyShape| {
+        glam::Vec2::new(
+            shape.half_length * 1.55 + 0.1,
+            shape.half_width * 1.4 + 0.25,
+        )
+    };
+    // How far parts can reach from the center (radius units), for culling.
+    let reach = |instances: &[Instance], shape: &BodyShape| {
+        instances
+            .iter()
+            .map(|i| i.tip().length() + i.width)
+            .fold(shape.half_length * 1.4, f32::max)
+    };
+    let body_attr = |shape: &BodyShape, jaws: f32, pattern: u8| {
+        [
+            unorm(shape.elongation),
+            unorm(shape.segments as f32 / 6.0),
+            unorm(jaws),
+            pattern,
+        ]
+    };
 
     for c in &world.carcasses {
-        let half = (c.radius * (1.4 + c.spikes * 0.5)).max(min_half);
-        if !visible(c.pos, half) {
+        let shape = BodyShape::from_genome(&c.genome);
+        let instances = cache.get(&c.genome);
+        let extent = reach(&instances, &shape);
+        if !visible(c.pos, c.radius * extent) {
             continue;
         }
-        b.push(
-            c.pos,
-            half,
-            Quad {
-                shape: [half / c.radius.max(0.01), c.radius / px, c.heading, c.seed],
-                tint: linear_tint(c.color),
-                body: [unorm(c.armor), unorm(c.spikes), 0, c.pattern],
-                diet: [unorm(c.consumed()), 0, 0, 0],
-                state: [0, 0, FLAG_DEAD, 255],
-                motion: [0, 0, 0, flash(c.hurt_tick, 0.5)],
-                sense: [0; 4],
-            },
-        );
+        let ext = (body_extent(&shape) * c.radius).max(glam::Vec2::splat(min_half));
+        let quad = Quad {
+            shape: [ext.x / c.radius, ext.y / c.radius, c.radius / px, c.seed],
+            tint: linear_tint(c.color),
+            body: body_attr(&shape, 0.0, c.genome.get(evo_core::genome::gene::PATTERN)),
+            diet: [unorm(c.consumed()), 0, 0, 0],
+            state: [0, 0, FLAG_DEAD, 255],
+            motion: [0, 0, 0, flash(c.hurt_tick, 0.5)],
+            chem: [0; 4],
+        };
+        let owner = PartOwner {
+            pos: c.pos,
+            radius: c.radius,
+            heading: c.heading,
+            seed: c.seed,
+            quad,
+        };
+        // Carcasses lose their parts as they are eaten.
+        let draw_parts = c.radius >= parts_from && c.consumed() < 0.6;
+        if draw_parts {
+            push_parts(&mut b, &instances, &owner, false, px);
+        }
+        b.push_oriented(c.pos, ext, glam::Vec2::from_angle(c.heading), quad);
+        if draw_parts {
+            push_parts(&mut b, &instances, &owner, true, px);
+        }
     }
 
     // Species currently struck by plague (and their unnamed offshoots).
@@ -517,22 +706,23 @@ fn update_organisms(
     for o in &world.organisms {
         let t = &o.traits;
         let pos = o.prev_pos.lerp(o.pos, alpha);
-        let motile = t.is_motile();
-        // Flagella get longer with speed.
-        let tail = if motile {
-            1.0 + 0.5 + 1.6 * t.speed
-        } else {
-            1.0
+        let shape = BodyShape {
+            elongation: t.elongation,
+            segments: t.segments,
+            half_length: (1.0 + 3.0 * t.elongation).sqrt(),
+            half_width: 1.0 / (1.0 + 3.0 * t.elongation).sqrt(),
         };
-        // Mandibles (strong jaws on a hunter) and a scavenger's proboscis stick out in front.
-        let mouth = if t.hunt > 0.3 { 0.5 * t.jaws } else { 0.0 }.max(if t.scavenge > 0.15 {
-            0.2 + 0.4 * t.scavenge
+        let with_parts = t.part_count > 0 && o.radius >= parts_from;
+        let instances = if with_parts {
+            Some(cache.get(&o.genome))
         } else {
-            0.0
-        });
-        let reach = tail.max(1.0 + t.spikes * 0.5).max(1.1 + mouth);
-        let half = (o.radius * reach.max(1.25)).max(min_half);
-        if !visible(pos, half) {
+            None
+        };
+        let extent = match &instances {
+            Some(i) => reach(i, &shape),
+            None => shape.half_length * 1.4,
+        };
+        if !visible(pos, (o.radius * extent).max(min_half)) {
             continue;
         }
         let mut flags = 0u8;
@@ -542,7 +732,7 @@ fn update_organisms(
         if selection.species == Some(o.species) {
             flags |= FLAG_HIGHLIGHT;
         }
-        if motile {
+        if t.is_motile() {
             flags |= FLAG_MOTILE;
         }
         if !plagued.is_empty() {
@@ -557,50 +747,60 @@ fn update_organisms(
                 flags |= FLAG_SICK;
             }
         }
-        let tint = linear_tint(t.color);
         let seed = ((o.id.wrapping_mul(2_654_435_761) >> 8) % 1000) as f32 / 1000.0;
-        let shape = [half / o.radius, o.radius / px, o.heading, seed];
-        let body = [unorm(t.armor), unorm(t.spikes), unorm(t.jaws), t.pattern];
-        let diet = [
-            unorm(t.photo),
-            unorm(t.chemo),
-            unorm(t.scavenge),
-            unorm(t.hunt),
-        ];
+        let ext = (body_extent(&shape) * o.radius).max(glam::Vec2::splat(min_half));
         let energy = o.energy / o.max_energy().max(1e-6);
         let health = o.hp / o.max_hp().max(1e-6);
-        let st = [
-            unorm(energy),
-            unorm(health),
-            flags,
-            unorm(o.mass / t.adult_mass),
-        ];
-        let agility = o.genome.frac(evo_core::genome::gene::AGILITY);
-        let motion = [
-            unorm(t.speed),
-            unorm(agility),
-            flash(o.ate_tick, 0.6),
-            flash(o.hurt_tick, 0.5),
-        ];
-        let sense = [
-            o.genome.get(evo_core::genome::gene::SENSE_RANGE),
-            o.genome.get(evo_core::genome::gene::FOV),
-            0,
-            0,
-        ];
-        b.push(
+        let max_speed = t.max_speed(o.radius).max(t.crawl_coeff * o.radius.sqrt());
+        let moving = if max_speed > 0.0 {
+            o.vel.length() / max_speed
+        } else {
+            0.0
+        };
+        let walking = o.touching && t.crawl_coeff > 0.0 && !o.anchored;
+        let quad = Quad {
+            shape: [ext.x / o.radius, ext.y / o.radius, o.radius / px, seed],
+            tint: linear_tint(t.color),
+            body: body_attr(&shape, t.jaws, t.pattern),
+            diet: [
+                unorm(t.photo),
+                unorm(t.chemo),
+                unorm(t.scavenge),
+                unorm(t.hunt),
+            ],
+            state: [
+                unorm(energy),
+                unorm(health),
+                flags,
+                unorm(o.mass / t.adult_mass),
+            ],
+            motion: [
+                unorm(moving),
+                if walking { 255 } else { 0 },
+                flash(o.ate_tick, 0.6),
+                flash(o.hurt_tick, 0.5),
+            ],
+            chem: [
+                unorm(t.oxygenic),
+                unorm(t.toxin),
+                unorm(t.fixation),
+                unorm(t.lure),
+            ],
+        };
+        let owner = PartOwner {
             pos,
-            half,
-            Quad {
-                shape,
-                tint,
-                body,
-                diet,
-                state: st,
-                motion,
-                sense,
-            },
-        );
+            radius: o.radius,
+            heading: o.heading,
+            seed,
+            quad,
+        };
+        if let Some(i) = &instances {
+            push_parts(&mut b, i, &owner, false, px);
+        }
+        b.push_oriented(pos, ext, glam::Vec2::from_angle(o.heading), quad);
+        if let Some(i) = &instances {
+            push_parts(&mut b, i, &owner, true, px);
+        }
     }
 
     // Effects (bites, gulps, shockwaves) on top.
@@ -648,7 +848,7 @@ fn update_organisms(
         mesh.insert_attribute(ATTRIBUTE_DIET, VertexAttributeValues::Unorm8x4(b.diet));
         mesh.insert_attribute(ATTRIBUTE_STATE, VertexAttributeValues::Unorm8x4(b.state));
         mesh.insert_attribute(ATTRIBUTE_MOTION, VertexAttributeValues::Unorm8x4(b.motion));
-        mesh.insert_attribute(ATTRIBUTE_SENSE, VertexAttributeValues::Unorm8x4(b.sense));
+        mesh.insert_attribute(ATTRIBUTE_CHEM, VertexAttributeValues::Unorm8x4(b.chem));
         mesh.insert_indices(Indices::U32(indices));
     }
     if let Some(mut m) = materials.get_mut(&handles.organism_material) {
@@ -669,26 +869,42 @@ fn draw_overlays(
     let Some(o) = selection.organism.and_then(|id| state.world.find(id)) else {
         return;
     };
-    let range = (o.traits.sense_radii * o.radius).min(state.world.config.genes.sense_cap);
-    if range <= o.radius {
-        return;
-    }
+    let t = &o.traits;
+    let cap = state.world.config.genes.sense_cap;
     let p = o.prev_pos.lerp(o.pos, state.alpha);
     let center = Vec2::new(p.x, p.y);
     let color = Color::srgba(0.6, 0.9, 1.0, 0.25);
-    if o.traits.fov_deg >= 359.0 {
-        gizmos.circle_2d(Isometry2d::from_translation(center), range, color);
-    } else {
-        let half = o.traits.fov_deg.to_radians() * 0.5;
-        let arc_rotation = Rot2::radians(o.heading - half - std::f32::consts::FRAC_PI_2);
+    // Smell (antennae): a circle.
+    let smell = (t.smell_radii * o.radius).min(cap);
+    if smell > o.radius {
+        gizmos.circle_2d(
+            Isometry2d::from_translation(center),
+            smell,
+            Color::srgba(0.9, 0.8, 0.5, 0.25),
+        );
+    }
+    // Sight: one cone per eye.
+    for eye in &t.eyes[..t.eye_count as usize] {
+        let range = (eye.range * o.radius).min(cap);
+        let half = eye.cos_half.acos();
+        let dir = o.heading + eye.dir;
+        let arc_rotation = Rot2::radians(dir - half - std::f32::consts::FRAC_PI_2);
         gizmos.arc_2d(
             Isometry2d::new(center, arc_rotation),
             half * 2.0,
             range,
             color,
         );
-        for a in [o.heading - half, o.heading + half] {
+        for a in [dir - half, dir + half] {
             gizmos.line_2d(center, center + Vec2::from_angle(a) * range, color);
         }
+    }
+    // Tentacle reach.
+    if t.reach > 0.0 {
+        gizmos.circle_2d(
+            Isometry2d::from_translation(center),
+            o.radius * (1.0 + t.reach),
+            Color::srgba(1.0, 0.5, 0.6, 0.3),
+        );
     }
 }

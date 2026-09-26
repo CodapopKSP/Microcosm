@@ -12,6 +12,7 @@ pub mod field;
 pub mod genome;
 pub mod grid;
 pub mod organism;
+pub mod parts;
 pub mod rng;
 pub mod species;
 pub mod stats;

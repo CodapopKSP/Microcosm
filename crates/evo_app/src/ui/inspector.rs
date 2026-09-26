@@ -3,6 +3,7 @@
 use bevy_egui::egui;
 use evo_core::World;
 use evo_core::genome::{CHROMOSOMES, gene_code};
+use evo_core::parts::{self, BodyShape};
 use evo_core::traits::{describe_gene, format_duration};
 
 use super::{DIET_NAMES, diet_color, swatch};
@@ -105,6 +106,13 @@ pub fn draw(ui: &mut egui::Ui, world: &World, id: u64, selection: &mut Selection
     );
     bar(
         ui,
+        "Nutrients",
+        o.nutrients / o.max_nutrients(&world.config).max(1e-6),
+        format!("{:.2} / {:.2}", o.nutrients, o.max_nutrients(&world.config)),
+        egui::Color32::from_rgb(90, 170, 90),
+    );
+    bar(
+        ui,
         "Age",
         o.age / t.lifespan,
         format!(
@@ -156,6 +164,9 @@ pub fn draw(ui: &mut egui::Ui, world: &World, id: u64, selection: &mut Selection
             response.on_hover_text(format!("{}: {:.0}%", DIET_NAMES[i], cap * 100.0));
         }
     });
+
+    body_plan(ui, world, o);
+    chemistry(ui, world, o);
 
     ui.separator();
     ui.horizontal(|ui| {
@@ -220,7 +231,7 @@ pub fn draw(ui: &mut egui::Ui, world: &World, id: u64, selection: &mut Selection
                                 );
                                 let painter = ui.painter();
                                 painter.rect_filled(rect, 1.0, egui::Color32::from_gray(45));
-                                if info.signed {
+                                if info.signed() {
                                     let mid = rect.center().x;
                                     let v = o.genome.signed(i);
                                     let x = mid + v * rect.width() * 0.5;
@@ -250,4 +261,201 @@ pub fn draw(ui: &mut egui::Ui, world: &World, id: u64, selection: &mut Selection
                     });
             });
     }
+}
+
+/// Body shape, parts, and what they add up to.
+fn body_plan(ui: &mut egui::Ui, world: &World, o: &evo_core::Organism) {
+    let t = &o.traits;
+    let shape = BodyShape::from_genome(&o.genome);
+    let list = parts::decode_parts(&o.genome);
+    let aspect = 1.0 + 3.0 * t.elongation;
+    let form = if aspect < 1.15 {
+        "Round".to_string()
+    } else {
+        format!("Elongated ({aspect:.1}:1)")
+    };
+    let segments = if t.segments > 1 {
+        format!(", {} segments", t.segments)
+    } else {
+        String::new()
+    };
+    let header = format!(
+        "Body plan: {} part{}",
+        t.part_count,
+        if t.part_count == 1 { "" } else { "s" }
+    );
+    egui::CollapsingHeader::new(egui::RichText::new(header).strong())
+        .id_salt("body_plan")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.label(format!("{form}{segments} body."));
+            if list.is_empty() {
+                ui.label(
+                    egui::RichText::new("No body parts: it drifts and can't sense anything.")
+                        .weak(),
+                );
+            }
+            for p in &list {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("P{}", p.slot + 1))
+                            .monospace()
+                            .weak(),
+                    );
+                    ui.label(parts::describe(p, &shape))
+                        .on_hover_text(p.kind.role());
+                });
+            }
+            ui.add_space(2.0);
+            let mut abilities: Vec<String> = Vec::new();
+            if t.speed_coeff > 0.0 {
+                abilities.push(format!("swims {:.0} u/s", t.max_speed(o.radius)));
+            }
+            if t.crawl_coeff > 0.0 {
+                abilities.push(format!(
+                    "walks {:.0} u/s on rock",
+                    t.crawl_coeff * o.radius.sqrt()
+                ));
+            }
+            if t.is_motile() {
+                abilities.push(format!("turns {:.0}°/s", t.turn_rate.to_degrees()));
+            }
+            if t.anchor > 0.0 {
+                abilities.push(if o.anchored {
+                    "anchored to rock".into()
+                } else {
+                    "anchors when it touches rock".into()
+                });
+            } else if t.grip > 0.05 {
+                abilities.push(format!("grips rock ({:.0}%)", t.grip * 100.0));
+            }
+            let cap = world.config.genes.sense_cap;
+            if t.eye_count > 0 {
+                let range = t.eyes[..t.eye_count as usize]
+                    .iter()
+                    .map(|e| e.range)
+                    .fold(0.0, f32::max);
+                abilities.push(format!(
+                    "{} eye{} see {:.0} u over {:.0}°",
+                    t.eye_count,
+                    if t.eye_count == 1 { "" } else { "s" },
+                    (range * o.radius).min(cap),
+                    t.eyes_span_deg()
+                ));
+            }
+            if t.smell_radii > 0.0 {
+                abilities.push(format!(
+                    "smells {:.0} u around",
+                    (t.smell_radii * o.radius).min(cap)
+                ));
+            }
+            if t.reach > 0.0 {
+                abilities.push(format!("reaches {:.0} u", t.reach * o.radius));
+            }
+            if t.light_span > 1.01 {
+                abilities.push(format!("catches light ×{:.1} wide", t.light_span));
+            }
+            if t.filter > 0.01 {
+                abilities.push(format!("filters marine snow ×{:.1}", 1.0 + t.filter));
+            }
+            if t.armor > 0.01 {
+                abilities.push(format!(
+                    "shell blocks {:.0}%",
+                    t.armor * world.config.feeding.armor_protection * 100.0
+                ));
+            }
+            if t.spikes > 0.01 {
+                abilities.push(format!("spines hurt attackers ({:.0}%)", t.spikes * 100.0));
+            }
+            if t.jaws > 0.01 {
+                abilities.push(format!("bite ×{:.1}", 0.2 + 1.8 * t.jaws));
+            }
+            if t.lure > 0.01 {
+                abilities.push(format!("glowing lure ({:.0}%)", t.lure * 100.0));
+            }
+            if !abilities.is_empty() {
+                ui.label(egui::RichText::new(abilities.join(" · ")).small());
+            }
+        });
+}
+
+/// Breathing, what it trades with the water, and the water around it.
+fn chemistry(ui: &mut egui::Ui, world: &World, o: &evo_core::Organism) {
+    let t = &o.traits;
+    let c = &o.chem;
+    let dt = world.config.time.dt;
+    egui::CollapsingHeader::new(egui::RichText::new("Chemistry").strong())
+        .id_salt("chemistry")
+        .default_open(true)
+        .show(ui, |ui| {
+            let breathing = if c.shortfall > 0.01 {
+                format!(
+                    "Suffocating: {:.0}% of its needs unmet (not enough oxygen)",
+                    c.shortfall * 100.0
+                )
+            } else if c.aerobic_share > 0.99 {
+                "Breathing oxygen".into()
+            } else if c.aerobic_share < 0.01 {
+                "Fermenting (no oxygen used)".into()
+            } else {
+                format!(
+                    "Breathing {:.0}%, fermenting {:.0}%",
+                    c.aerobic_share * 100.0,
+                    (1.0 - c.aerobic_share) * 100.0
+                )
+            };
+            ui.label(breathing);
+            let rate = |amount: f32, gives: &str, takes: &str| {
+                let r = amount / dt;
+                if r.abs() < 1e-5 {
+                    None
+                } else if r > 0.0 {
+                    Some(format!("{gives} {r:.3}/s"))
+                } else {
+                    Some(format!("{takes} {:.3}/s", -r))
+                }
+            };
+            let trades: Vec<String> = [
+                rate(c.oxygen, "releases O₂", "uses O₂"),
+                rate(c.co2, "releases CO₂", "uses CO₂"),
+                rate(c.minerals, "releases minerals", "uses minerals"),
+                rate(c.toxin, "leaks toxin", ""),
+                rate(c.waste, "leaks waste", ""),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            if !trades.is_empty() {
+                ui.label(egui::RichText::new(trades.join(" · ")).small());
+            }
+            let poison_rate = c.poisoned / dt / o.max_hp().max(1e-6);
+            if poison_rate >= 0.0005 {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Poisoned: losing {:.1}% HP/s",
+                        poison_rate * 100.0
+                    ))
+                    .color(egui::Color32::from_rgb(230, 90, 80)),
+                );
+            }
+            let env = &world.env;
+            let i = env.oxygen.index_at(o.pos);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Water here: O₂ {:.0}% · CO₂ {:.0}% · nutrients {:.2} · minerals {:.2}{}",
+                    env.oxygen.data[i] * 100.0,
+                    env.co2.data[i] * 100.0,
+                    env.nutrients.data[i],
+                    env.minerals.data[i],
+                    if env.toxin.data[i] > 0.001 {
+                        format!(" · toxin {:.3}", env.toxin.data[i])
+                    } else {
+                        String::new()
+                    }
+                ))
+                .small()
+                .weak(),
+            );
+            let _ = t;
+        });
 }

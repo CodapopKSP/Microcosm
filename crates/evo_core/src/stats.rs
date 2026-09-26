@@ -24,6 +24,17 @@ pub struct StatSample {
     pub deaths: u32,
     pub sun: f32,
     pub surface_temp: f32,
+    /// Air: oxygen and CO₂ (1.0 = today).
+    pub air_oxygen: f32,
+    pub air_co2: f32,
+    /// Mean oxygen and nutrients in the sunlit top of the ocean, and the share of water
+    /// that is nearly oxygen-free (dead zones).
+    pub surface_oxygen: f32,
+    pub surface_nutrients: f32,
+    pub anoxic_fraction: f32,
+    /// Organisms with at least one body part, and the mean number of parts.
+    pub with_parts: u32,
+    pub mean_parts: f32,
     /// (species id, population) for established living species.
     pub species_populations: Vec<(u32, u32)>,
 }
@@ -34,7 +45,7 @@ pub struct Stats {
     pub samples: Vec<StatSample>,
     pub total_births: u64,
     pub total_deaths: u64,
-    pub deaths_by_cause: [u64; 8],
+    pub deaths_by_cause: [u64; 10],
     pub births_since_sample: u32,
     pub deaths_since_sample: u32,
     pub since_sample: f32,
@@ -126,6 +137,14 @@ pub struct Milestones {
     pub first_hunter: bool,
     pub first_eyes: bool,
     pub first_armor: bool,
+    pub first_walker: bool,
+    pub first_anchored: bool,
+    pub first_anaerobe: bool,
+    pub first_sulfur: bool,
+    pub first_fixer: bool,
+    pub first_toxic: bool,
+    /// Part kinds that have appeared in a reproducing lineage (bit = kind code).
+    pub parts_seen: u32,
     /// Largest adult radius ever born.
     pub size_record: f32,
 }

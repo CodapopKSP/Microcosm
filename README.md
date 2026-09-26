@@ -1,12 +1,15 @@
 # Evolution
 
-A side-on ocean where life evolves on its own, built to be watched (for example, running on a stream for weeks). The world starts with a single kind of tiny floating green microbe. Swimming, senses, scavenging, predation, chemosynthesis at hydrothermal vents, armor and large bodies all have to evolve. Species get names, founders and family trees. They rise, spread, and go extinct.
+A side-on ocean where life evolves on its own, built to be watched (for example, running on a stream for weeks). The world starts with a single kind of tiny floating green microbe with no body parts. Everything else has to evolve: flagella, fins, legs, tentacles, fronds, eyes, jaws, shells and the rest of the body plan; scavenging, predation and chemosynthesis at hydrothermal vents; breathing oxygen or fermenting, toxins, and large bodies. The water has real chemistry: photosynthesis releases oxygen, breathing and rotting use it, and nutrients cycle through bodies. Species get names, founders and family trees. They rise, spread, and go extinct.
 
-Every organism has a **34-byte genome in ten lettered chromosomes**, one byte per gene, readable by a human:
+Every organism has a **60-byte genome in nine lettered chromosomes**, one byte per gene, readable by a human:
 
 ```
-A:000000 B:20A05020 C:55C000 D:FF000000 H:2030 M:000000 N:8080808080808080 R:FF00B0 S:0000 T:80A0
+B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 N:80808080808080808000
+P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0
 ```
+
+Chromosome **P** holds up to eight body parts (type and symmetry, size, placement). Parts get copied, lost, and change into related kinds, so body plans evolve.
 
 Click any organism to see what each gene does.
 
@@ -32,6 +35,7 @@ cargo run --release -- --new
 # Load a specific save
 cargo run --release -- --load saves/quicksave.bin
 
+# Saves from before body parts (genome v2) can't be loaded; start a new world.
 # Saves keep their own config. To apply your edited config to a saved world:
 cargo run --release -- --load saves/autosave.bin --config configs/default.toml
 
@@ -52,12 +56,13 @@ cargo run --release -- --stream
 | Tab | Hide the UI (stream view) |
 | C | Auto camera |
 | L / G / E / T / H | Species list / charts (population, family tree) / event history / event ticker / help |
+| M | Chemistry map: oxygen, nutrients, toxin |
 | F5 | Quicksave (`saves/quicksave.bin`). The world also autosaves every 10 minutes and on exit; the previous save is kept as `*.prev.bin` |
 | Ctrl+1–4 | Trigger a plague, upwelling, meteor, or rock wall right now |
 
 ### Art gallery
 
-`cargo run --release -- --gallery` opens a paused world with rows of organisms, each row sweeping one gene from `00` to `FF` (eye range, field of view, hunting, jaws, scavenging, speed, agility, armor, spikes). Use it to check how traits look.
+`cargo run --release -- --gallery` opens a paused world with rows of organisms, each row sweeping one gene from `00` to `FF`: the size of each of the fifteen body parts, elongation, segments, mouths, and the chemistry genes that show on the body. Use it to check how traits look.
 
 ### Headless
 

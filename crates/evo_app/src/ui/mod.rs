@@ -12,6 +12,36 @@ use evo_core::traits::format_duration;
 use crate::camera::CameraState;
 use crate::sim::{SPEEDS, Selection, SimState};
 
+/// Water overlay showing one chemical (key M cycles).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MapMode {
+    #[default]
+    None = 0,
+    Oxygen = 1,
+    Nutrients = 2,
+    Toxin = 3,
+}
+
+impl MapMode {
+    pub fn next(self) -> MapMode {
+        match self {
+            MapMode::None => MapMode::Oxygen,
+            MapMode::Oxygen => MapMode::Nutrients,
+            MapMode::Nutrients => MapMode::Toxin,
+            MapMode::Toxin => MapMode::None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MapMode::None => "",
+            MapMode::Oxygen => "Oxygen map: blue = rich, purple = dead zone",
+            MapMode::Nutrients => "Nutrient map: brighter green = richer",
+            MapMode::Toxin => "Toxin map: red = poisoned water",
+        }
+    }
+}
+
 #[derive(Resource)]
 pub struct UiState {
     /// Hide everything except the minimal stream overlay.
@@ -23,6 +53,7 @@ pub struct UiState {
     pub show_history: bool,
     history_filter: [bool; 6],
     pub show_senses: bool,
+    pub map_mode: MapMode,
     chart_tab: charts::ChartTab,
     fps: f64,
 }
@@ -38,6 +69,7 @@ impl Default for UiState {
             show_history: false,
             history_filter: [true; 6],
             show_senses: true,
+            map_mode: MapMode::None,
             chart_tab: charts::ChartTab::default(),
             fps: 0.0,
         }
@@ -60,6 +92,12 @@ fn apply_stream_option(options: Res<crate::ViewerOptions>, mut ui: ResMut<UiStat
         ui.show_ui = false;
     }
     ui.show_charts = options.charts;
+    ui.map_mode = match options.map.as_deref() {
+        Some("oxygen") => MapMode::Oxygen,
+        Some("nutrients") => MapMode::Nutrients,
+        Some("toxin") => MapMode::Toxin,
+        _ => MapMode::None,
+    };
     if options.tree {
         ui.chart_tab = charts::ChartTab::Tree;
     }
@@ -75,6 +113,9 @@ fn ui_keys(
     }
     if keys.just_pressed(KeyCode::Tab) {
         ui.show_ui = !ui.show_ui;
+    }
+    if keys.just_pressed(KeyCode::KeyM) {
+        ui.map_mode = ui.map_mode.next();
     }
     if keys.just_pressed(KeyCode::KeyH) || keys.just_pressed(KeyCode::F1) {
         ui.show_help = !ui.show_help;
@@ -244,6 +285,27 @@ fn top_bar(
                 c.sun / world.config.light.surface_intensity * 100.0
             ));
             ui.label(format!("Surface {:.1} °C", c.surface_temp));
+            let air = &world.env.atmosphere;
+            ui.label(format!(
+                "Air O₂ {:.0}% CO₂ {:.0}%",
+                air.oxygen * 100.0,
+                air.co2 * 100.0
+            ))
+            .on_hover_text(
+                "Oxygen and CO₂ in the air, relative to today's Earth. Photosynthesis \
+                     releases oxygen and uses CO₂; breathing and rotting do the opposite. \
+                     More CO₂ warms the climate.",
+            );
+            if ui
+                .selectable_label(ui_state.map_mode != MapMode::None, "Map")
+                .on_hover_text("Show oxygen, nutrients or toxin in the water (key M cycles)")
+                .clicked()
+            {
+                ui_state.map_mode = ui_state.map_mode.next();
+            }
+            if ui_state.map_mode != MapMode::None {
+                ui.label(egui::RichText::new(ui_state.map_mode.label()).weak());
+            }
             ui.separator();
             ui.label(format!("Population {}", world.organisms.len()));
             ui.label(format!("Species {}", world.species.living().count()));
@@ -647,10 +709,16 @@ fn help(ui: &mut egui::Ui) {
     ui.label(
         "Ctrl+1 plague · Ctrl+2 upwelling · Ctrl+3 meteor · Ctrl+4 rock wall (trigger events now)",
     );
-    ui.label("Tab: hide the UI (stream view) · C: auto camera · L: species list · G: charts · E: history · T: event ticker · H: help");
+    ui.label("Tab: hide the UI (stream view) · C: auto camera · L: species list · G: charts · E: history · T: event ticker · M: chemistry map · H: help");
     ui.separator();
+    ui.label("Each organism's genome is 60 bytes in nine chromosomes (B, C, D, G, H, N, P, R, T).");
     ui.label(
-        "Each organism's genome is 34 bytes in ten chromosomes (A, B, C, D, H, M, N, R, S, T).",
+        "P holds up to eight body parts (3 bytes each: type and symmetry, size, placement). \
+         Parts can be copied, lost, or change into related kinds, so body plans evolve.",
+    );
+    ui.label(
+        "G is chemistry: breathing oxygen or fermenting, oxygen- or mineral-based photosynthesis, \
+         nutrient uptake, nitrogen fixation, toxins and resistance to them.",
     );
     ui.label("Every byte is one gene. The inspector shows each gene's value and what it does.");
     ui.label("Genes highlighted in orange mutated in this organism (they differ from its parent).");

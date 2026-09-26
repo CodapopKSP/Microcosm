@@ -316,6 +316,8 @@ fn director(
         let score = o.radius.ln_1p() * 2.0
             + o.traits.hunt * 2.0
             + o.traits.is_motile() as u32 as f32
+            + (o.traits.part_count as f32).min(12.0) * 0.25
+            + (o.traits.lure > 0.0) as u32 as f32
             + 3.0 / pop.sqrt()
             + young * 2.0
             + rng.f32();

@@ -264,6 +264,54 @@ fn diagnostics(world: &World) {
         light += world.env.light.level_at(o.pos);
     }
     let (m, d) = world.env.field_totals();
+    let (mut nutrients, mut aerobic, mut shortfall, mut parts, mut photo_o2) =
+        (0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for o in &world.organisms {
+        nutrients += o.nutrients / o.max_nutrients(&world.config).max(1e-6);
+        aerobic += o.chem.aerobic_share;
+        shortfall += o.chem.shortfall;
+        parts += o.traits.part_count as f32;
+        photo_o2 += o.chem.oxygen.max(0.0);
+    }
+    let dt = world.config.time.dt;
+    let chemistry = |f: &evo_core::field::Field, rows: std::ops::Range<usize>| {
+        let (mut sum, mut n) = (0.0f64, 0u32);
+        for y in rows {
+            for x in 0..f.nx {
+                let i = f.index(x, y);
+                if !f.solid[i] {
+                    sum += f.data[i] as f64;
+                    n += 1;
+                }
+            }
+        }
+        sum / n.max(1) as f64
+    };
+    let env = &world.env;
+    let ny = env.oxygen.ny;
+    let top = ny - (400.0 / env.oxygen.cell) as usize..ny;
+    let mid = ny / 2 - 5..ny / 2 + 5;
+    let deep = 0..ny / 4;
+    println!(
+        "          stores {:.0}% aerobic {:.0}% short {:.1}% parts {:.2} | O2 top {:.2} mid {:.2} deep {:.2} | CO2 top {:.2} deep {:.2} | nutr top {:.3} deep {:.3} | detr top {:.3} deep {:.3} | toxin {:.4} | air O2 {:.3} CO2 {:.3} | O2 out {:.3}/s",
+        nutrients / n * 100.0,
+        aerobic / n * 100.0,
+        shortfall / n * 100.0,
+        parts / n,
+        chemistry(&env.oxygen, top.clone()),
+        chemistry(&env.oxygen, mid.clone()),
+        chemistry(&env.oxygen, deep.clone()),
+        chemistry(&env.co2, top.clone()),
+        chemistry(&env.co2, deep.clone()),
+        chemistry(&env.nutrients, top.clone()),
+        chemistry(&env.nutrients, deep.clone()),
+        chemistry(&env.detritus, top.clone()),
+        chemistry(&env.detritus, deep.clone()),
+        chemistry(&env.toxin, 0..ny),
+        env.atmosphere.oxygen,
+        env.atmosphere.co2,
+        photo_o2 / dt,
+    );
     println!(
         "          gain {:.4}/s cost {:.4}/s reserves {:.0}% adult {:.0}% depth {:.0} age {:.0}% light {:.4} (sun {:.4}) minerals {:.0} detritus {:.0}",
         gain / n,

@@ -21,11 +21,12 @@ use crate::environment::{EnvEvent, Environment};
 use crate::events::{Events, WorldEvent, barrier_height};
 use crate::genome::{Genome, color_distance, drive};
 use crate::grid::{Entry, SpatialGrid};
-use crate::organism::{Activity, Carcass, DeathCause, Organism};
+use crate::organism::{Activity, Carcass, Chem, DeathCause, Organism};
 use crate::rng::{Rng, mix64};
 use crate::species::{SpeciesEvent, SpeciesRegistry};
 use crate::stats::{Event, EventKind, EventLog, Milestones, StatSample, Stats};
 use crate::terrain::Terrain;
+use crate::traits::MAX_EYES;
 
 /// Field (minerals, detritus, vents) update interval in ticks.
 const FIELD_INTERVAL: u64 = 3;
@@ -36,7 +37,9 @@ const NONE: u32 = u32::MAX;
 const STEER_INTERVAL: u64 = 2;
 /// Drives weaker than this are ignored (skips sensing work for genes that drifted near neutral).
 const MIN_DRIVE: f32 = 0.02;
-const SAVE_MAGIC: &[u8] = b"EVOSAVE1";
+/// Save format marker. Bumped when saves stop being loadable (v2: genome with parts and chemistry).
+const SAVE_MAGIC: &[u8] = b"EVOSAVE2";
+const OLD_SAVE_MAGIC: &[u8] = b"EVOSAVE1";
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Intent {
@@ -241,30 +244,34 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     let is_kin =
         |e: &Entry| color_distance(t.hue, t.saturation, e.hue, e.saturation) < kin_threshold;
 
-    // Contacts: soft collision push and a prey candidate.
+    // Contacts: soft collision push, and a prey candidate within tentacle reach.
     let mass = r * r;
     let hunts = t.hunt > 0.0;
+    let reach = t.reach * r;
     let mut prey: Option<(u32, f32)> = None;
     let mut push = Vec2::ZERO;
-    ctx.grid.query(pos, r, 0.0, |e| {
+    ctx.grid.query(pos, r + reach, 0.0, |e| {
         if e.index as usize == i {
             return true;
         }
         let d = e.pos - pos;
-        let min = r + e.radius;
         let dist2 = d.length_squared();
-        if dist2 >= min * min {
+        let grab = r + reach + e.radius;
+        if dist2 >= grab * grab {
             return true;
         }
-        let dist = dist2.sqrt();
-        let dir = if dist > 1e-4 {
-            d / dist
-        } else {
-            let h = mix64((i as u64) << 32 | e.index as u64);
-            Vec2::from_angle((h >> 40) as f32 / (1u64 << 24) as f32 * std::f32::consts::TAU)
-        };
-        let other_mass = e.radius * e.radius;
-        push -= dir * (min - dist) * (other_mass / (mass + other_mass));
+        let min = r + e.radius;
+        if dist2 < min * min {
+            let dist = dist2.sqrt();
+            let dir = if dist > 1e-4 {
+                d / dist
+            } else {
+                let h = mix64((i as u64) << 32 | e.index as u64);
+                Vec2::from_angle((h >> 40) as f32 / (1u64 << 24) as f32 * std::f32::consts::TAU)
+            };
+            let other_mass = e.radius * e.radius;
+            push -= dir * (min - dist) * (other_mass / (mass + other_mass));
+        }
         if hunts && !is_kin(e) && prey.is_none_or(|(_, pr)| e.radius < pr) {
             prey = Some((e.index, e.radius));
         }
@@ -275,11 +282,12 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
         intent.attack = j;
     }
 
-    // Carcass contact.
+    // Carcass contact (tentacles reach them too).
     let eats_carcasses = t.scavenge > 0.0 || t.hunt > 0.0;
     if eats_carcasses && !ctx.carcass_grid.is_empty() {
-        ctx.carcass_grid.query(pos, r, 0.0, |e| {
-            if e.pos.distance_squared(pos) < (r + e.radius) * (r + e.radius) {
+        ctx.carcass_grid.query(pos, r + reach, 0.0, |e| {
+            let grab = r + reach + e.radius;
+            if e.pos.distance_squared(pos) < grab * grab {
                 intent.carcass = e.index;
                 return false;
             }
@@ -292,7 +300,7 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     }
     // Steering decisions are made every STEER_INTERVAL ticks (staggered by id); in between,
     // keep swimming on the last decision.
-    if (o.id + ctx.tick) % STEER_INTERVAL != 0 {
+    if !(o.id + ctx.tick).is_multiple_of(STEER_INTERVAL) {
         intent.heading = o.steer_heading;
         intent.throttle = o.steer_throttle;
         intent.activity = o.activity;
@@ -309,7 +317,13 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
 
     let mut foraging = Vec2::ZERO;
     if d[drive::LIGHT].abs() > MIN_DRIVE {
-        let g = env.light.relative_gradient(pos, probe);
+        let mut g = env.light.relative_gradient(pos, probe);
+        if env.any_glow {
+            // Lures count as light (the anglerfish trick).
+            let p = probe.max(env.glow.cell);
+            let here = env.light.level_at(pos) + env.glow.sample(pos);
+            g += env.glow.gradient(pos, p) * p / here.max(1e-4);
+        }
         foraging += d[drive::LIGHT] * food * gradient_drive(g, 8.0);
     }
     if d[drive::MINERALS].abs() > MIN_DRIVE {
@@ -330,14 +344,36 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             .gradient(pos, probe.max(env.temperature.cell));
         steer += d[drive::WARMTH] * gradient_drive(g, 20.0);
     }
+    if d[drive::OXYGEN].abs() > MIN_DRIVE {
+        let here = env.oxygen.sample(pos);
+        let g = env.oxygen.gradient(pos, probe.max(env.oxygen.cell)) / (here + 0.05);
+        steer += d[drive::OXYGEN] * gradient_drive(g, 30.0);
+    }
     steer.y += d[drive::RISE];
 
     let mut hunting = Vec2::ZERO;
     let mut fleeing = Vec2::ZERO;
     let mut schooling = Vec2::ZERO;
-    let range = (t.sense_radii * r).min(cfg.genes.sense_cap);
+    let cap = cfg.genes.sense_cap;
+    let range = (t.sense_radii * r).min(cap);
     if range > r {
-        let forward = Vec2::from_angle(o.heading);
+        // Antennae smell all around; eyes see within their cones.
+        let smell = (t.smell_radii * r).min(cap);
+        let eye_count = t.eye_count as usize;
+        let mut cones = [(Vec2::ZERO, 0.0f32, 0.0f32); MAX_EYES];
+        for (cone, eye) in cones.iter_mut().zip(&t.eyes[..eye_count]) {
+            *cone = (
+                Vec2::from_angle(o.heading + eye.dir),
+                eye.cos_half,
+                (eye.range * r).min(cap),
+            );
+        }
+        let perceives = |dir: Vec2, dist: f32, other: f32| {
+            dist < smell + other
+                || cones[..eye_count].iter().any(|&(axis, cos_half, reach)| {
+                    dist < reach + other && dir.dot(axis) >= cos_half
+                })
+        };
         let mut nearest_smaller = f32::MAX;
         let mut seen = 0u32;
         ctx.grid.query(pos, range, r / 8.0, |e| {
@@ -351,7 +387,7 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
                 return true;
             }
             let dir = delta / dist;
-            if dir.dot(forward) < t.fov_cos {
+            if !perceives(dir, dist, e.radius) {
                 return true;
             }
             seen += 1;
@@ -371,10 +407,11 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
         if d[drive::CARRION].abs() > MIN_DRIVE && !ctx.carcass_grid.is_empty() {
             let mut best = f32::MAX;
             ctx.carcass_grid.query(pos, range, 0.0, |e| {
-                let dist = e.pos.distance(pos);
-                if dist < best && dist < range + e.radius {
+                let delta = e.pos - pos;
+                let dist = delta.length();
+                if dist < best && dist > 1e-4 && perceives(delta / dist, dist, e.radius) {
                     best = dist;
-                    carrion = (e.pos - pos).normalize_or_zero();
+                    carrion = delta / dist;
                 }
                 true
             });
@@ -434,6 +471,8 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
     let dt = cfg.time.dt;
     let met = &cfg.metabolism;
     let phys = &cfg.physics;
+    let cc = &cfg.chemistry;
+    let env = ctx.env;
     let t = o.traits;
 
     o.age += dt;
@@ -444,59 +483,151 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
     o.steer_heading = intent.heading;
     o.steer_throttle = intent.throttle;
 
-    // Movement.
+    // Movement. Bodies with legs or holdfasts check whether they touch rock: legs walk on it,
+    // grip resists the current, and a holdfast anchors unless the organism is swimming off.
     let r = o.radius;
-    if t.is_motile() {
+    o.touching =
+        t.uses_contact() && ctx.terrain.distance(o.pos) < 1.5 * r + cfg.parts.contact_margin;
+    let anchored = o.touching && t.anchor > 0.0 && intent.throttle < 0.3;
+    o.anchored = anchored;
+    if t.is_motile() && !anchored {
         let diff = wrap_angle(intent.heading - o.heading);
         let max_turn = t.turn_rate * dt;
         o.heading = wrap_angle(o.heading + diff.clamp(-max_turn, max_turn));
     }
-    let target = Vec2::from_angle(o.heading) * intent.throttle * t.max_speed(r);
+    let swim_speed = t.max_speed(r);
+    let walk_speed = if o.touching {
+        t.crawl_coeff * r.sqrt()
+    } else {
+        0.0
+    };
+    let walking = walk_speed > swim_speed;
+    let target = Vec2::from_angle(o.heading) * intent.throttle * swim_speed.max(walk_speed);
     let response = (phys.response / r.sqrt() * dt).min(1.0);
     o.vel += (target - o.vel) * response;
-    let drift = Vec2::new(0.0, t.buoyancy * phys.buoyancy_speed * r.sqrt());
-    let brownian = if phys.brownian > 0.0 {
-        Vec2::from_angle(o.rng.angle()) * (phys.brownian / r * o.rng.f32())
+    if anchored {
+        o.vel = Vec2::ZERO;
+        o.pos += intent.push * 0.3;
     } else {
-        Vec2::ZERO
-    };
-    let water = crate::currents::flow(
-        o.pos,
-        ctx.time,
-        cfg.world.height,
-        &cfg.currents,
-        cfg.world.seed,
-    );
-    o.pos += (o.vel + drift + brownian + water) * dt + intent.push;
+        let grip = if o.touching { t.grip } else { 0.0 };
+        let drift = Vec2::new(0.0, t.buoyancy * phys.buoyancy_speed * r.sqrt());
+        let brownian = if phys.brownian > 0.0 {
+            Vec2::from_angle(o.rng.angle()) * (phys.brownian / r * o.rng.f32())
+        } else {
+            Vec2::ZERO
+        };
+        let water = crate::currents::flow(
+            o.pos,
+            ctx.time,
+            cfg.world.height,
+            &cfg.currents,
+            cfg.world.seed,
+        );
+        o.pos += (o.vel + (drift + brownian + water) * (1.0 - grip)) * dt + intent.push;
+    }
     ctx.terrain.collide(&mut o.pos, &mut o.vel, r);
 
-    // Energy.
+    // Energy needs.
     let m75 = o.mass.powf(0.75);
-    let temp = ctx.env.temperature.sample(o.pos);
+    let temp = env.temperature.sample(o.pos);
     o.temperature = temp;
     let stress = ((temp - t.temp_pref) / t.temp_tol).powi(2);
     let basal = met.basal * m75 * t.upkeep * (1.0 + met.temp_stress_cost * stress.min(4.0));
-    let movement = met.basal * m75 * met.move_cost * t.speed * intent.throttle * intent.throttle;
+    let effort = if walking {
+        0.5 * t.crawl_coeff / cfg.parts.crawl_speed.max(1e-6)
+    } else {
+        t.swim * t.drag
+    };
+    let movement = met.basal * m75 * met.move_cost * effort * intent.throttle * intent.throttle;
+
+    // The water here (all chemistry fields share one grid).
+    let idx = env.oxygen.water_index_at(o.pos);
+    let oxygen = env.oxygen.data[idx];
+    let mut chem = Chem::default();
+
+    // Photosynthesis: oxygen-producing (needs CO₂) and sulfur-based (needs minerals).
     let mut photo = 0.0;
     if t.pigment > 0.0 {
-        let light = &ctx.env.light;
-        light.for_each_covered(o.prev_pos, r, |idx, w| photo += light.share[idx] * w);
-        photo *= t.pigment * cfg.light.photo_yield;
+        let light = &env.light;
+        let mut absorbed = 0.0;
+        light.for_each_covered(o.prev_pos, r * t.light_span, |i, w| {
+            absorbed += light.share[i] * w
+        });
+        let raw = absorbed * t.pigment * cfg.light.photo_yield;
+        let co2 = env.co2.data[idx];
+        let k = cc.co2_half;
+        let oxygenic = raw * t.oxygenic * (co2 * (1.0 + k) / (co2 + k)).max(0.0);
+        let minerals = env.minerals.data[idx].max(0.0);
+        let sulfur = raw * (1.0 - t.oxygenic) * minerals / (minerals + cc.sulfur_half);
+        photo = oxygenic + sulfur;
+        chem.oxygen += oxygenic * cc.oxygen_per_energy * dt;
+        chem.co2 -= oxygenic * cc.co2_per_energy * dt;
+        chem.minerals -= sulfur * cc.sulfur_minerals * dt;
     }
-    o.energy += (photo - basal - movement) * dt;
-    o.gain_rate = photo;
-    o.cost_rate = basal + movement;
 
+    // Respiration: breathe oxygen as far as capacity and the water allow, ferment the rest
+    // (costlier, and it leaks organic waste). Whatever can't be met suffocates.
+    let demand = basal + movement;
+    let available = (oxygen / cc.oxygen_half).clamp(0.0, 1.0);
+    let aerobic = t.aerobic.min(available);
+    let ferment = (1.0 - aerobic).min(t.ferment);
+    let shortfall = (1.0 - aerobic - ferment).max(0.0);
+    let mut cost = demand * (aerobic + ferment * (1.0 + cc.ferment_penalty));
+    chem.oxygen -= demand * aerobic * cc.oxygen_per_energy * dt;
+    chem.co2 += demand * (aerobic + 0.5 * ferment) * cc.co2_per_energy * dt;
+    chem.waste += demand * ferment * cc.ferment_penalty * cc.ferment_waste * dt;
+    chem.aerobic_share = aerobic;
+    chem.shortfall = shortfall;
+
+    // Nitrogen fixation (hampered by oxygen).
+    let nutrient_cap = o.max_nutrients(cfg);
+    if t.fixation > 0.0 && o.nutrients < nutrient_cap {
+        let inhibition = 1.0 - 0.6 * oxygen.min(1.0);
+        let fixed = (cc.fixation_rate * t.fixation * o.mass * inhibition * dt)
+            .min(nutrient_cap - o.nutrients);
+        o.nutrients += fixed;
+        cost += fixed * cc.fixation_cost / dt;
+    }
+
+    // Toxins: leak our own; suffer from others' unless they carry our hue's signature.
+    if t.toxin > 0.0 {
+        chem.toxin = cc.toxin_rate * t.toxin * r * dt;
+    }
     let max_hp = o.max_hp();
+    let mut poison = 0.0;
+    let toxin = env.toxin.data[idx];
+    if toxin > 1e-6 {
+        let signature = Vec2::new(env.toxin_hue_x.data[idx], env.toxin_hue_y.data[idx]) / toxin;
+        let hue = Vec2::from_angle(t.hue as f32 / 256.0 * std::f32::consts::TAU);
+        let immunity = ((signature.dot(hue) - 0.85) / 0.1).clamp(0.0, 1.0);
+        poison += cc.toxin_damage * toxin / (1.0 + r / 8.0)
+            * (1.0 - immunity)
+            * (1.0 - t.resistance)
+            * max_hp
+            * dt;
+    }
+    // Oxygen poisons strict fermenters.
+    let strict = (1.0 - 2.0 * t.aerobic).max(0.0);
+    if strict > 0.0 && oxygen > 0.5 {
+        poison += cc.oxygen_toxicity * strict * strict * (oxygen - 0.5) * max_hp * dt;
+    }
+    chem.poisoned = poison;
+
+    o.energy += (photo - cost) * dt;
+    o.gain_rate = photo;
+    o.cost_rate = cost;
+
+    let suffocation = cc.suffocation_damage * shortfall * max_hp * dt;
     let mut temperature_damage = 0.0;
     if stress > 1.0 {
         temperature_damage = met.temp_damage * (stress - 1.0).min(10.0) * max_hp * dt;
-        o.hp -= temperature_damage;
     }
+    let mut starvation = 0.0;
     if o.energy < 0.0 {
-        o.hp -= -o.energy * met.starvation_damage;
+        starvation = -o.energy * met.starvation_damage;
         o.energy = 0.0;
     }
+    o.hp -= temperature_damage + suffocation + poison + starvation;
 
     // Regeneration.
     if o.hp < max_hp && o.energy > 0.0 {
@@ -508,31 +639,53 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
         o.cost_rate += heal * met.regen_cost / dt;
     }
 
-    // Growth toward adult size.
+    // Growth toward adult size, limited by stored nutrients.
     if o.mass < t.adult_mass {
         let buffer = met.growth_buffer * o.max_energy();
         if o.energy > buffer {
+            let build = met.build_cost * t.build_factor;
             let invest = (o.energy - buffer)
-                .min(met.growth_rate * o.mass * dt * met.build_cost)
-                .min((t.adult_mass - o.mass) * met.build_cost);
-            o.energy -= invest;
-            let old_max_hp = max_hp;
-            o.set_mass(o.mass + invest / met.build_cost);
-            // Growing adds HP proportionally so a healthy juvenile stays healthy.
-            o.hp += o.max_hp() - old_max_hp;
+                .min(met.growth_rate * o.mass * dt * build)
+                .min((t.adult_mass - o.mass) * build)
+                .min(o.nutrients.max(0.0) / cc.nutrient_per_mass * build);
+            if invest > 0.0 {
+                o.energy -= invest;
+                let grown = invest / build;
+                o.nutrients -= grown * cc.nutrient_per_mass;
+                let old_max_hp = max_hp;
+                o.set_mass(o.mass + grown);
+                // Growing adds HP proportionally so a healthy juvenile stays healthy.
+                o.hp += o.max_hp() - old_max_hp;
+            }
         }
     }
     o.energy = o.energy.min(o.max_energy());
     o.hp = o.hp.min(o.max_hp());
+    // Nutrients beyond the store are excreted.
+    let excess = o.nutrients - o.max_nutrients(cfg);
+    if excess > 0.0 {
+        o.nutrients -= excess;
+        chem.nutrients += excess;
+    }
+    o.chem = chem;
 
     if o.age > t.lifespan && o.rng.chance(met.old_age_death_rate * dt) {
         o.dead = Some(DeathCause::OldAge);
     } else if o.hp <= 0.0 {
-        o.dead = Some(if temperature_damage > 0.0 && o.energy > 0.0 {
-            DeathCause::Temperature
-        } else {
-            DeathCause::Starvation
-        });
+        let causes = [
+            (starvation, DeathCause::Starvation),
+            (temperature_damage, DeathCause::Temperature),
+            (suffocation, DeathCause::Suffocation),
+            (poison, DeathCause::Poison),
+        ];
+        o.dead = Some(
+            causes
+                .iter()
+                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+                .filter(|c| c.0 > 0.0)
+                .map(|c| c.1)
+                .unwrap_or(DeathCause::Starvation),
+        );
     }
 }
 
@@ -598,6 +751,13 @@ impl World {
 
     pub fn load(path: &std::path::Path) -> Result<World, String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        if bytes.starts_with(OLD_SAVE_MAGIC) {
+            return Err(format!(
+                "{}: this save is from an older version (before body parts and chemistry) \
+                 and can't be loaded; start a new world with --new",
+                path.display()
+            ));
+        }
         let body = bytes
             .strip_prefix(SAVE_MAGIC)
             .ok_or_else(|| format!("{}: not an evolution save file", path.display()))?;
@@ -732,11 +892,13 @@ impl World {
             for e in &self.happenings.active {
                 if let WorldEvent::Upwelling { x, width, rate, .. } = e {
                     let h = config.world.height;
-                    self.env.inject_minerals(
+                    let (min, max) = (
                         Vec2::new(x - width * 0.5, h - 600.0),
                         Vec2::new(x + width * 0.5, h),
-                        rate * field_dt,
                     );
+                    self.env.inject_minerals(min, max, rate * field_dt);
+                    let nutrients = rate * field_dt * config.chemistry.upwelling_nutrients;
+                    self.env.inject_nutrients(min, max, nutrients);
                 }
             }
         }
@@ -757,9 +919,19 @@ impl World {
                     hue: o.traits.hue,
                     saturation: o.traits.saturation,
                     absorptance: o.traits.absorptance,
+                    light_radius: o.radius * o.traits.light_span,
+                    lure: o.traits.lure,
                 }
             })
             .collect_into_vec(&mut scratch.entries);
+        self.env.rebuild_glow(
+            scratch
+                .entries
+                .iter()
+                .filter(|e| e.lure > 0.0)
+                .map(|e| (e.pos, e.lure)),
+            config,
+        );
         lap(&mut timings.staging);
         scratch.grid.rebuild(&scratch.entries);
         scratch.carcass_entries.clear();
@@ -779,7 +951,8 @@ impl World {
             let geometry = light.geometry();
             for e in &scratch.entries {
                 let a = e.absorptance;
-                geometry.for_each_covered(e.pos, e.radius, |idx, w| light.weight[idx] += w * a);
+                geometry
+                    .for_each_covered(e.pos, e.light_radius, |idx, w| light.weight[idx] += w * a);
             }
             light.propagate(self.env.clock.sun, config.light.half_depth);
         }
@@ -1063,12 +1236,21 @@ impl World {
     fn feed(&mut self) {
         let config = &self.config;
         let fc = &config.feeding;
+        let cc = &config.chemistry;
         let dt = config.time.dt;
         let body_energy = config.metabolism.body_energy;
         let min_mass = config.genes.min_radius * config.genes.min_radius * 0.5;
         let intents = &self.scratch.as_ref().unwrap().intents;
-        let minerals = &mut self.env.minerals;
-        let detritus = &mut self.env.detritus;
+        let env = &mut self.env;
+        let minerals = &mut env.minerals;
+        let detritus = &mut env.detritus;
+        let oxygen = &mut env.oxygen;
+        let co2 = &mut env.co2;
+        let nutrients = &mut env.nutrients;
+        let toxin = &mut env.toxin;
+        let toxin_x = &mut env.toxin_hue_x;
+        let toxin_y = &mut env.toxin_hue_y;
+        let toxin_present = &mut env.toxin_present;
         let m_area = minerals.cell_area();
         let d_area = detritus.cell_area();
         let mut first_kill = None;
@@ -1076,31 +1258,61 @@ impl World {
         let fx = &mut self.fx;
 
         for i in 0..self.organisms.len() {
-            if self.organisms[i].dead.is_some() {
-                continue;
-            }
             let intent = intents[i];
             let o = &mut self.organisms[i];
+
+            // What it exchanged with the water during act (even if it died doing so).
+            let idx = minerals.water_index_at(o.pos);
+            let c = o.chem;
+            oxygen.data[idx] = (oxygen.data[idx] + c.oxygen / m_area).max(0.0);
+            co2.data[idx] = (co2.data[idx] + c.co2 / m_area).max(0.0);
+            minerals.data[idx] = (minerals.data[idx] + c.minerals / m_area).max(0.0);
+            nutrients.data[idx] += c.nutrients / m_area;
+            if c.toxin > 0.0 {
+                *toxin_present = true;
+                let hue = Vec2::from_angle(o.traits.hue as f32 / 256.0 * std::f32::consts::TAU);
+                toxin.data[idx] += c.toxin / m_area;
+                toxin_x.data[idx] += c.toxin * hue.x / m_area;
+                toxin_y.data[idx] += c.toxin * hue.y / m_area;
+            }
+            let d_idx = detritus.water_index_at(o.pos);
+            if c.waste > 0.0 {
+                detritus.data[d_idx] += c.waste / d_area;
+            }
+            if o.dead.is_some() {
+                continue;
+            }
+
             // Only the fields feeding needs (Traits is large; don't copy it all).
             struct Diet {
                 chemo: f32,
                 scavenge: f32,
                 hunt: f32,
                 jaws: f32,
+                filter: f32,
+                reach: f32,
+                uptake: f32,
+                uptake_area: f32,
+                resistance: f32,
             }
             let t = Diet {
                 chemo: o.traits.chemo,
                 scavenge: o.traits.scavenge,
                 hunt: o.traits.hunt,
                 jaws: o.traits.jaws,
+                filter: o.traits.filter,
+                reach: o.traits.reach,
+                uptake: o.traits.uptake,
+                uptake_area: o.traits.uptake_area,
+                resistance: o.traits.resistance,
             };
             let r = o.radius;
+            let reach = t.reach * r;
             let mut gained = 0.0;
             let mut absorbed = 0.0;
             let mut grazed = 0.0;
 
             if t.chemo > 0.0 {
-                let idx = minerals.index_at(o.pos);
                 let conc = minerals.data[idx];
                 if conc > 0.0 {
                     let want = fc.chemo_rate * t.chemo * r * conc * dt;
@@ -1110,14 +1322,26 @@ impl World {
                     absorbed += take * fc.chemo_yield;
                 }
             }
-            if t.scavenge > 0.0 {
-                let idx = detritus.index_at(o.pos);
-                let conc = detritus.data[idx];
+            // Nutrients from the water (a holdfast also draws them from the rock).
+            let nutrient_cap = o.max_nutrients(config);
+            if t.uptake > 0.0 && o.nutrients < nutrient_cap {
+                let conc = nutrients.data[idx];
                 if conc > 0.0 {
-                    let sweep = fc.scavenge_rate * r + fc.filter_rate * 2.0 * r * o.vel.length();
+                    let anchor = if o.anchored { cc.anchor_uptake } else { 1.0 };
+                    let want = cc.uptake_rate * t.uptake * r * t.uptake_area * anchor * conc * dt;
+                    let take = want.min(conc * m_area).min(nutrient_cap - o.nutrients);
+                    nutrients.data[idx] -= take / m_area;
+                    o.nutrients += take;
+                }
+            }
+            if t.scavenge > 0.0 {
+                let conc = detritus.data[d_idx];
+                if conc > 0.0 {
+                    let sweep = fc.scavenge_rate * r * (1.0 + t.filter)
+                        + fc.filter_rate * 2.0 * r * o.vel.length();
                     let want = sweep * t.scavenge * conc * dt;
                     let take = want.min(conc * d_area);
-                    detritus.data[idx] -= take / d_area;
+                    detritus.data[d_idx] -= take / d_area;
                     gained += take;
                     grazed += take;
                 }
@@ -1133,11 +1357,15 @@ impl World {
             if intent.carcass != NONE
                 && let Some(c) = self.carcasses.get_mut(intent.carcass as usize)
                 && c.energy > 0.0
-                && c.pos.distance(o.pos) < c.radius + r
+                && c.pos.distance(o.pos) < c.radius + r + reach
             {
                 let skill = t.scavenge.max(0.7 * t.hunt);
                 let rate = fc.carcass_rate * skill * r * r * (0.3 + 1.7 * t.jaws);
                 let take = (rate * dt).min(c.energy);
+                let share = take / c.energy;
+                let n = c.nutrients * share;
+                c.nutrients -= n;
+                o.nutrients += n;
                 c.energy -= take;
                 gained += take * fc.assimilation;
                 detritus.add(o.pos, take * (1.0 - fc.assimilation) / d_area);
@@ -1163,7 +1391,7 @@ impl World {
             if intent.attack != NONE && j < self.organisms.len() && j != i {
                 let (hunter, prey) = pair_mut(&mut self.organisms, i, j);
                 if prey.dead.is_none()
-                    && prey.pos.distance(hunter.pos) < prey.radius + hunter.radius
+                    && prey.pos.distance(hunter.pos) < prey.radius + hunter.radius + reach
                 {
                     let protection = 1.0 - fc.armor_protection * prey.traits.armor;
                     let mut taken_mass = 0.0;
@@ -1173,6 +1401,8 @@ impl World {
                         if hunter.rng.chance(p) {
                             taken_mass = prey.mass;
                             taken_energy = prey.body_value(config);
+                            hunter.nutrients += prey.body_nutrients(config);
+                            prey.nutrients = 0.0;
                             prey.dead = Some(DeathCause::Eaten);
                             if fx.len() < MAX_FX {
                                 fx.push(Fx {
@@ -1192,6 +1422,9 @@ impl World {
                             let frac = dm / prey.mass;
                             let reserves = prey.energy.max(0.0) * frac;
                             prey.energy -= reserves;
+                            let stored = prey.nutrients.max(0.0) * frac;
+                            prey.nutrients -= stored;
+                            hunter.nutrients += dm * cc.nutrient_per_mass + stored;
                             taken_mass = dm;
                             taken_energy = dm * body_energy + reserves;
                             prey.hp -= dm * prey.traits.hp_factor;
@@ -1225,6 +1458,15 @@ impl World {
                                 hunter.dead = Some(DeathCause::Spikes);
                             }
                         }
+                        if prey.traits.toxin > 0.0 {
+                            hunter.hp -= cc.poison_damage
+                                * prey.traits.toxin
+                                * taken_mass
+                                * (1.0 - t.resistance);
+                            if hunter.hp <= 0.0 && hunter.dead.is_none() {
+                                hunter.dead = Some(DeathCause::Poison);
+                            }
+                        }
                         if prey.dead.is_some() {
                             hunter.kills += 1;
                             if first_kill.is_none() {
@@ -1235,12 +1477,17 @@ impl World {
                 }
             }
 
-            // Anything the organism can't store is lost as detritus.
+            // Anything the organism can't store is lost: energy as detritus, nutrients excreted.
             let o = &mut self.organisms[i];
             let excess = o.energy - o.max_energy();
             if excess > 0.0 {
                 o.energy -= excess;
                 detritus.add(o.pos, excess / d_area);
+            }
+            let excess = o.nutrients - o.max_nutrients(config);
+            if excess > 0.0 {
+                o.nutrients -= excess;
+                nutrients.data[idx] += excess / m_area;
             }
         }
 
@@ -1264,7 +1511,9 @@ impl World {
         let phys = &config.physics;
         let time = self.time() as f32;
         let detritus = &mut self.env.detritus;
+        let nutrients = &mut self.env.nutrients;
         let area = detritus.cell_area();
+        let n_area = nutrients.cell_area();
         for c in &mut self.carcasses {
             c.vel.y = -phys.carcass_sink * c.radius.sqrt();
             c.vel.x *= 0.9;
@@ -1282,10 +1531,15 @@ impl World {
             let lost = c.energy * rate * dt;
             c.energy -= lost;
             detritus.add(c.pos, lost / area);
+            // Rotting releases the body's nutrients.
+            let released = c.nutrients * rate * dt;
+            c.nutrients -= released;
+            nutrients.add(c.pos, released / n_area);
         }
         self.carcasses.retain(|c| {
             if c.energy < 0.3 || c.consumed() > 0.92 {
                 detritus.add(c.pos, c.energy.max(0.0) / area);
+                nutrients.add(c.pos, c.nutrients.max(0.0) / n_area);
                 false
             } else {
                 true
@@ -1297,6 +1551,7 @@ impl World {
         let config = &self.config;
         let met = &config.metabolism;
         let rc = &config.reproduction;
+        let cc = &config.chemistry;
         let min_mass = config.genes.min_radius * config.genes.min_radius;
         let max_population = config.population.max_population as usize;
         let tick = self.tick;
@@ -1319,8 +1574,14 @@ impl World {
             let t = o.traits;
             let child_mass = (t.adult_mass * t.birth_fraction).max(min_mass);
             let child_reserves = child_mass * t.reserve_factor * rc.newborn_reserves;
-            let cost = child_mass * met.build_cost + child_reserves;
-            let count = t.brood.min((o.energy / cost) as u32);
+            let cost = child_mass * met.build_cost * t.build_factor + child_reserves;
+            // Each child needs the nutrients for its body plus a starting store.
+            let child_store = 0.25 * child_mass * cc.nutrient_store;
+            let child_nutrients = child_mass * cc.nutrient_per_mass + child_store;
+            let count = t
+                .brood
+                .min((o.energy / cost) as u32)
+                .min((o.nutrients.max(0.0) / child_nutrients) as u32);
             if count == 0 {
                 continue;
             }
@@ -1359,12 +1620,14 @@ impl World {
                     tick,
                 );
                 child.vel = o.vel;
+                child.nutrients = child_store;
                 self.species.on_birth(species, config, tick);
                 self.stats.record_birth();
                 births.push(child);
                 population += 1;
             }
             o.energy -= cost * count as f32;
+            o.nutrients -= child_nutrients * count as f32;
             o.offspring += count;
             o.repro_cooldown = rc.cooldown;
             parents.push(i);
@@ -1389,7 +1652,9 @@ impl World {
         let config = &self.config;
         let body_energy = config.metabolism.body_energy;
         let detritus = &mut self.env.detritus;
+        let nutrients = &mut self.env.nutrients;
         let area = detritus.cell_area();
+        let n_area = nutrients.cell_area();
         let tick = self.tick;
         for o in &self.organisms {
             let Some(cause) = o.dead else { continue };
@@ -1408,15 +1673,15 @@ impl World {
                     color: o.traits.color,
                     species: o.species,
                     initial_energy: value,
+                    nutrients: o.body_nutrients(config),
                     heading: o.heading,
-                    armor: o.traits.armor,
-                    spikes: o.traits.spikes,
-                    pattern: o.traits.pattern,
+                    genome: o.genome,
                     seed: ((o.id.wrapping_mul(2_654_435_761) >> 8) % 1000) as f32 / 1000.0,
                     hurt_tick: 0,
                 });
             } else {
                 detritus.add(o.pos, value / area);
+                nutrients.add(o.pos, o.body_nutrients(config) / n_area);
             }
         }
         // swap_remove from the back: O(deaths) instead of shifting the whole array.
@@ -1439,8 +1704,13 @@ impl World {
             ..Default::default()
         };
         let mut radius_sum = 0.0;
+        let mut part_sum = 0u64;
         for o in &self.organisms {
             sample.biomass += o.mass;
+            if o.traits.part_count > 0 {
+                sample.with_parts += 1;
+            }
+            part_sum += o.traits.part_count as u64;
             sample.diets[o.traits.main_diet()] += 1;
             if o.traits.is_motile() {
                 sample.motile += 1;
@@ -1449,6 +1719,33 @@ impl World {
             sample.max_radius = sample.max_radius.max(o.radius);
         }
         sample.mean_radius = radius_sum / self.organisms.len().max(1) as f32;
+        sample.mean_parts = part_sum as f32 / self.organisms.len().max(1) as f32;
+        let env = &self.env;
+        sample.air_oxygen = env.atmosphere.oxygen;
+        sample.air_co2 = env.atmosphere.co2;
+        let f = &env.oxygen;
+        let top_rows = ((400.0 / f.cell) as usize).clamp(1, f.ny);
+        let (mut o2, mut nut, mut n) = (0.0f64, 0.0f64, 0u32);
+        for y in f.ny - top_rows..f.ny {
+            for x in 0..f.nx {
+                let i = f.index(x, y);
+                if !f.solid[i] {
+                    o2 += f.data[i] as f64;
+                    nut += env.nutrients.data[i] as f64;
+                    n += 1;
+                }
+            }
+        }
+        sample.surface_oxygen = (o2 / n.max(1) as f64) as f32;
+        sample.surface_nutrients = (nut / n.max(1) as f64) as f32;
+        let water = f.solid.iter().filter(|s| !**s).count().max(1);
+        let anoxic = f
+            .data
+            .iter()
+            .zip(&f.solid)
+            .filter(|(v, s)| !**s && **v < 0.1)
+            .count();
+        sample.anoxic_fraction = anoxic as f32 / water as f32;
         for s in self.species.living() {
             sample.species_populations.push((s.id, s.population));
         }
@@ -1545,15 +1842,60 @@ fn check_milestones(
         m.first_hunter = true;
         log(format!("A {name} lineage becomes a dedicated hunter."));
     }
-    if !m.first_eyes && t.sense_radii * t.adult_radius > 40.0 {
+    if !m.first_eyes && t.eye_count > 0 && t.sense_radii * t.adult_radius > 40.0 {
         m.first_eyes = true;
-        log(format!(
-            "A {name} lineage can sense its surroundings at a distance."
-        ));
+        log(format!("A {name} lineage can see its surroundings."));
     }
     if !m.first_armor && t.armor > 0.3 {
         m.first_armor = true;
-        log(format!("A {name} lineage grows armor."));
+        log(format!("A {name} lineage grows a shell."));
+    }
+    // The first time each kind of part is carried by a lineage that breeds.
+    for p in crate::parts::decode_parts(&parent.genome) {
+        let bit = 1u32 << p.kind.code();
+        if m.parts_seen & bit == 0 && p.size >= 0.25 {
+            m.parts_seen |= bit;
+            log(format!(
+                "A {name} lineage grows the first {}.",
+                if p.count > 1 {
+                    p.kind.plural()
+                } else {
+                    p.kind.name()
+                }
+            ));
+        }
+    }
+    if !m.first_walker && parent.touching && t.crawl_coeff > 2.0 {
+        m.first_walker = true;
+        log(format!("A {name} lineage walks along the seafloor."));
+    }
+    if !m.first_anchored && parent.anchored {
+        m.first_anchored = true;
+        log(format!("A {name} lineage anchors itself to rock."));
+    }
+    if !m.first_anaerobe && t.aerobic < 0.3 {
+        m.first_anaerobe = true;
+        log(format!(
+            "A {name} lineage gives up breathing oxygen and lives by fermentation."
+        ));
+    }
+    if !m.first_sulfur && t.photo > 0.3 && t.oxygenic < 0.3 {
+        m.first_sulfur = true;
+        log(format!(
+            "A {name} lineage photosynthesizes with minerals instead of CO₂, releasing no oxygen."
+        ));
+    }
+    if !m.first_fixer && t.fixation > 0.4 {
+        m.first_fixer = true;
+        log(format!(
+            "A {name} lineage makes its own nutrients (nitrogen fixation)."
+        ));
+    }
+    if !m.first_toxic && t.toxin > 0.4 {
+        m.first_toxic = true;
+        log(format!(
+            "A {name} lineage turns toxic, poisoning the water around it."
+        ));
     }
     if m.size_record == 0.0 {
         m.size_record = t.adult_radius;
@@ -1569,6 +1911,8 @@ fn check_milestones(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::genome::gene;
+    use crate::parts::PartKind;
 
     fn small_config() -> Config {
         let mut c = Config::default();
@@ -1748,5 +2092,207 @@ mod tests {
         assert_eq!(world.organisms[0].id, 1);
         assert!(world.organisms[0].kills == 1);
         assert!(world.organisms[0].energy > e0 * 0.5);
+    }
+
+    /// An empty small world plus a helper to add organisms.
+    fn empty_world() -> World {
+        let mut config = small_config();
+        config.population.initial = 0;
+        config.population.min_population = 0;
+        config.events.enabled = false;
+        World::new(config)
+    }
+
+    fn add(world: &mut World, genome: Genome, pos: Vec2) -> usize {
+        let id = world.next_id;
+        world.next_id += 1;
+        let t = crate::traits::Traits::decode(&genome, &world.config);
+        let o = Organism::new(
+            id,
+            0,
+            0,
+            0,
+            genome,
+            0,
+            &world.config,
+            pos,
+            t.adult_mass,
+            t.adult_mass * t.reserve_factor * 0.8,
+            Rng::new(id),
+            0,
+        );
+        world.species.on_birth(0, &world.config, 0);
+        world.organisms.push(o);
+        world.organisms.len() - 1
+    }
+
+    fn with_part(
+        mut g: Genome,
+        slot: usize,
+        kind: PartKind,
+        sym: u8,
+        size: u8,
+        place: u8,
+    ) -> Genome {
+        let o = crate::parts::slot_offset(slot);
+        g.0[o] = sym << 4 | kind.code();
+        g.0[o + 1] = size;
+        g.0[o + 2] = place;
+        g
+    }
+
+    #[test]
+    fn photosynthesis_releases_oxygen_and_breathing_uses_it() {
+        let mut world = empty_world();
+        let h = world.config.world.height;
+        let ancestor = world.ancestor;
+        let plant = add(&mut world, ancestor, Vec2::new(2000.0, h - 20.0));
+        let mut animal_g = world.ancestor;
+        animal_g.0[gene::PHOTO] = 0;
+        animal_g.0[gene::SCAVENGE] = 0xFF;
+        animal_g.0[gene::RESPIRATION] = 0xFF;
+        let animal = add(&mut world, animal_g, Vec2::new(2600.0, h - 20.0));
+        world.step();
+        let (p, a) = (&world.organisms[plant].chem, &world.organisms[animal].chem);
+        assert!(p.oxygen > 0.0 && p.co2 < 0.0, "plant {p:?}");
+        assert!(a.oxygen < 0.0 && a.co2 > 0.0, "animal {a:?}");
+        assert!(a.aerobic_share > 0.99);
+    }
+
+    #[test]
+    fn aerobes_suffocate_without_oxygen_and_fermenters_do_not() {
+        let mut world = empty_world();
+        let h = world.config.world.height;
+        let mut aerobe = world.ancestor;
+        aerobe.0[gene::RESPIRATION] = 0xFF;
+        let mut fermenter = world.ancestor;
+        fermenter.0[gene::RESPIRATION] = 0x00;
+        let a = add(&mut world, aerobe, Vec2::new(1000.0, h - 1500.0));
+        let f = add(&mut world, fermenter, Vec2::new(3000.0, h - 1500.0));
+        world.env.oxygen.data.fill(0.0);
+        world.step();
+        let (ca, cf) = (world.organisms[a].chem, world.organisms[f].chem);
+        assert!(ca.shortfall > 0.5, "aerobe {ca:?}");
+        assert_eq!(cf.shortfall, 0.0, "fermenter {cf:?}");
+        assert!(cf.waste > 0.0, "fermentation leaks organic waste");
+    }
+
+    #[test]
+    fn holdfasts_anchor_and_legs_walk_on_rock() {
+        let mut world = empty_world();
+        let x = 2000.0;
+        let floor = world.terrain.floor_at(x);
+        // Cold-hardy, so the deep floor doesn't kill them.
+        let mut base = world.ancestor;
+        base.0[gene::TEMP_PREF] = 0x20;
+        base.0[gene::TEMP_TOL] = 0xFF;
+        // Sinks, has a holdfast.
+        let mut g = with_part(base, 0, PartKind::Holdfast, 0, 0xC0, 24);
+        g.0[gene::BUOYANCY] = 0x00;
+        let anchored = add(&mut world, g, Vec2::new(x, floor + 60.0));
+        // A walker: legs only, wanders.
+        let mut w = with_part(base, 0, PartKind::Leg, 1, 0xFF, 6 << 5 | 12);
+        w.0[gene::BUOYANCY] = 0x00;
+        w.0[gene::RESTLESSNESS] = 0xFF;
+        let walker = add(&mut world, w, Vec2::new(x + 400.0, floor + 60.0));
+        let t = &world.organisms[walker].traits;
+        assert!(
+            t.crawl_coeff > 2.0 * t.speed_coeff,
+            "legs walk much faster than they paddle"
+        );
+        for _ in 0..(40.0 / world.config.time.dt) as usize {
+            world.step();
+        }
+        let o = &world.organisms[anchored];
+        assert!(o.anchored, "should have settled and anchored");
+        let pos = o.pos;
+        for _ in 0..(10.0 / world.config.time.dt) as usize {
+            world.step();
+        }
+        assert!(
+            world.organisms[anchored].pos.distance(pos) < 1.0,
+            "anchored bodies stay put"
+        );
+        let wk = &world.organisms[walker];
+        assert!(wk.touching, "walker should be on the floor");
+        assert!(
+            wk.vel.length() > 1.0,
+            "walker moves along the rock: {}",
+            wk.vel.length()
+        );
+    }
+
+    #[test]
+    fn toxins_harm_strangers_but_not_kin() {
+        let mut world = empty_world();
+        let h = world.config.world.height;
+        let mut producer = world.ancestor;
+        producer.0[gene::TOXIN] = 0xFF;
+        let mut stranger = world.ancestor;
+        stranger.0[gene::HUE] = world.ancestor.0[gene::HUE].wrapping_add(128);
+        let pos = Vec2::new(2000.0, h - 200.0);
+        for k in 0..30 {
+            add(
+                &mut world,
+                producer,
+                pos + Vec2::new(k as f32 % 6.0 * 5.0, (k / 6) as f32 * 5.0),
+            );
+        }
+        let s = add(&mut world, stranger, pos + Vec2::new(12.0, 12.0));
+        let ancestor = world.ancestor;
+        let kin = add(&mut world, ancestor, pos + Vec2::new(14.0, 8.0));
+        let (sid, kid) = (world.organisms[s].id, world.organisms[kin].id);
+        for _ in 0..60 {
+            world.step();
+        }
+        let poisoned = |id| world.find(id).map(|o| o.chem.poisoned).unwrap_or(1.0);
+        assert!(poisoned(sid) > 0.0, "the stranger is poisoned");
+        assert_eq!(poisoned(kid), 0.0, "kin are immune");
+    }
+
+    #[test]
+    fn growth_needs_nutrients() {
+        let mut world = empty_world();
+        let h = world.config.world.height;
+        let mut g = world.ancestor;
+        g.0[gene::UPTAKE] = 0;
+        let a = add(&mut world, g, Vec2::new(2000.0, h - 20.0));
+        let b = add(&mut world, g, Vec2::new(2600.0, h - 20.0));
+        for i in [a, b] {
+            let o = &mut world.organisms[i];
+            o.set_mass(o.traits.adult_mass * 0.5);
+        }
+        world.organisms[a].nutrients = 0.0;
+        for _ in 0..300 {
+            world.step();
+        }
+        let (ma, mb) = (world.organisms[a].mass, world.organisms[b].mass);
+        assert!(mb > ma * 1.2, "fed {mb} starved {ma}");
+    }
+
+    #[test]
+    fn eyes_see_only_where_they_look() {
+        let run = |eye_angle: u8| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let mut hunter = with_part(world.ancestor, 0, PartKind::Eye, 0, 0xFF, eye_angle);
+            hunter = with_part(hunter, 1, PartKind::Flagellum, 0, 0xFF, 16);
+            hunter.0[gene::SIZE] = 0x60;
+            hunter.0[gene::PHOTO] = 0;
+            hunter.0[gene::HUNT] = 0xFF;
+            hunter.0[gene::DRIVES + drive::SMALLER] = 0xFF;
+            let pos = Vec2::new(2000.0, h - 300.0);
+            let i = add(&mut world, hunter, pos);
+            world.organisms[i].heading = 0.0;
+            world.organisms[i].steer_heading = 0.0;
+            let mut prey = world.ancestor;
+            prey.0[gene::HUE] = 0xD0;
+            add(&mut world, prey, pos + Vec2::new(80.0, 0.0));
+            world.step();
+            world.step();
+            world.organisms[i].activity
+        };
+        assert_eq!(run(0), Activity::Hunting, "an eye facing the prey sees it");
+        assert_ne!(run(16), Activity::Hunting, "an eye facing away doesn't");
     }
 }

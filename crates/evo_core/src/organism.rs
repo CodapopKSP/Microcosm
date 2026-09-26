@@ -53,10 +53,14 @@ pub enum DeathCause {
     Spikes,
     Disease,
     Catastrophe,
+    /// Couldn't breathe (too little oxygen for an aerobe).
+    Suffocation,
+    /// Toxins in the water, oxygen (for strict fermenters), or poisonous prey.
+    Poison,
 }
 
 impl DeathCause {
-    pub const ALL: [DeathCause; 8] = [
+    pub const ALL: [DeathCause; 10] = [
         DeathCause::Starvation,
         DeathCause::OldAge,
         DeathCause::Eaten,
@@ -65,6 +69,8 @@ impl DeathCause {
         DeathCause::Spikes,
         DeathCause::Disease,
         DeathCause::Catastrophe,
+        DeathCause::Suffocation,
+        DeathCause::Poison,
     ];
 
     pub fn label(self) -> &'static str {
@@ -77,8 +83,30 @@ impl DeathCause {
             DeathCause::Spikes => "spikes",
             DeathCause::Disease => "disease",
             DeathCause::Catastrophe => "catastrophe",
+            DeathCause::Suffocation => "suffocation",
+            DeathCause::Poison => "poison",
         }
     }
+}
+
+/// What an organism took from and gave to the water this tick (amounts, not rates),
+/// plus how its breathing went. Written in the parallel act phase, applied to the fields after.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Chem {
+    /// Positive = released into the water, negative = taken from it.
+    pub oxygen: f32,
+    pub co2: f32,
+    pub minerals: f32,
+    pub nutrients: f32,
+    pub toxin: f32,
+    /// Organic waste (energy) leaked into the marine snow.
+    pub waste: f32,
+    /// Share of the energy needs met by breathing oxygen (the rest fermented or unmet).
+    pub aerobic_share: f32,
+    /// Share of the energy needs that couldn't be met at all (suffocating).
+    pub shortfall: f32,
+    /// HP lost to toxins this tick.
+    pub poisoned: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -103,6 +131,15 @@ pub struct Organism {
     pub radius: f32,
     pub energy: f32,
     pub hp: f32,
+    /// Stored nutrients (needed to build body mass).
+    #[serde(default)]
+    pub nutrients: f32,
+    /// Held in place by a holdfast.
+    #[serde(default)]
+    pub anchored: bool,
+    /// Touching rock or the seafloor (only tracked for organisms with legs or holdfasts).
+    #[serde(default)]
+    pub touching: bool,
     /// Sim seconds.
     pub age: f32,
     pub repro_cooldown: f32,
@@ -127,6 +164,9 @@ pub struct Organism {
     pub gain_rate: f32,
     pub cost_rate: f32,
     pub temperature: f32,
+    /// This tick's exchange with the water.
+    #[serde(skip)]
+    pub chem: Chem,
     pub dead: Option<DeathCause>,
 }
 
@@ -164,6 +204,9 @@ impl Organism {
             radius: mass.sqrt(),
             energy: 0.0,
             hp: 0.0,
+            nutrients: 0.0,
+            anchored: false,
+            touching: false,
             age: 0.0,
             repro_cooldown: 0.0,
             rng,
@@ -178,13 +221,25 @@ impl Organism {
             gain_rate: 0.0,
             cost_rate: 0.0,
             temperature: 0.0,
+            chem: Chem::default(),
             dead: None,
         };
         o.heading = o.rng.angle();
         o.steer_heading = o.heading;
         o.energy = energy.min(o.max_energy());
         o.hp = o.max_hp();
+        o.nutrients = 0.5 * o.max_nutrients(config);
         o
+    }
+
+    #[inline]
+    pub fn max_nutrients(&self, config: &Config) -> f32 {
+        self.mass * config.chemistry.nutrient_store
+    }
+
+    /// Nutrients locked in the body and its store (released when it dies or is eaten).
+    pub fn body_nutrients(&self, config: &Config) -> f32 {
+        self.mass * config.chemistry.nutrient_per_mass + self.nutrients.max(0.0)
     }
 
     #[inline]
@@ -233,15 +288,14 @@ pub struct Carcass {
     pub species: u32,
     #[serde(default)]
     pub initial_energy: f32,
+    /// Nutrients still in the body (released as it rots or is eaten).
+    #[serde(default)]
+    pub nutrients: f32,
     #[serde(default)]
     pub heading: f32,
-    /// Look of the organism: armor, spikes, pattern, id-derived seed.
+    /// The dead organism's genome (its body plan, for drawing) and an id-derived seed.
     #[serde(default)]
-    pub armor: f32,
-    #[serde(default)]
-    pub spikes: f32,
-    #[serde(default)]
-    pub pattern: u8,
+    pub genome: Genome,
     #[serde(default)]
     pub seed: f32,
     #[serde(default)]

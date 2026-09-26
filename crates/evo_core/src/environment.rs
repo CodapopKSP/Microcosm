@@ -1,4 +1,5 @@
-//! Environment: clock (day, season, climate), light, temperature, minerals, detritus, vents.
+//! Environment: clock (day, season, climate), light, temperature, minerals, detritus, vents,
+//! and the water chemistry (oxygen, CO₂, nutrients, toxins) with the air above it.
 
 use glam::Vec2;
 use rayon::prelude::*;
@@ -196,8 +197,10 @@ pub struct Clock {
     pub year_phase: f32,
     pub day: u64,
     pub year: u64,
-    /// Current global temperature offset (°C).
+    /// Current global temperature offset (°C) from the random climate walk.
     pub climate: f32,
+    /// Warming (or cooling) from CO₂ in the air (°C).
+    pub greenhouse: f32,
     /// Irradiance at the surface right now.
     pub sun: f32,
     /// Surface temperature right now (°C).
@@ -227,6 +230,13 @@ pub enum EnvEvent {
     VentDied(Vec2),
 }
 
+/// The air above the ocean: global levels relative to today's (1.0).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Atmosphere {
+    pub oxygen: f32,
+    pub co2: f32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Environment {
     pub clock: Clock,
@@ -234,6 +244,29 @@ pub struct Environment {
     pub temperature: Field,
     pub minerals: Field,
     pub detritus: Field,
+    /// Dissolved gases (1.0 = in equilibrium with today's air), nutrients and toxins.
+    /// These share the minerals grid, so one index addresses all of them.
+    pub oxygen: Field,
+    pub co2: Field,
+    pub nutrients: Field,
+    pub toxin: Field,
+    /// Toxin weighted by the producers' hue (as a unit vector), so kin recognize their own.
+    pub toxin_hue_x: Field,
+    pub toxin_hue_y: Field,
+    pub atmosphere: Atmosphere,
+    /// Light from lures, rebuilt every tick (minerals grid).
+    #[serde(skip)]
+    pub glow: Field,
+    #[serde(skip)]
+    pub any_glow: bool,
+    /// Set when toxin is released; cleared once it has all broken down (skips the work).
+    #[serde(default)]
+    pub toxin_present: bool,
+    /// Time since the last chemistry update, and the number of water cells (cached).
+    #[serde(skip)]
+    chem_clock: f32,
+    #[serde(skip)]
+    water_cells: usize,
     pub vents: Vec<Vent>,
     next_vent_id: u32,
     rng: Rng,
@@ -260,10 +293,45 @@ impl Environment {
         mask_from_terrain(&mut minerals, terrain);
         mask_from_terrain(&mut detritus, terrain);
         mask_from_terrain(&mut temperature, terrain);
+        let atmosphere = Atmosphere {
+            oxygen: config.atmosphere.initial_oxygen,
+            co2: config.atmosphere.initial_co2,
+        };
+        // Chemistry fields start at their usual depth profiles.
+        let chem = |kind: Chemical| {
+            let mut f = minerals.clone();
+            let refs = reference_profile(kind, &f, config, atmosphere);
+            for (y, &value) in refs.iter().enumerate() {
+                for x in 0..f.nx {
+                    let i = f.index(x, y);
+                    f.data[i] = if f.solid[i] { 0.0 } else { value };
+                }
+            }
+            f
+        };
+        let oxygen = chem(Chemical::Oxygen);
+        let co2 = chem(Chemical::Co2);
+        let nutrients = chem(Chemical::Nutrients);
+        let mut toxin = minerals.clone();
+        toxin.data.fill(0.0);
+        let mut glow = toxin.clone();
+        glow.solid.fill(false);
         let mut env = Self {
             clock: Clock::default(),
             light: LightField::new(config, terrain),
             temperature,
+            oxygen,
+            co2,
+            nutrients,
+            toxin_hue_x: toxin.clone(),
+            toxin_hue_y: toxin.clone(),
+            toxin,
+            atmosphere,
+            glow,
+            any_glow: false,
+            toxin_present: false,
+            chem_clock: 0.0,
+            water_cells: 0,
             minerals,
             detritus,
             vents: Vec::new(),
@@ -307,7 +375,7 @@ impl Environment {
             * (1.0 + l.season_amplitude * season)
             * (l.night_level + (1.0 - l.night_level) * daylight);
         let temp = &config.temperature;
-        c.surface_temp = temp.surface + temp.season_amplitude * season + c.climate;
+        c.surface_temp = temp.surface + temp.season_amplitude * season + c.climate + c.greenhouse;
     }
 
     fn new_vent(&mut self, config: &Config, terrain: &Terrain) -> Option<Vent> {
@@ -371,8 +439,25 @@ impl Environment {
                 continue;
             }
             let amount = vc.output * vent.strength * dt;
-            let cells = emit_disc(&mut self.minerals, vent.pos, vc.radius, amount);
-            let _ = cells;
+            emit_disc(&mut self.minerals, vent.pos, vc.radius, amount);
+            let cc = &config.chemistry;
+            emit_disc(
+                &mut self.co2,
+                vent.pos,
+                vc.radius,
+                cc.vent_co2 * vent.strength * dt,
+            );
+            emit_disc(
+                &mut self.nutrients,
+                vent.pos,
+                vc.radius,
+                cc.vent_nutrients * vent.strength * dt,
+            );
+            // Vent water carries no oxygen.
+            let keep = (-cc.vent_oxygen_sink * vent.strength * dt).exp();
+            for i in disc_cells(&self.oxygen, vent.pos, vc.radius * 2.0) {
+                self.oxygen.data[i] *= keep;
+            }
             let half = config.minerals.plume_width / self.minerals.cell;
             let cx = vent.pos.x / self.minerals.cell;
             let x0 = (cx - half).floor().max(0.0) as usize;
@@ -402,31 +487,181 @@ impl Environment {
             .diffuse(mc.diffusion * dt / (self.minerals.cell * self.minerals.cell));
         self.minerals.decay((-mc.decay * dt).exp());
 
-        // Detritus: sink, diffuse, decompose into minerals.
+        // Detritus: sink, diffuse, decompose. Rotting uses oxygen and releases CO₂ and minerals;
+        // without oxygen it is slower and releases more minerals (sulfides).
         let dc = &config.detritus;
+        let cc = &config.chemistry;
         self.detritus
             .advect_vertical(dc.sink_speed * dt / self.detritus.cell, false, None);
         self.detritus
             .diffuse(dc.diffusion * dt / (self.detritus.cell * self.detritus.cell));
-        let keep = (-dc.decay * dt).exp();
+        let rate = 1.0 - (-dc.decay * dt).exp();
         if (self.detritus.cell - self.minerals.cell).abs() < 1e-3 {
-            for (d, m) in self
-                .detritus
+            let oxygen_use = cc.oxygen_per_energy * cc.decomposition_oxygen;
+            let nx = self.detritus.nx;
+            self.detritus
                 .data
-                .iter_mut()
-                .zip(self.minerals.data.iter_mut())
-            {
-                let lost = *d * (1.0 - keep);
-                *d -= lost;
-                *m += lost * dc.to_minerals;
-            }
+                .par_chunks_mut(nx)
+                .zip(self.oxygen.data.par_chunks_mut(nx))
+                .zip(self.co2.data.par_chunks_mut(nx))
+                .zip(self.minerals.data.par_chunks_mut(nx))
+                .for_each(|(((detritus, oxygen), co2), minerals)| {
+                    for i in 0..detritus.len() {
+                        let d = detritus[i];
+                        if d <= 0.0 {
+                            continue;
+                        }
+                        let o2 = oxygen[i];
+                        let aerobic = (o2 / cc.oxygen_half).clamp(0.0, 1.0);
+                        let lost = d * rate * (aerobic + (1.0 - aerobic) * cc.anoxic_decay);
+                        let breathed = (lost * aerobic).min(o2 / oxygen_use.max(1e-6));
+                        let anoxic = lost - breathed;
+                        detritus[i] = d - lost;
+                        oxygen[i] = o2 - breathed * oxygen_use;
+                        co2[i] += lost * cc.co2_per_energy;
+                        minerals[i] += breathed * dc.to_minerals + anoxic * cc.anoxic_minerals;
+                    }
+                });
         } else {
-            self.detritus.decay(keep);
+            self.detritus.decay(1.0 - rate);
+        }
+
+        // Dissolved gases change slowly; update them a few times a second.
+        self.chem_clock += dt;
+        if self.chem_clock >= 0.2 {
+            let elapsed = std::mem::take(&mut self.chem_clock);
+            self.update_chemistry(elapsed, config);
         }
 
         self.since_temperature_update += dt;
         if self.since_temperature_update >= tc.update_interval {
             self.update_temperature(config);
+        }
+    }
+
+    /// Diffusion, exchange with the air, ventilation of deep water, and toxin breakdown.
+    fn update_chemistry(&mut self, dt: f32, config: &Config) {
+        let cc = &config.chemistry;
+        let ac = &config.atmosphere;
+        let rate = cc.diffusion * dt / (self.oxygen.cell * self.oxygen.cell);
+        let mut fields = vec![&mut self.oxygen, &mut self.co2, &mut self.nutrients];
+        if self.toxin_present {
+            fields.extend([
+                &mut self.toxin,
+                &mut self.toxin_hue_x,
+                &mut self.toxin_hue_y,
+            ]);
+        }
+        fields.into_par_iter().for_each(|f| f.diffuse(rate));
+
+        if self.toxin_present {
+            let keep = (-cc.toxin_decay * dt).exp();
+            for f in [
+                &mut self.toxin,
+                &mut self.toxin_hue_x,
+                &mut self.toxin_hue_y,
+            ] {
+                f.decay(keep);
+            }
+            // Once it has all but broken down, clear it and stop spending time on it.
+            if self.toxin.total() * (self.toxin.cell_area() as f64) < 1e-3 {
+                for f in [
+                    &mut self.toxin,
+                    &mut self.toxin_hue_x,
+                    &mut self.toxin_hue_y,
+                ] {
+                    f.data.fill(0.0);
+                }
+                self.toxin_present = false;
+            }
+        }
+
+        // Ventilation: every cell relaxes slowly toward its usual make-up at that depth.
+        let vent = 1.0 - (-cc.ventilation * dt).exp();
+        let atmosphere = self.atmosphere;
+        for (field, kind) in [
+            (&mut self.oxygen, Chemical::Oxygen),
+            (&mut self.co2, Chemical::Co2),
+            (&mut self.nutrients, Chemical::Nutrients),
+        ] {
+            let refs = reference_profile(kind, field, config, atmosphere);
+            let nx = field.nx;
+            let solid = &field.solid;
+            field
+                .data
+                .par_chunks_mut(nx)
+                .zip(solid.par_chunks(nx))
+                .zip(refs.par_iter())
+                .for_each(|((row, solid), &target)| {
+                    for (v, &s) in row.iter_mut().zip(solid) {
+                        if !s {
+                            *v = (*v + (target - *v) * vent).max(0.0);
+                        }
+                    }
+                });
+        }
+
+        // The surface trades gases with the air; the air changes by what it gains or loses.
+        let exchange = 1.0 - (-ac.surface_exchange * dt).exp();
+        let top = self.oxygen.ny - 1;
+        let area = self.oxygen.cell_area();
+        let mut flux = [0.0f64; 2];
+        for (k, (field, level)) in [
+            (&mut self.oxygen, atmosphere.oxygen),
+            (&mut self.co2, atmosphere.co2),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for x in 0..field.nx {
+                let i = field.index(x, top);
+                if field.solid[i] {
+                    continue;
+                }
+                let delta = (level - field.data[i]) * exchange;
+                field.data[i] += delta;
+                flux[k] += (delta * area) as f64;
+            }
+        }
+        // Capacity: `size` times the gas the whole ocean holds when saturated.
+        if self.water_cells == 0 {
+            self.water_cells = self.oxygen.solid.iter().filter(|s| !**s).count();
+        }
+        let ocean = self.water_cells as f64 * area as f64;
+        let capacity = (ac.size as f64 * ocean).max(1.0);
+        self.atmosphere.oxygen =
+            (self.atmosphere.oxygen as f64 - flux[0] / capacity).max(0.0) as f32;
+        self.atmosphere.co2 = (self.atmosphere.co2 as f64 - flux[1] / capacity).max(0.0) as f32;
+        self.clock.greenhouse = ac.greenhouse * self.atmosphere.co2.max(0.05).log2();
+    }
+
+    /// Rebuild the lure glow field from `(position, lure strength)` pairs.
+    pub fn rebuild_glow(&mut self, lures: impl Iterator<Item = (Vec2, f32)>, config: &Config) {
+        if self.glow.data.len() != self.minerals.data.len() {
+            self.glow = self.minerals.clone();
+            self.glow.solid.fill(false);
+        }
+        if self.any_glow {
+            self.glow.data.fill(0.0);
+        }
+        self.any_glow = false;
+        let pc = &config.parts;
+        let brightness = pc.lure_brightness * config.light.surface_intensity;
+        for (pos, lure) in lures {
+            self.any_glow = true;
+            let radius = (pc.lure_radius * lure).max(self.glow.cell);
+            let inv = 1.0 / radius;
+            let glow = &mut self.glow;
+            let (x0, y0) = glow.coords(pos - Vec2::splat(radius));
+            let (x1, y1) = glow.coords(pos + Vec2::splat(radius));
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    let c = Vec2::new((x as f32 + 0.5) * glow.cell, (y as f32 + 0.5) * glow.cell);
+                    let t = (1.0 - c.distance(pos) * inv).max(0.0);
+                    let i = glow.index(x, y);
+                    glow.data[i] += brightness * lure * t * t;
+                }
+            }
         }
     }
 
@@ -461,21 +696,12 @@ impl Environment {
 
     /// Spread `amount` of mineral energy over the water cells in the rectangle `min..max`.
     pub fn inject_minerals(&mut self, min: Vec2, max: Vec2, amount: f32) {
-        let f = &mut self.minerals;
-        let (x0, y0) = f.coords(min);
-        let (x1, y1) = f.coords(max);
-        let cells: Vec<usize> = (y0..=y1)
-            .flat_map(|y| (x0..=x1).map(move |x| (x, y)))
-            .map(|(x, y)| f.index(x, y))
-            .filter(|&i| !f.solid[i])
-            .collect();
-        if cells.is_empty() {
-            return;
-        }
-        let per = amount / cells.len() as f32 / f.cell_area();
-        for i in cells {
-            f.data[i] += per;
-        }
+        inject(&mut self.minerals, min, max, amount);
+    }
+
+    /// Spread `amount` of nutrients over the water cells in the rectangle `min..max`.
+    pub fn inject_nutrients(&mut self, min: Vec2, max: Vec2, amount: f32) {
+        inject(&mut self.nutrients, min, max, amount);
     }
 
     /// Re-derive rock masks for the fields after the terrain changed between `x_min` and `x_max`.
@@ -484,6 +710,12 @@ impl Environment {
         for (field, holds_content) in [
             (&mut self.minerals, true),
             (&mut self.detritus, true),
+            (&mut self.oxygen, true),
+            (&mut self.co2, true),
+            (&mut self.nutrients, true),
+            (&mut self.toxin, true),
+            (&mut self.toxin_hue_x, true),
+            (&mut self.toxin_hue_y, true),
             (&mut self.temperature, false),
         ] {
             let (x0, _) = field.coords(Vec2::new(x_min, 0.0));
@@ -500,6 +732,7 @@ impl Environment {
                 }
             }
         }
+        self.water_cells = 0;
         let light = &mut self.light;
         let g = light.geometry();
         for x in g.column(x_min)..=g.column(x_max) {
@@ -519,6 +752,70 @@ impl Environment {
             self.detritus.total() * area_d,
         )
     }
+}
+
+fn inject(f: &mut Field, min: Vec2, max: Vec2, amount: f32) {
+    let (x0, y0) = f.coords(min);
+    let (x1, y1) = f.coords(max);
+    let cells: Vec<usize> = (y0..=y1)
+        .flat_map(|y| (x0..=x1).map(move |x| (x, y)))
+        .map(|(x, y)| f.index(x, y))
+        .filter(|&i| !f.solid[i])
+        .collect();
+    if cells.is_empty() {
+        return;
+    }
+    let per = amount / cells.len() as f32 / f.cell_area();
+    for i in cells {
+        f.data[i] += per;
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Chemical {
+    Oxygen,
+    Co2,
+    Nutrients,
+}
+
+/// Usual concentration of a chemical in each row of `field` (surface water in equilibrium with
+/// the air; deep water older, with less oxygen and more CO₂ and nutrients).
+fn reference_profile(kind: Chemical, field: &Field, config: &Config, air: Atmosphere) -> Vec<f32> {
+    let cc = &config.chemistry;
+    let height = config.world.height;
+    (0..field.ny)
+        .map(|y| {
+            let depth = (height - (y as f32 + 0.5) * field.cell).max(0.0);
+            let surface = (-depth / cc.nutricline_depth.max(1.0)).exp();
+            match kind {
+                Chemical::Oxygen => {
+                    air.oxygen * (cc.deep_oxygen + (1.0 - cc.deep_oxygen) * surface)
+                }
+                Chemical::Co2 => air.co2 * (1.3 - 0.3 * surface),
+                Chemical::Nutrients => {
+                    cc.nutrient_deep + (cc.nutrient_surface - cc.nutrient_deep) * surface
+                }
+            }
+        })
+        .collect()
+}
+
+/// The water cells within `radius` of `pos`.
+fn disc_cells(field: &Field, pos: Vec2, radius: f32) -> Vec<usize> {
+    let mut cells = Vec::new();
+    let r = radius.max(field.cell * 0.5);
+    let (x0, y0) = field.coords(pos - Vec2::splat(r));
+    let (x1, y1) = field.coords(pos + Vec2::splat(r));
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let i = field.index(x, y);
+            let c = Vec2::new((x as f32 + 0.5) * field.cell, (y as f32 + 0.5) * field.cell);
+            if !field.solid[i] && c.distance(pos) <= r + field.cell * 0.5 {
+                cells.push(i);
+            }
+        }
+    }
+    cells
 }
 
 /// Spread `amount` (energy) evenly over the field cells within `radius` of `pos`, as concentration.

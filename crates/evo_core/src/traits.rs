@@ -1,19 +1,46 @@
 //! Decoded traits (phenotype) of a genome. Computed once at birth.
+//!
+//! Body parts (P chromosome) are laid out once here and summed into plain numbers
+//! (thrust, grip, eye cones, …), so the per-tick simulation never looks at parts.
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::genome::{Genome, drive, gene};
+use crate::parts::{self, BodyShape, Instance, PartKind};
+
+/// Most eyes whose view cones the simulation tracks (the largest ones win).
+pub const MAX_EYES: usize = 6;
+
+/// One eye's view cone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Eye {
+    /// Body-local direction (radians, 0 = forward).
+    pub dir: f32,
+    /// Cosine of half the view cone.
+    pub cos_half: f32,
+    /// Range in body radii.
+    pub range: f32,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Traits {
     pub adult_radius: f32,
     pub adult_mass: f32,
 
+    /// Body shape: 0..1 elongation and 1..6 segments.
+    pub elongation: f32,
+    pub segments: u8,
+    /// Number of part instances on the body (after symmetry and repetition).
+    pub part_count: u8,
+
+    /// Damage blocked (shell plates), 0..1.
     pub armor: f32,
+    /// Damage reflected onto attackers (spines), 0..1.
     pub spikes: f32,
+    /// Bite strength (jaws), 0..1.
     pub jaws: f32,
-    /// −1 (sinks) .. +1 (floats), after armor weight.
+    /// −1 (sinks) .. +1 (floats), after the weight of parts.
     pub buoyancy: f32,
     /// Energy storage per unit of mass.
     pub reserve_factor: f32,
@@ -31,10 +58,18 @@ pub struct Traits {
     /// Max HP per unit of mass.
     pub hp_factor: f32,
 
-    /// Speed gene as a fraction; max speed also depends on current radius.
-    pub speed: f32,
-    /// Max speed multiplier (speed gene × scale × armor penalty); × √radius for units/s.
+    /// Swimming strength 0..1 from the swimming parts (thrust against drag).
+    pub swim: f32,
+    /// Max swimming speed multiplier; × √radius for units/s.
     pub speed_coeff: f32,
+    /// Walking speed multiplier on rock and seafloor (legs); × √radius for units/s.
+    pub crawl_coeff: f32,
+    /// Fraction of the current resisted while touching rock (legs, tentacles, holdfasts).
+    pub grip: f32,
+    /// Holdfast strength: > 0 means it anchors when it touches rock.
+    pub anchor: f32,
+    /// Drag of the body and its parts (multiplies the cost of swimming).
+    pub drag: f32,
     /// Radians per second.
     pub turn_rate: f32,
     pub restlessness: f32,
@@ -48,11 +83,41 @@ pub struct Traits {
     /// Reserve fullness required to reproduce.
     pub repro_threshold: f32,
 
-    /// Sense range in body radii (0 = blind).
+    /// View cones of the eyes (`eye_count` used).
+    pub eyes: [Eye; MAX_EYES],
+    pub eye_count: u8,
+    /// Smell range in body radii, in every direction (antennae).
+    pub smell_radii: f32,
+    /// Longest sense range in body radii (0 = blind).
     pub sense_radii: f32,
-    /// Cosine of half the field of view.
-    pub fov_cos: f32,
-    pub fov_deg: f32,
+
+    /// How far tentacles reach beyond the body, in body radii.
+    pub reach: f32,
+    /// Extra marine-snow sweep from cilia and tentacles (multiplier − 1).
+    pub filter: f32,
+    /// Width that catches light, as a multiple of the body's (fronds).
+    pub light_span: f32,
+    /// Surface that takes up nutrients, as a multiple of the body's (fronds).
+    pub uptake_area: f32,
+    /// Glow of lures, 0..1.
+    pub lure: f32,
+    /// Cost of building body mass relative to a body without parts (parts weigh something).
+    pub build_factor: f32,
+
+    /// Chemistry. Aerobic respiration capacity 0..1 (the rest must be fermented).
+    pub aerobic: f32,
+    /// Fermentation capacity 0..1.
+    pub ferment: f32,
+    /// Share of photosynthesis that is oxygen-producing (the rest is sulfur-based).
+    pub oxygenic: f32,
+    /// Nutrient uptake from the water, 0..1.
+    pub uptake: f32,
+    /// Nitrogen fixation, 0..1.
+    pub fixation: f32,
+    /// Toxin production, 0..1.
+    pub toxin: f32,
+    /// Resistance to toxins, 0..1 (fraction of damage avoided).
+    pub resistance: f32,
 
     /// °C.
     pub temp_pref: f32,
@@ -102,9 +167,117 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+/// Swimming efficiency of flagella and cilia: excellent for microbes, useless for giants.
+fn small_swimmer(radius: f32, half: f32) -> f32 {
+    1.0 / (1.0 + (radius / half).powf(1.5))
+}
+
+/// Swimming efficiency of fins and flukes: poor for microbes, best for big bodies.
+fn large_swimmer(radius: f32, half: f32) -> f32 {
+    0.3 + 0.7 * radius / (radius + half)
+}
+
+/// `1 − e^(−x)`: turns a sum of contributions into a 0..1 level with diminishing returns.
+fn saturating(x: f32) -> f32 {
+    1.0 - (-x).exp()
+}
+
+/// Sums of what the parts do.
+#[derive(Default)]
+struct PartSums {
+    thrust: f32,
+    turning: f32,
+    drag: f32,
+    crawl: f32,
+    grip: f32,
+    holdfast: f32,
+    spines: f32,
+    jaws: f32,
+    shell: f32,
+    antennae: f32,
+    lure: f32,
+    reach: f32,
+    filter: f32,
+    fronds: f32,
+    mass: f32,
+    upkeep: f32,
+    eyes: Vec<Eye>,
+}
+
+fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
+    let pc = &config.parts;
+    let small = small_swimmer(radius, pc.small_swimmer_radius);
+    let large = large_swimmer(radius, pc.large_swimmer_radius);
+    let mut p = PartSums::default();
+    for inst in instances {
+        let s = inst.size;
+        let spec = inst.kind.spec();
+        // Even a tiny part weighs and costs something.
+        let bulk = 0.2 + 0.8 * s;
+        p.mass += spec.mass * bulk;
+        p.upkeep += spec.upkeep * bulk;
+        p.drag += spec.drag * bulk;
+        let (cos, sin) = (inst.dir.cos(), inst.dir.sin());
+        let raised = if inst.parent == Some(PartKind::Stalk) {
+            pc.stalk_bonus
+        } else {
+            1.0
+        };
+        match inst.kind {
+            PartKind::Flagellum => {
+                // Pushing (at the back) or pulling (at the front) both work; sideways is weak.
+                p.thrust += 1.0 * s * small * (0.6 + 0.4 * cos.abs());
+                p.turning += 0.3 * s;
+            }
+            PartKind::Cilia => {
+                p.thrust += 0.35 * s * small;
+                p.turning += 0.4 * s;
+                p.filter += 0.6 * s;
+            }
+            PartKind::Tentacle => {
+                p.thrust += 0.1 * s;
+                p.grip += 0.1 * s;
+                p.filter += 0.15 * s;
+                p.reach = p.reach.max(inst.length * pc.tentacle_reach * raised);
+            }
+            PartKind::Frond => p.fronds += inst.length * raised,
+            PartKind::Fin => {
+                p.thrust += 0.5 * s * large * (0.5 + 0.5 * sin.abs());
+                p.turning += 0.6 * s;
+            }
+            PartKind::Fluke => {
+                p.thrust += 1.4 * s * large * (-cos).max(0.2);
+                p.turning += 0.2 * s;
+            }
+            PartKind::Leg => {
+                p.crawl += 0.8 * s;
+                p.grip += 0.35 * s;
+                p.thrust += 0.08 * s;
+            }
+            PartKind::Holdfast => p.holdfast += s,
+            PartKind::Stalk => {}
+            PartKind::Eye => {
+                let half = (55.0 - 20.0 * s).to_radians();
+                p.eyes.push(Eye {
+                    dir: inst.dir,
+                    cos_half: half.cos(),
+                    range: pc.eye_range * (0.15 + 0.85 * s) * raised,
+                });
+            }
+            PartKind::Antenna => p.antennae += s * raised,
+            PartKind::Lure => p.lure += s * raised,
+            PartKind::Spine => p.spines += s,
+            PartKind::Jaw => p.jaws += s * cos.max(0.15),
+            PartKind::Shell => p.shell += 0.4 + 0.6 * s,
+        }
+    }
+    p
+}
+
 impl Traits {
     pub fn decode(genome: &Genome, config: &Config) -> Traits {
         let gc = &config.genes;
+        let pc = &config.parts;
         let up = &config.upkeep;
         let light = &config.light;
         let f = |i: usize| genome.frac(i);
@@ -113,11 +286,16 @@ impl Traits {
             gc.min_radius * 2f32.powf(genome.get(gene::SIZE) as f32 / gc.size_doubling);
         let adult_mass = adult_radius * adult_radius;
 
-        let armor = f(gene::ARMOR);
-        let spikes = f(gene::SPIKES);
-        let jaws = f(gene::JAWS);
+        let body = BodyShape::from_genome(genome);
+        let mut instances = Vec::with_capacity(parts::MAX_INSTANCES);
+        parts::layout(&parts::decode_parts(genome), &body, &mut instances);
+        let mut p = sum_parts(&instances, adult_radius, config);
+
+        let armor = saturating(0.45 * p.shell);
+        let spikes = saturating(0.6 * p.spines);
+        let jaws = saturating(1.2 * p.jaws);
         let buoyancy_gene = genome.signed(gene::BUOYANCY);
-        let buoyancy = (buoyancy_gene - armor * config.physics.armor_density).clamp(-1.0, 1.0);
+        let buoyancy = (buoyancy_gene - p.mass * config.physics.part_density).clamp(-1.0, 1.0);
         let reserves = f(gene::RESERVES);
         let longevity = f(gene::LONGEVITY);
 
@@ -133,8 +311,6 @@ impl Traits {
 
         let regen = f(gene::REGEN);
         let toughness = f(gene::TOUGHNESS);
-        let speed = f(gene::SPEED);
-        let agility = f(gene::AGILITY);
         let restlessness = f(gene::RESTLESSNESS);
 
         let mut drives = [0.0; drive::COUNT];
@@ -147,21 +323,45 @@ impl Traits {
         let brood = 1 + (genome.get(gene::BROOD) >> 5) as u32;
         let repro_threshold = 0.3 + 0.7 * f(gene::PATIENCE);
 
-        let range = f(gene::SENSE_RANGE);
-        let fov_frac = f(gene::FOV);
-        let fov_deg = lerp(gc.fov_min_deg, 360.0, fov_frac);
-        let fov_cos = if fov_deg >= 359.9 {
-            -1.0
-        } else {
-            (fov_deg.to_radians() * 0.5).cos()
-        };
+        // Swimming: thrust against drag. Long bodies slip through the water but turn slowly.
+        let drag = 1.0 - 0.45 * body.elongation + p.drag;
+        let swim = saturating(p.thrust / drag);
+        let speed_coeff =
+            swim * gc.speed_scale * (1.0 - config.physics.armor_speed_penalty * armor);
+        let turn_rate =
+            lerp(gc.turn_min, gc.turn_max, saturating(p.turning)) * (1.0 - 0.35 * body.elongation);
+        let crawl_coeff = pc.crawl_speed * saturating(p.crawl);
+        let anchor = saturating(2.0 * p.holdfast);
+        let grip = saturating(p.grip + 2.0 * p.holdfast);
+
+        // Senses: keep the longest-range eyes.
+        p.eyes.sort_by(|a, b| {
+            b.range
+                .partial_cmp(&a.range)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut eyes = [Eye::default(); MAX_EYES];
+        let eye_count = p.eyes.len().min(MAX_EYES);
+        eyes[..eye_count].copy_from_slice(&p.eyes[..eye_count]);
+        let smell_radii = pc.smell_range * saturating(1.2 * p.antennae);
+        let sense_radii = eyes[..eye_count]
+            .iter()
+            .map(|e| e.range)
+            .fold(smell_radii, f32::max);
 
         let tolerance = f(gene::TEMP_TOL);
+        let aerobic = f(gene::RESPIRATION);
+        let uptake = f(gene::UPTAKE);
+        let fixation = f(gene::FIXATION);
+        // Trace values from drift make no toxin (and cost nothing).
+        let toxin = if genome.get(gene::TOXIN) < 6 {
+            0.0
+        } else {
+            f(gene::TOXIN)
+        };
+        let resistance = f(gene::RESISTANCE);
 
         let upkeep = 1.0
-            + up.armor * armor
-            + up.spikes * spikes
-            + up.jaws * jaws
             + up.buoyancy * f(gene::BUOYANCY)
             + up.reserves * reserves
             + up.longevity * longevity
@@ -171,10 +371,12 @@ impl Traits {
             + up.hunt * hunt
             + up.regen * regen
             + up.toughness * toughness
-            + up.speed * speed
-            + up.agility * agility
-            + up.senses * range * (0.5 + fov_frac)
-            + up.tolerance * tolerance;
+            + up.tolerance * tolerance
+            + up.uptake * uptake
+            + up.fixation * fixation
+            + up.toxin * toxin
+            + up.resistance * resistance
+            + up.parts * p.upkeep;
 
         let pigment = light.pigment_absorptance * photo;
         let absorptance = (light.body_absorptance + pigment).min(0.98);
@@ -190,6 +392,9 @@ impl Traits {
         Traits {
             adult_radius,
             adult_mass,
+            elongation: body.elongation,
+            segments: body.segments,
+            part_count: instances.len() as u8,
             armor,
             spikes,
             jaws,
@@ -204,19 +409,35 @@ impl Traits {
             hunt,
             regen: lerp(gc.regen_min, gc.regen_max, regen),
             hp_factor: lerp(gc.toughness_min, gc.toughness_max, toughness),
-            speed,
-            speed_coeff: speed
-                * gc.speed_scale
-                * (1.0 - config.physics.armor_speed_penalty * armor),
-            turn_rate: lerp(gc.turn_min, gc.turn_max, agility),
+            swim,
+            speed_coeff,
+            crawl_coeff,
+            grip,
+            anchor,
+            drag,
+            turn_rate,
             restlessness,
             drives,
             birth_fraction,
             brood,
             repro_threshold,
-            sense_radii: range * gc.sense_radii,
-            fov_cos,
-            fov_deg,
+            eyes,
+            eye_count: eye_count as u8,
+            smell_radii,
+            sense_radii,
+            reach: p.reach,
+            filter: p.filter,
+            light_span: 1.0 + pc.frond_span * p.fronds,
+            uptake_area: 1.0 + pc.frond_uptake * p.fronds,
+            lure: saturating(1.5 * p.lure),
+            build_factor: 1.0 + p.mass,
+            aerobic,
+            ferment: (1.0 - aerobic + config.chemistry.ferment_floor).min(1.0),
+            oxygenic: f(gene::OXYGENIC),
+            uptake,
+            fixation,
+            toxin,
+            resistance: 0.9 * resistance,
             temp_pref: f(gene::TEMP_PREF) * gc.temp_max,
             temp_tol: lerp(gc.tolerance_min, gc.tolerance_max, tolerance),
             upkeep,
@@ -234,9 +455,16 @@ impl Traits {
         self.speed_coeff * radius.sqrt()
     }
 
+    /// Can move under its own power (swimming, or walking on rock).
     #[inline]
     pub fn is_motile(&self) -> bool {
-        self.speed_coeff > 0.0
+        self.speed_coeff > 0.0 || self.crawl_coeff > 0.0
+    }
+
+    /// Needs to know whether it touches rock (to walk, grip, or anchor).
+    #[inline]
+    pub fn uses_contact(&self) -> bool {
+        self.crawl_coeff > 0.0 || self.grip > 0.0
     }
 
     /// Dominant diet as an index 0..4 (photo, chemo, scavenge, hunt).
@@ -249,6 +477,15 @@ impl Traits {
             }
         }
         best
+    }
+
+    /// Widest angle any eye sees, in degrees (for display).
+    pub fn eyes_span_deg(&self) -> f32 {
+        self.eyes[..self.eye_count as usize]
+            .iter()
+            .map(|e| 2.0 * e.cos_half.acos().to_degrees())
+            .sum::<f32>()
+            .min(360.0)
     }
 }
 
@@ -265,17 +502,10 @@ pub fn describe_gene(index: usize, genome: &Genome, traits: &Traits, config: &Co
             format!("away {:+.0}%", x * 100.0)
         }
     };
-    let gc = &config.genes;
+    if (gene::PARTS..gene::PARTS + 3 * parts::SLOTS).contains(&index) {
+        return describe_part_gene(index, genome);
+    }
     match index {
-        gene::ARMOR => format!(
-            "{} damage blocked",
-            pct(traits.armor * config.feeding.armor_protection)
-        ),
-        gene::SPIKES => format!(
-            "reflects {} of bites",
-            pct(traits.spikes * config.feeding.spike_damage)
-        ),
-        gene::JAWS => format!("bite ×{:.1}", 0.2 + 1.8 * traits.jaws),
         gene::SIZE => format!("adult radius {:.1}", traits.adult_radius),
         gene::BUOYANCY => {
             let b = genome.signed(gene::BUOYANCY);
@@ -289,6 +519,18 @@ pub fn describe_gene(index: usize, genome: &Genome, traits: &Traits, config: &Co
         }
         gene::RESERVES => format!("stores {:.1}× body mass", traits.reserve_factor),
         gene::LONGEVITY => format!("lives ~{}", format_duration(traits.lifespan)),
+        gene::ELONGATION => {
+            let aspect = 1.0 + 3.0 * traits.elongation;
+            if aspect < 1.15 {
+                "round".into()
+            } else {
+                format!("{aspect:.1}× as long as wide")
+            }
+        }
+        gene::SEGMENTS => match traits.segments {
+            1 => "1 segment".into(),
+            n => format!("{n} segments"),
+        },
         gene::HUE => format!("{:.0}°", v as f32 / 256.0 * 360.0),
         gene::SATURATION => pct(lerp(0.2, 1.0, v as f32 / 255.0)),
         gene::PATTERN => ["plain", "spots", "stripes", "rings"][(v >> 6) as usize].into(),
@@ -296,16 +538,39 @@ pub fn describe_gene(index: usize, genome: &Genome, traits: &Traits, config: &Co
         gene::CHEMO => format!("{} effective", pct(traits.chemo)),
         gene::SCAVENGE => format!("{} effective", pct(traits.scavenge)),
         gene::HUNT => format!("{} effective", pct(traits.hunt)),
-        gene::REGEN => format!("{:.1}% HP/s", traits.regen * 100.0),
-        gene::TOUGHNESS => format!("{:.2} HP per mass", traits.hp_factor),
-        gene::SPEED => {
-            if traits.speed <= 0.0 {
-                "cannot swim".into()
+        gene::RESPIRATION => {
+            let a = traits.aerobic;
+            if a > 0.85 {
+                "breathes oxygen (needs it)".into()
+            } else if a < 0.15 {
+                "ferments (oxygen is poison)".into()
             } else {
-                format!("{:.1} u/s as adult", traits.max_speed(traits.adult_radius))
+                format!("{} oxygen, the rest fermented", pct(a))
             }
         }
-        gene::AGILITY => format!("turns {:.0}°/s", traits.turn_rate.to_degrees()),
+        gene::OXYGENIC => format!(
+            "{} releases O₂, {} uses minerals",
+            pct(traits.oxygenic),
+            pct(1.0 - traits.oxygenic)
+        ),
+        gene::UPTAKE => pct(traits.uptake),
+        gene::FIXATION => {
+            if traits.fixation < 0.02 {
+                "none".into()
+            } else {
+                format!("makes its own nutrients ({})", pct(traits.fixation))
+            }
+        }
+        gene::TOXIN => {
+            if traits.toxin < 0.02 {
+                "none".into()
+            } else {
+                format!("leaks poison ({})", pct(traits.toxin))
+            }
+        }
+        gene::RESISTANCE => format!("ignores {} of poison", pct(traits.resistance)),
+        gene::REGEN => format!("{:.1}% HP/s", traits.regen * 100.0),
+        gene::TOUGHNESS => format!("{:.2} HP per mass", traits.hp_factor),
         gene::RESTLESSNESS => pct(traits.restlessness),
         i if (gene::DRIVES..gene::DRIVES + drive::COUNT).contains(&i) => signed(genome.signed(i)),
         gene::OFFSPRING_SIZE => format!(
@@ -314,21 +579,45 @@ pub fn describe_gene(index: usize, genome: &Genome, traits: &Traits, config: &Co
         ),
         gene::BROOD => format!("{} per brood", traits.brood),
         gene::PATIENCE => format!("breeds at {} reserves", pct(traits.repro_threshold)),
-        gene::SENSE_RANGE => {
-            if traits.sense_radii <= 0.0 {
-                "blind".into()
-            } else {
-                format!(
-                    "{:.0} radii ({:.0} u)",
-                    traits.sense_radii,
-                    (traits.sense_radii * traits.adult_radius).min(gc.sense_cap)
-                )
-            }
-        }
-        gene::FOV => format!("{:.0}°", traits.fov_deg),
         gene::TEMP_PREF => format!("{:.1} °C", traits.temp_pref),
         gene::TEMP_TOL => format!("±{:.1} °C", traits.temp_tol),
-        _ => String::new(),
+        _ => {
+            let _ = config;
+            String::new()
+        }
+    }
+}
+
+/// Meaning of one byte of a part slot.
+fn describe_part_gene(index: usize, genome: &Genome) -> String {
+    let slot = (index - gene::PARTS) / 3;
+    let o = parts::slot_offset(slot);
+    let kind_byte = genome.get(o);
+    let Some(kind) = PartKind::from_code(kind_byte) else {
+        return if index == o {
+            "empty slot".into()
+        } else {
+            "unused".into()
+        };
+    };
+    match index - o {
+        0 => match parts::symmetry_count(kind_byte) {
+            1 => kind.name().to_string(),
+            2 => format!("pair of {}", kind.plural()),
+            n => format!("ring of {n} {}", kind.plural()),
+        },
+        1 => format!("size {:.0}%", genome.frac(index) * 100.0),
+        _ => {
+            let (anchor, angle) = parts::decode_anchor(genome.get(index));
+            let place = match anchor {
+                parts::Anchor::Segment(k) => format!("segment {}", k + 1),
+                parts::Anchor::EverySegment => "every segment".into(),
+                parts::Anchor::OnPrevious => "on previous part".into(),
+            };
+            let deg = angle.to_degrees().round() as i32;
+            let deg = if deg > 180 { deg - 360 } else { deg };
+            format!("{place}, {deg:+}°")
+        }
     }
 }
 
@@ -372,6 +661,8 @@ mod tests {
         assert!((t.birth_fraction - 0.5).abs() < 1e-6);
         assert!(t.buoyancy > 0.0);
         assert_eq!(t.sense_radii, 0.0);
+        assert_eq!(t.part_count, 0);
+        assert!(t.aerobic > 0.5 && t.oxygenic > 0.9);
         assert!(
             t.color[1] > t.color[0] && t.color[1] > t.color[2],
             "ancestor should be green"
@@ -409,8 +700,62 @@ mod tests {
     fn capabilities_cost_upkeep() {
         let (mut g, config) = ancestor();
         let base = Traits::decode(&g, &config).upkeep;
-        g.0[gene::ARMOR] = 0xFF;
-        assert!(Traits::decode(&g, &config).upkeep > base);
+        g.0[gene::TOXIN] = 0xFF;
+        let toxic = Traits::decode(&g, &config).upkeep;
+        assert!(toxic > base);
+        // Parts cost upkeep too.
+        let o = parts::slot_offset(0);
+        g.0[o] = PartKind::Shell.code();
+        g.0[o + 1] = 0x80;
+        assert!(Traits::decode(&g, &config).upkeep > toxic);
+    }
+
+    fn with_part(kind: PartKind, sym: u8, size: u8, place: u8) -> (Genome, Config) {
+        let (mut g, config) = ancestor();
+        let o = parts::slot_offset(0);
+        g.0[o] = sym << 4 | kind.code();
+        g.0[o + 1] = size;
+        g.0[o + 2] = place;
+        (g, config)
+    }
+
+    #[test]
+    fn parts_give_abilities() {
+        // A flagellum at the back makes a microbe swim.
+        let (g, config) = with_part(PartKind::Flagellum, 0, 0x80, 16);
+        let t = Traits::decode(&g, &config);
+        assert!(t.is_motile() && t.max_speed(t.adult_radius) > 5.0);
+        // The same flagellum on a giant barely moves it; a fluke does better.
+        let (mut big, _) = with_part(PartKind::Flagellum, 0, 0x80, 16);
+        big.0[gene::SIZE] = 0xC0;
+        let flagellum = Traits::decode(&big, &config).swim;
+        big.0[parts::slot_offset(0)] = PartKind::Fluke.code();
+        let fluke = Traits::decode(&big, &config).swim;
+        assert!(
+            fluke > 2.0 * flagellum,
+            "fluke {fluke} flagellum {flagellum}"
+        );
+
+        // A pair of eyes gives two view cones.
+        let (g, config) = with_part(PartKind::Eye, 1, 0xC0, 3);
+        let t = Traits::decode(&g, &config);
+        assert_eq!(t.eye_count, 2);
+        assert!(t.sense_radii > 20.0);
+        assert!((t.eyes[0].dir + t.eyes[1].dir).abs() < 1e-4, "mirrored");
+
+        // Legs walk, holdfasts anchor, fronds widen the light catch.
+        let (g, config) = with_part(PartKind::Leg, 1, 0xC0, 6 << 5 | 8);
+        let t = Traits::decode(&g, &config);
+        assert!(t.crawl_coeff > 0.0 && t.grip > 0.0 && t.is_motile());
+        let (g, config) = with_part(PartKind::Holdfast, 0, 0x80, 16);
+        assert!(Traits::decode(&g, &config).anchor > 0.5);
+        let (g, config) = with_part(PartKind::Frond, 1, 0xFF, 8);
+        assert!(Traits::decode(&g, &config).light_span > 2.0);
+
+        // A ring of shell plates is heavy armor that sinks.
+        let (g, config) = with_part(PartKind::Shell, 5, 0xFF, 0);
+        let t = Traits::decode(&g, &config);
+        assert!(t.armor > 0.8 && t.buoyancy < 0.0);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Row-major grid of `f32`, cell `(x, y)` covers `[x·cell, (x+1)·cell) × [y·cell, (y+1)·cell)`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Field {
     pub nx: usize,
     pub ny: usize,
@@ -49,6 +49,35 @@ impl Field {
         self.index(x, y)
     }
 
+    /// Index of the cell at `pos`, or of a neighboring water cell if that one is rock
+    /// (bodies resting on rock sit partly inside rock cells). Prefers the cell above.
+    pub fn water_index_at(&self, pos: Vec2) -> usize {
+        let (x, y) = self.coords(pos);
+        let i = self.index(x, y);
+        if !self.solid[i] {
+            return i;
+        }
+        for (dx, dy) in [
+            (0, 1),
+            (-1, 0),
+            (1, 0),
+            (-1, 1),
+            (1, 1),
+            (0, -1),
+            (-1, -1),
+            (1, -1),
+        ] {
+            let (nx, ny) = (x as isize + dx, y as isize + dy);
+            if nx >= 0 && ny >= 0 && (nx as usize) < self.nx && (ny as usize) < self.ny {
+                let j = self.index(nx as usize, ny as usize);
+                if !self.solid[j] {
+                    return j;
+                }
+            }
+        }
+        i
+    }
+
     /// Nearest-cell value.
     #[inline]
     pub fn get(&self, pos: Vec2) -> f32 {
@@ -82,9 +111,10 @@ impl Field {
         Vec2::new(gx, gy) / (2.0 * d)
     }
 
+    /// Add to the water cell at (or next to) `pos`; content put in rock would be lost.
     #[inline]
     pub fn add(&mut self, pos: Vec2, amount: f32) {
-        let i = self.index_at(pos);
+        let i = self.water_index_at(pos);
         self.data[i] += amount;
     }
 

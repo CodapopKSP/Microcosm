@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::genome::{Genome, drive, gene};
+use crate::parts::{self, PartKind};
 use crate::rng::{Rng, mix64};
 use crate::traits::Traits;
 
@@ -108,16 +109,46 @@ fn genus_name(t: &Traits, seed: u64) -> String {
 /// Epithets that describe traits, with how strongly each applies.
 fn descriptive_epithets(t: &Traits, genome: &Genome) -> Vec<(&'static str, f32)> {
     let d = &t.drives;
+    // How much of each part kind the body carries (copies × size).
+    let mut amount = [0.0f32; PartKind::ALL.len()];
+    let segments = t.segments as f32;
+    for p in parts::decode_parts(genome) {
+        let repeats = if p.anchor == parts::Anchor::EverySegment {
+            segments
+        } else {
+            1.0
+        };
+        amount[p.kind as usize - 1] += p.count as f32 * repeats * p.size;
+    }
+    let part = |k: PartKind| 1.0 - (-1.5 * amount[k as usize - 1]).exp();
     vec![
         ("magnus", (t.adult_radius / 24.0).min(2.0) - 0.4),
         ("gigas", (t.adult_radius / 60.0).min(2.0) - 0.5),
         ("minimus", 1.0 - t.adult_radius / 3.0),
-        ("velox", t.speed * 1.5 - 0.3),
-        ("agilis", genome.frac(gene::AGILITY) * 1.3 - 0.2),
-        ("armatus", t.armor * 1.4),
-        ("spinosus", t.spikes * 1.4),
-        ("dentatus", t.jaws * 1.3),
+        ("velox", t.swim * 1.5 - 0.3),
+        ("agilis", t.turn_rate / 4.0 - 0.3),
         ("ferox", t.hunt * 1.2 + t.jaws * 0.5 - 0.2),
+        ("flagellatus", part(PartKind::Flagellum) * 1.2 - 0.2),
+        ("ciliatus", part(PartKind::Cilia) * 1.2 - 0.2),
+        ("tentaculatus", part(PartKind::Tentacle) * 1.4 - 0.1),
+        ("frondosus", part(PartKind::Frond) * 1.4 - 0.1),
+        ("pinnatus", part(PartKind::Fin) * 1.3 - 0.1),
+        ("caudatus", part(PartKind::Fluke) * 1.3 - 0.1),
+        ("pedatus", part(PartKind::Leg) * 1.4 - 0.1),
+        ("affixus", part(PartKind::Holdfast) * 1.3 - 0.1),
+        ("stipitatus", part(PartKind::Stalk) * 1.2 - 0.1),
+        ("oculatus", part(PartKind::Eye) * 1.3 - 0.1),
+        ("antennatus", part(PartKind::Antenna) * 1.3 - 0.1),
+        ("lucifer", part(PartKind::Lure) * 1.6),
+        ("spinosus", part(PartKind::Spine) * 1.4),
+        ("dentatus", part(PartKind::Jaw) * 1.3),
+        ("loricatus", part(PartKind::Shell) * 1.4),
+        ("elongatus", t.elongation * 1.4 - 0.3),
+        ("segmentatus", (t.segments as f32 - 2.0) / 3.0),
+        ("toxicus", t.toxin * 1.4 - 0.1),
+        ("anaerobius", (0.35 - t.aerobic) * 3.0),
+        ("azotifer", t.fixation * 1.3 - 0.2),
+        ("sulfureus", (0.5 - t.oxygenic) * 2.0 * t.photo),
         ("gregarius", d[drive::KIN] * 1.2),
         ("solitarius", -d[drive::KIN] * 1.2),
         ("profundus", -d[drive::RISE] * 1.1),
@@ -129,7 +160,6 @@ fn descriptive_epithets(t: &Traits, genome: &Genome) -> Vec<(&'static str, f32)>
         ("longaevus", genome.frac(gene::LONGEVITY) * 1.2 - 0.2),
         ("fugax", 0.6 - genome.frac(gene::LONGEVITY) * 3.0 - 0.3),
         ("prolificus", (t.brood as f32 - 2.0) / 3.0),
-        ("oculatus", t.sense_radii / 30.0),
         ("photophilus", d[drive::LIGHT]),
         ("lucifugus", -d[drive::LIGHT]),
         ("vagans", t.restlessness * 1.2 - 0.2),
@@ -292,7 +322,13 @@ impl SpeciesRegistry {
         let genus_id = s.genus;
         let genus = self.genera[&genus_id].name.clone();
         let t = Traits::decode(&s.founder, config);
-        let taken = |name: &str| self.species.values().any(|o| o.id != id && o.name == name);
+        // Only named (established) species matter to viewers; transient variants don't
+        // reserve names.
+        let taken = |name: &str| {
+            self.species
+                .values()
+                .any(|o| o.id != id && o.established && o.name == name)
+        };
         let candidates = epithet_candidates(&t, &s.founder, mix64(id as u64 ^ 0x5EED));
         let mut name = None;
         for e in &candidates {
@@ -358,6 +394,8 @@ impl SpeciesRegistry {
             if !s.established && s.population >= threshold {
                 s.established = true;
                 s.established_at = Some(tick);
+                // Pick the name now, so it's unique among the named species.
+                self.assign_name(species, config);
                 self.events.push(SpeciesEvent::Established(species));
             }
         }
@@ -438,8 +476,10 @@ mod tests {
         assert_eq!(reg.classify(0, &close, 10, &config), 0);
         let mut far = g;
         far.0[gene::SIZE] = 0x90;
-        far.0[gene::SPEED] = 0x80;
         far.0[gene::HUNT] = 0xC0;
+        far.0[gene::TOXIN] = 0x80;
+        far.0[gene::FIXATION] = 0x80;
+        far.0[parts::slot_offset(0)] = PartKind::Fin.code();
         // A single huge jump alone is not enough.
         let mut one = g;
         one.0[gene::SIZE] = 0xFF;
@@ -458,7 +498,8 @@ mod tests {
         let mut far = g;
         far.0[gene::HUNT] = 0xFF;
         far.0[gene::PHOTO] = 0x00;
-        far.0[gene::SPEED] = 0xC0;
+        far.0[gene::RESPIRATION] = 0x00;
+        far.0[parts::slot_offset(0)] = PartKind::Jaw.code();
         let id = reg.classify(0, &far, 5, &config);
         assert_ne!(id, 0);
         for _ in 0..config.species.established {
@@ -474,6 +515,7 @@ mod tests {
         other.0[gene::CHEMO] = 0xFF;
         other.0[gene::PHOTO] = 0x00;
         other.0[gene::BUOYANCY] = 0x00;
+        other.0[gene::OXYGENIC] = 0x00;
         let id2 = reg.classify(0, &other, 5, &config);
         assert_ne!(id2, 0);
         reg.on_birth(id2, &config, 6);

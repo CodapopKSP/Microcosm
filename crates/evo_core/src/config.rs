@@ -18,7 +18,10 @@ pub struct Config {
     pub detritus: DetritusConfig,
     pub vents: VentsConfig,
     pub genes: GenesConfig,
+    pub parts: PartsConfig,
     pub upkeep: UpkeepConfig,
+    pub chemistry: ChemistryConfig,
+    pub atmosphere: AtmosphereConfig,
     pub metabolism: MetabolismConfig,
     pub feeding: FeedingConfig,
     pub physics: PhysicsConfig,
@@ -317,7 +320,7 @@ pub struct GenesConfig {
     pub min_radius: f32,
     /// Size gene steps per doubling of radius.
     pub size_doubling: f32,
-    /// Max speed = speed gene × speed_scale × √radius.
+    /// Max speed = swimming strength (0..1, from parts) × speed_scale × √radius.
     pub speed_scale: f32,
     /// Lifespan base in seconds (× √radius × longevity factor).
     pub lifespan_base: f32,
@@ -331,11 +334,8 @@ pub struct GenesConfig {
     pub regen_max: f32,
     pub turn_min: f32,
     pub turn_max: f32,
-    /// Sense range at gene FF, in body radii.
-    pub sense_radii: f32,
     /// Absolute cap on sense range.
     pub sense_cap: f32,
-    pub fov_min_deg: f32,
     pub temp_max: f32,
     pub tolerance_min: f32,
     pub tolerance_max: f32,
@@ -360,9 +360,7 @@ impl Default for GenesConfig {
             regen_max: 0.05,
             turn_min: 0.3,
             turn_max: 6.0,
-            sense_radii: 40.0,
             sense_cap: 1200.0,
-            fov_min_deg: 20.0,
             temp_max: 40.0,
             tolerance_min: 1.0,
             tolerance_max: 15.0,
@@ -371,13 +369,59 @@ impl Default for GenesConfig {
     }
 }
 
+/// How body parts work (per-kind details are in `parts.rs` and `traits.rs`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PartsConfig {
+    /// Radius at which flagella and cilia lose most of their push (they suit microbes).
+    pub small_swimmer_radius: f32,
+    /// Radius around which fins and flukes become efficient (they suit big bodies).
+    pub large_swimmer_radius: f32,
+    /// Walking speed at full leg strength (× √radius), on rock or seafloor.
+    pub crawl_speed: f32,
+    /// Sight range of a full-size eye, in body radii.
+    pub eye_range: f32,
+    /// Smell range of full-strength antennae, in body radii (every direction).
+    pub smell_range: f32,
+    /// Tentacle reach beyond the body, as a fraction of the tentacle's length.
+    pub tentacle_reach: f32,
+    /// Extra light-catching width per unit of frond length (in body radii).
+    pub frond_span: f32,
+    /// Extra nutrient-uptake surface per unit of frond length.
+    pub frond_uptake: f32,
+    /// Parts on the tip of a stalk work this much better (raised eyes, fronds, lures).
+    pub stalk_bonus: f32,
+    /// Light of a full-strength lure, as a fraction of surface noon light.
+    pub lure_brightness: f32,
+    /// Radius of a full-strength lure's glow.
+    pub lure_radius: f32,
+    /// Distance from rock (beyond the body) that still counts as touching it.
+    pub contact_margin: f32,
+}
+
+impl Default for PartsConfig {
+    fn default() -> Self {
+        Self {
+            small_swimmer_radius: 8.0,
+            large_swimmer_radius: 6.0,
+            crawl_speed: 12.0,
+            eye_range: 40.0,
+            smell_range: 16.0,
+            tentacle_reach: 0.8,
+            frond_span: 0.45,
+            frond_uptake: 0.3,
+            stalk_bonus: 1.3,
+            lure_brightness: 0.3,
+            lure_radius: 160.0,
+            contact_margin: 2.0,
+        }
+    }
+}
+
 /// Upkeep of each capability as a fraction of basal metabolism at full strength.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UpkeepConfig {
-    pub armor: f32,
-    pub spikes: f32,
-    pub jaws: f32,
     pub buoyancy: f32,
     pub reserves: f32,
     pub longevity: f32,
@@ -387,18 +431,19 @@ pub struct UpkeepConfig {
     pub hunt: f32,
     pub regen: f32,
     pub toughness: f32,
-    pub speed: f32,
-    pub agility: f32,
-    pub senses: f32,
+    /// Temperature tolerance.
     pub tolerance: f32,
+    pub uptake: f32,
+    pub fixation: f32,
+    pub toxin: f32,
+    pub resistance: f32,
+    /// Multiplier on the upkeep of body parts (each part kind has its own, see `parts.rs`).
+    pub parts: f32,
 }
 
 impl Default for UpkeepConfig {
     fn default() -> Self {
         Self {
-            armor: 0.6,
-            spikes: 0.3,
-            jaws: 0.3,
             buoyancy: 0.3,
             reserves: 0.3,
             longevity: 0.4,
@@ -408,10 +453,154 @@ impl Default for UpkeepConfig {
             hunt: 0.4,
             regen: 0.2,
             toughness: 0.3,
-            speed: 0.5,
-            agility: 0.2,
-            senses: 0.5,
             tolerance: 0.4,
+            uptake: 0.2,
+            fixation: 0.2,
+            toxin: 0.3,
+            resistance: 0.3,
+            parts: 1.0,
+        }
+    }
+}
+
+/// What organisms take from and give to the water (docs/DESIGN.md §4).
+/// Oxygen and CO₂ are measured so that 1.0 is water in equilibrium with today's air.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChemistryConfig {
+    /// Oxygen released by photosynthesis or used by respiration, per unit of energy.
+    pub oxygen_per_energy: f32,
+    /// CO₂ used by photosynthesis or released by respiration, per unit of energy.
+    pub co2_per_energy: f32,
+    /// Below this oxygen level, aerobic respiration can't get enough.
+    pub oxygen_half: f32,
+    /// Extra cost of fermenting instead of breathing, per unit of work.
+    pub ferment_penalty: f32,
+    /// Fermentation capacity every organism has, however aerobic.
+    pub ferment_floor: f32,
+    /// Share of fermentation's extra cost that leaks out as organic waste (food for scavengers).
+    pub ferment_waste: f32,
+    /// Fraction of max HP lost per second when an organism can't meet its needs at all.
+    pub suffocation_damage: f32,
+    /// Fraction of max HP lost per second by strict fermenters per unit of oxygen above 0.5.
+    pub oxygen_toxicity: f32,
+    /// CO₂ level at which oxygen-producing photosynthesis slows (it runs at 1× at level 1).
+    pub co2_half: f32,
+    /// Minerals used per unit of energy by sulfur-based photosynthesis.
+    pub sulfur_minerals: f32,
+    /// Mineral concentration at which sulfur-based photosynthesis runs at half speed.
+    pub sulfur_half: f32,
+    /// Nutrients needed per unit of body mass built.
+    pub nutrient_per_mass: f32,
+    /// Nutrient store capacity per unit of body mass.
+    pub nutrient_store: f32,
+    /// Uptake per second = rate × gene × radius × surface × concentration.
+    pub uptake_rate: f32,
+    /// Uptake multiplier while anchored by a holdfast (it draws from the rock).
+    pub anchor_uptake: f32,
+    /// Nutrients fixed per second per unit of mass at full fixation.
+    pub fixation_rate: f32,
+    /// Energy per unit of nutrient fixed.
+    pub fixation_cost: f32,
+    /// Toxin leaked per second = rate × gene × radius.
+    pub toxin_rate: f32,
+    /// Fraction of max HP lost per second per unit of toxin concentration (÷ (1 + radius/8)).
+    pub toxin_damage: f32,
+    /// Fraction of toxin that breaks down per second.
+    pub toxin_decay: f32,
+    /// Damage to a hunter per unit of mass eaten from fully toxic prey (× its mass-to-HP).
+    pub poison_damage: f32,
+    /// Diffusion of dissolved gases, nutrients and toxins (units²/s).
+    pub diffusion: f32,
+    /// Fraction per second by which deep water relaxes toward its usual make-up
+    /// (ocean circulation that the simulation doesn't model).
+    pub ventilation: f32,
+    /// Nutrient concentration of surface and deep water, and the depth scale between them.
+    pub nutrient_surface: f32,
+    pub nutrient_deep: f32,
+    pub nutricline_depth: f32,
+    /// Oxygen of deep water relative to the surface (it's older water).
+    pub deep_oxygen: f32,
+    /// CO₂ and nutrients released by a full-strength vent per second.
+    pub vent_co2: f32,
+    pub vent_nutrients: f32,
+    /// Vents release oxygen-free water: fraction of oxygen removed per second near a vent.
+    pub vent_oxygen_sink: f32,
+    /// Decomposition without oxygen runs this much slower…
+    pub anoxic_decay: f32,
+    /// …and releases this fraction as minerals (sulfides).
+    pub anoxic_minerals: f32,
+    /// Oxygen used by decomposing marine snow, per unit of energy decomposed (× oxygen_per_energy).
+    pub decomposition_oxygen: f32,
+    /// Nutrients released by upwelling water per unit of its mineral energy.
+    pub upwelling_nutrients: f32,
+}
+
+impl Default for ChemistryConfig {
+    fn default() -> Self {
+        Self {
+            oxygen_per_energy: 2.0,
+            co2_per_energy: 2.0,
+            oxygen_half: 0.25,
+            ferment_penalty: 0.6,
+            ferment_floor: 0.25,
+            ferment_waste: 0.5,
+            suffocation_damage: 0.2,
+            oxygen_toxicity: 0.05,
+            co2_half: 0.3,
+            sulfur_minerals: 0.3,
+            sulfur_half: 0.05,
+            nutrient_per_mass: 1.0,
+            nutrient_store: 1.0,
+            uptake_rate: 1.0,
+            anchor_uptake: 3.0,
+            fixation_rate: 0.01,
+            fixation_cost: 0.5,
+            toxin_rate: 0.05,
+            toxin_damage: 2.0,
+            toxin_decay: 0.02,
+            poison_damage: 0.8,
+            diffusion: 600.0,
+            ventilation: 0.0003,
+            nutrient_surface: 0.05,
+            nutrient_deep: 0.5,
+            nutricline_depth: 1200.0,
+            deep_oxygen: 0.7,
+            vent_co2: 4.0,
+            vent_nutrients: 2.0,
+            vent_oxygen_sink: 0.05,
+            anoxic_decay: 0.5,
+            anoxic_minerals: 0.9,
+            decomposition_oxygen: 1.0,
+            upwelling_nutrients: 0.5,
+        }
+    }
+}
+
+/// The air above the ocean: two global levels (1.0 = today) that the surface trades with.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AtmosphereConfig {
+    /// Fraction per second by which surface water moves toward equilibrium with the air.
+    pub surface_exchange: f32,
+    /// Size of the atmosphere, in fully saturated water columns per unit of surface width.
+    /// Larger = the air changes more slowly.
+    pub size: f32,
+    /// Degrees of warming per doubling of CO₂ in the air.
+    pub greenhouse: f32,
+    /// Air at the start (1.0 = today). Try `initial_oxygen = 0.05` for an anoxic early Earth.
+    pub initial_oxygen: f32,
+    pub initial_co2: f32,
+}
+
+impl Default for AtmosphereConfig {
+    fn default() -> Self {
+        Self {
+            surface_exchange: 0.02,
+            size: 40.0,
+            greenhouse: 3.0,
+            initial_oxygen: 1.0,
+            initial_co2: 1.0,
         }
     }
 }
@@ -523,8 +712,8 @@ pub struct PhysicsConfig {
     pub push_stiffness: f32,
     /// Max speed penalty at full armor.
     pub armor_speed_penalty: f32,
-    /// Extra sinking at full armor (in buoyancy units).
-    pub armor_density: f32,
+    /// Sinking per unit of part mass (as a fraction of body mass), in buoyancy units.
+    pub part_density: f32,
     /// Carcass sinking speed (× √radius), units/s.
     pub carcass_sink: f32,
     /// Corpses at least this large become carcasses; smaller ones become detritus.
@@ -541,7 +730,7 @@ impl Default for PhysicsConfig {
             response: 20.0,
             push_stiffness: 0.5,
             armor_speed_penalty: 0.3,
-            armor_density: 0.5,
+            part_density: 1.5,
             carcass_sink: 2.0,
             carcass_min_radius: 0.0,
             carcass_decay: 0.01,
@@ -608,6 +797,12 @@ pub struct MutationConfig {
     /// Color genes mutate this many times as often (a fast "molecular clock", so lineages
     /// visibly diverge in color).
     pub color_rate_multiplier: f32,
+    /// Chance per offspring that a whole part is copied into an empty slot.
+    pub part_duplicate: f32,
+    /// Chance per offspring that a part is lost.
+    pub part_delete: f32,
+    /// Chance per offspring that a new part grows in an empty slot.
+    pub part_new: f32,
 }
 
 impl Default for MutationConfig {
@@ -616,6 +811,9 @@ impl Default for MutationConfig {
             rate: 0.01,
             reroll: 0.05,
             color_rate_multiplier: 3.0,
+            part_duplicate: 0.004,
+            part_delete: 0.003,
+            part_new: 0.01,
         }
     }
 }
@@ -640,11 +838,11 @@ pub struct SpeciesConfig {
 impl Default for SpeciesConfig {
     fn default() -> Self {
         Self {
-            threshold: 0.025,
-            genus_threshold: 0.08,
+            threshold: 0.022,
+            genus_threshold: 0.045,
             color_weight: 0.25,
             gene_cap: 0.3,
-            established: 8,
+            established: 20,
             kin_threshold: 0.08,
         }
     }
@@ -670,8 +868,9 @@ pub struct PopulationConfig {
 impl Default for PopulationConfig {
     fn default() -> Self {
         Self {
-            ancestor: "A:000000 B:20A05020 C:55C000 D:FF000000 H:2030 M:000000 \
-                       N:8080808080808080 R:FF00B0 S:0000 T:80A0"
+            ancestor: "B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 \
+                       N:80808080808080808000 \
+                       P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0"
                 .into(),
             initial: 2000,
             spawn_depth: 300.0,

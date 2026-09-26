@@ -71,6 +71,9 @@ pub struct Args {
     /// Art test: a paused world with rows of organisms, each row sweeping one gene 00→FF.
     #[arg(long)]
     pub gallery: bool,
+    /// Start with a chemistry map shown: oxygen, nutrients or toxin (key M cycles).
+    #[arg(long)]
+    pub map: Option<String>,
 }
 
 /// Viewer-wide options from the command line.
@@ -85,6 +88,7 @@ pub struct ViewerOptions {
     pub tree: bool,
     pub follow: Option<String>,
     pub follow_zoom: f32,
+    pub map: Option<String>,
 }
 
 fn main() {
@@ -99,11 +103,27 @@ fn main() {
     let mut world = if args.gallery {
         gallery::build()
     } else {
-        match &resume {
-            Some(path) => {
-                eprintln!("resuming {} (use --new for a fresh world)", path.display());
-                let mut w = World::load(path)
-                    .unwrap_or_else(|e| fail(&format!("failed to load {}: {e}", path.display())));
+        let loaded = resume.as_ref().and_then(|path| {
+            eprintln!("resuming {} (use --new for a fresh world)", path.display());
+            match World::load(path) {
+                Ok(w) => Some(w),
+                // An autosave picked up implicitly that this version can't read is set aside.
+                Err(e) if args.load.is_none() => {
+                    let aside = path.with_extension("old.bin");
+                    if let Err(err) = std::fs::rename(path, &aside) {
+                        fail(&format!("failed to load {}: {e} ({err})", path.display()));
+                    }
+                    eprintln!(
+                        "{e}\nmoved it to {} and starting a new world",
+                        aside.display()
+                    );
+                    None
+                }
+                Err(e) => fail(&format!("failed to load {}: {e}", path.display())),
+            }
+        });
+        match loaded {
+            Some(mut w) => {
                 if let Some(cfg_path) = &args.config {
                     let cfg = Config::load(cfg_path).unwrap_or_else(|e| fail(&e));
                     w.replace_config(cfg).unwrap_or_else(|e| fail(&e));
@@ -167,6 +187,7 @@ fn main() {
             tree: args.tree,
             follow: args.follow.clone(),
             follow_zoom: args.follow_zoom,
+            map: args.map.clone(),
         })
         .add_plugins((
             sim::SimPlugin,
