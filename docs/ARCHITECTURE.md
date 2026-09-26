@@ -61,6 +61,7 @@ The main techniques:
 | `sim.rs` | Runs ticks inside the frame loop at the chosen speed, within a 13 ms budget; autosave |
 | `camera.rs` | Pan/zoom/follow, click-to-select, the auto-camera "director" for streaming |
 | `render/` | One dynamic mesh with a quad per visible organism, shaded procedurally in `organism.wgsl`. A world-sized quad with `background.wgsl` draws water, light, shadows, rock, vents and marine snow from field textures. HDR + bloom. |
+| (effects) | `World::fx` holds short-lived visual events from the last few seconds (gulps, bites, carcass bites, impact shockwaves); the renderer draws them as extra quads. Organisms also carry `ate_tick`/`hurt_tick` for feeding and hurt flashes. |
 | `ui/` | egui: top bar, organism inspector (chromosomes), species list, charts, event ticker, stream overlay |
 
 The viewer interpolates organism positions between ticks, so motion stays smooth at any speed.

@@ -177,7 +177,9 @@ When an organism is **adult** and its reserves are at least the patience thresho
 | Old age (past lifespan: 20% chance per second) | Corpse |
 | Engulfed | No corpse — eaten whole |
 
-Corpses of small organisms (radius < 6) go straight into the **detritus field** (marine snow). Larger ones become **carcass entities** that sink, can be eaten on contact, and slowly decay into detritus. A whale fall feeds a seafloor community.
+Every corpse becomes a **carcass**: a grey, torn version of the organism that sinks, can be eaten on contact (bites show), and decays into the **detritus field** (marine snow). Small carcasses decompose within about a minute; large ones last much longer, so a whale fall feeds a seafloor community.
+
+Scavengers live two ways: eating carcasses on contact ("Eating a carcass"), and filtering marine snow from the water and the sediment that piles up on the seafloor ("Eating marine snow").
 
 ### Movement and physics
 
@@ -231,7 +233,7 @@ Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Min
 | Vent lifecycle | Hours | Vents flare, fade and die; new ones open elsewhere. Colonization and founder effects |
 | **Upwelling** | ~every 3 h | Minerals well up into the sunlit water for 30 min: a surface bonanza for chemotrophs and mixotrophs |
 | **Plague** | ~every 8 h | Strikes the most common species (only if it holds ≥35% of all life); ~70% of its members die over 10 min. Kill-the-winner keeps any one species from taking over |
-| **Rock wall** | ~every 30 h | A wall rises from the seafloor to the surface over an hour and splits the ocean in two for ~20 h, then sinks. Separated populations drift apart genetically (allopatric speciation), then meet again |
+| **Rock wall** | ~every 30 h | A wall rises from the seafloor to the surface over about 6 minutes and splits the ocean in two for ~20 h, then sinks. Separated populations drift apart genetically (allopatric speciation), then meet again |
 | **Meteor impact** | ~every 48 h | Kills everything within 700 units, releases minerals, and dims the sun by up to 70% for ~4 days (an impact winter) |
 | **Seed bank** | Always | If population falls below a minimum, the ancestor recolonizes so the world never goes dark |
 

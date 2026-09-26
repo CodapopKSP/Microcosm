@@ -18,6 +18,12 @@ pub enum Activity {
     Fleeing,
     Schooling,
     Feeding,
+    /// Eating a carcass.
+    Scavenging,
+    /// Filtering marine snow / sediment.
+    Grazing,
+    /// Absorbing vent minerals.
+    Absorbing,
 }
 
 impl Activity {
@@ -30,6 +36,9 @@ impl Activity {
             Activity::Fleeing => "Fleeing",
             Activity::Schooling => "Schooling",
             Activity::Feeding => "Feeding",
+            Activity::Scavenging => "Eating a carcass",
+            Activity::Grazing => "Eating marine snow",
+            Activity::Absorbing => "Absorbing minerals",
         }
     }
 }
@@ -105,6 +114,12 @@ pub struct Organism {
     pub steer_heading: f32,
     #[serde(default)]
     pub steer_throttle: f32,
+    /// Tick this organism last ate (for the feeding animation).
+    #[serde(default)]
+    pub ate_tick: u64,
+    /// Tick this organism was last bitten (for the hurt flash).
+    #[serde(default)]
+    pub hurt_tick: u64,
     pub born: u64,
     pub offspring: u32,
     pub kills: u32,
@@ -155,6 +170,8 @@ impl Organism {
             activity: Activity::Drifting,
             steer_heading: 0.0,
             steer_throttle: 0.0,
+            ate_tick: 0,
+            hurt_tick: 0,
             born: tick,
             offspring: 0,
             kills: 0,
@@ -202,20 +219,42 @@ impl Organism {
     }
 }
 
-/// A large dead body: sinks, can be eaten on contact, and decays into detritus.
+/// A dead body: sinks, can be eaten on contact, and decays into detritus.
+/// It keeps the look of the organism it was (drawn torn and grey).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Carcass {
     pub pos: Vec2,
     pub vel: Vec2,
-    /// Remaining energy; radius follows as √(energy / body_energy).
+    /// Remaining energy.
     pub energy: f32,
+    /// Size of the body when it died (constant; eating takes bites out of it).
     pub radius: f32,
     pub color: [f32; 3],
     pub species: u32,
+    #[serde(default)]
+    pub initial_energy: f32,
+    #[serde(default)]
+    pub heading: f32,
+    /// Look of the organism: armor, spikes, pattern, id-derived seed.
+    #[serde(default)]
+    pub armor: f32,
+    #[serde(default)]
+    pub spikes: f32,
+    #[serde(default)]
+    pub pattern: u8,
+    #[serde(default)]
+    pub seed: f32,
+    #[serde(default)]
+    pub hurt_tick: u64,
 }
 
 impl Carcass {
-    pub fn update_radius(&mut self, body_energy: f32) {
-        self.radius = (self.energy.max(0.0) / body_energy.max(1e-3)).sqrt();
+    /// Fraction already eaten or decayed (0 = fresh).
+    pub fn consumed(&self) -> f32 {
+        if self.initial_energy <= 0.0 {
+            0.0
+        } else {
+            (1.0 - self.energy / self.initial_energy).clamp(0.0, 1.0)
+        }
     }
 }

@@ -9,6 +9,8 @@ struct Background {
     world: vec4<f32>, // width, height, time, world units per pixel
     sun: vec4<f32>,   // sun (0..1), surface temp, day phase, vent count
     vents: array<vec4<f32>, 16>,
+    effects: vec4<f32>, // impact-winter darkness, event count
+    events: array<vec4<f32>, 8>, // x, width, kind (1 upwelling, 2 wall), param
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> bg: Background;
@@ -68,9 +70,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let sky_day = mix(vec3<f32>(0.35, 0.55, 0.75), vec3<f32>(0.12, 0.28, 0.55), h);
         let sky_night = mix(vec3<f32>(0.02, 0.03, 0.07), vec3<f32>(0.005, 0.008, 0.02), h);
         var sky = mix(sky_night, sky_day * 0.7, clamp(bg.sun.x * 1.3, 0.0, 1.0));
-        // Stars at night.
+        // Stars at night (hidden by impact dust).
+        let winter = bg.effects.x;
         let star = step(0.9985, hash21(floor(wp / max(2.0, 1.5 * px)))) * (1.0 - clamp(bg.sun.x * 3.0, 0.0, 1.0));
-        sky += vec3<f32>(star);
+        sky += vec3<f32>(star) * (1.0 - winter);
+        // Impact winter: a churning brown-grey dust pall.
+        let dust = fbm(vec2<f32>(wp.x * 0.0008 + time * 0.02, wp.y * 0.002));
+        let pall = mix(vec3<f32>(0.09, 0.075, 0.06), vec3<f32>(0.2, 0.16, 0.12), dust);
+        sky = mix(sky, pall, clamp(winter * 1.4, 0.0, 0.95));
         return vec4<f32>(sky, 1.0);
     }
 
@@ -142,6 +149,37 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     water += vent_glow;
 
+    // Impact winter: dusty haze near the surface.
+    let winter = bg.effects.x;
+    water = mix(water, vec3<f32>(0.08, 0.07, 0.055), winter * 0.6 * exp(-depth / 900.0));
+
+    // Visible events: upwellings and moving rock walls.
+    var wall_glow = vec3<f32>(0.0);
+    let event_count = u32(bg.effects.y);
+    for (var i = 0u; i < min(event_count, 8u); i++) {
+        let e = bg.events[i];
+        let kind = u32(e.z + 0.5);
+        let dx = wp.x - e.x;
+        let half_w = e.y * 0.5;
+        if kind == 1u {
+            // Upwelling: a column of cold, mineral-rich water with streaks rising to the surface.
+            let across = 1.0 - smoothstep(half_w * 0.6, half_w, abs(dx));
+            let strength = e.w * across * smoothstep(1800.0, 300.0, depth);
+            let streak = pow(0.5 + 0.5 * sin(dx * 0.03 + fbm(vec2<f32>(dx * 0.004, wp.y * 0.003 - time * 0.4)) * 6.0), 6.0);
+            let bubble_p = vec2<f32>(wp.x, wp.y - time * 30.0) / max(10.0, 2.0 * px);
+            let bubble = step(0.992, hash21(floor(bubble_p))) * (1.0 - smoothstep(1.5, 5.0, px));
+            water += (vec3<f32>(0.02, 0.12, 0.16) + vec3<f32>(0.05, 0.2, 0.22) * streak + vec3<f32>(0.4, 0.6, 0.6) * bubble) * strength;
+        } else if kind == 2u && e.w < 0.0 {
+            // A wall on the move: glowing cracks along it and a dust cloud at its top.
+            let top = -e.w;
+            let near = 1.0 - smoothstep(half_w, half_w + 120.0, abs(dx));
+            let dust_cloud = exp(-pow((wp.y - top) / 120.0, 2.0)) * (1.0 - smoothstep(half_w, half_w + 300.0, abs(dx)));
+            let churn = fbm(vec2<f32>(wp.x * 0.01, wp.y * 0.01 - time * 0.5));
+            water = mix(water, vec3<f32>(0.18, 0.15, 0.11), dust_cloud * churn * 0.8);
+            wall_glow += vec3<f32>(1.6, 0.5, 0.12) * near * step(wp.y, top) * pow(fbm(vec2<f32>(wp.x * 0.05, wp.y * 0.02)), 4.0) * 1.0;
+        }
+    }
+
     // Rock. The edge is roughened with noise so the terrain grid doesn't show.
     let rough = (fbm(wp * 0.04) - 0.5) * 10.0 + (value_noise(wp * 0.2) - 0.5) * 2.5;
     let sdf = sdf_at(uv) + rough;
@@ -159,8 +197,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     rock += vec3<f32>(0.22, 0.28, 0.27) * rim * up * (0.06 + lin * 1.1);
     rock = mix(rock, vec3<f32>(0.15, 0.115, 0.07), rim * up * clamp(detritus * 2.0 + 0.2, 0.0, 0.85));
     rock += vent_glow * 0.5 * rim;
+    rock += wall_glow * smoothstep(-80.0, 0.0, sdf);
     // Depth fog on rock.
     rock *= mix(1.0, 0.5, clamp(depth / size.y, 0.0, 1.0));
+
+    // Sediment: marine snow piles up on the floor as a soft brown carpet.
+    let carpet = (1.0 - smoothstep(0.0, 10.0 + 25.0 * detritus, sdf)) * up * clamp(detritus * 3.0, 0.0, 1.0);
+    let fluff = 0.7 + 0.3 * value_noise(wp * 0.3);
+    water = mix(water, vec3<f32>(0.16, 0.12, 0.08) * fluff * (0.4 + lin), carpet * 0.8);
 
     let edge = smoothstep(-px, px, sdf);
     var col = mix(rock, water, edge);

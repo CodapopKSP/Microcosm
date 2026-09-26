@@ -25,6 +25,8 @@ pub struct CameraState {
     pub director: bool,
     director_timer: f32,
     drag_origin: Option<Vec2>,
+    /// Events already seen by the director (so it only reacts to new ones).
+    seen_events: u64,
 }
 
 impl CameraState {
@@ -61,14 +63,34 @@ fn spawn_camera(mut commands: Commands, state: Res<SimState>, options: Res<crate
     };
     let mut center = center;
     let mut zoom = zoom;
-    if let Some(name) = &options.follow {
+    if options.follow.as_deref() == Some("carcass") {
+        // Dev helper: look at the largest carcass.
+        if let Some(c) = state
+            .world
+            .carcasses
+            .iter()
+            .max_by(|a, b| a.radius.partial_cmp(&b.radius).unwrap())
+        {
+            center = Vec2::new(c.pos.x, c.pos.y);
+            zoom = options.follow_zoom;
+        }
+    } else if let Some(name) = &options.follow {
         let needle = name.to_lowercase();
-        let species = state.world.species.living().find(|s| s.name.to_lowercase().contains(&needle)).map(|s| s.id);
+        let species = state
+            .world
+            .species
+            .living()
+            .find(|s| s.name.to_lowercase().contains(&needle))
+            .map(|s| s.id);
         let member = species.and_then(|id| state.world.organisms.iter().find(|o| o.species == id));
         if let Some(o) = member {
             center = Vec2::new(o.pos.x, o.pos.y);
             zoom = options.follow_zoom;
-            commands.insert_resource(crate::sim::Selection { organism: Some(o.id), species, follow: true });
+            commands.insert_resource(crate::sim::Selection {
+                organism: Some(o.id),
+                species,
+                follow: true,
+            });
         } else {
             eprintln!("--follow: no living species matching '{name}'");
         }
@@ -97,6 +119,7 @@ fn spawn_camera(mut commands: Commands, state: Res<SimState>, options: Res<crate
         director: options.stream,
         director_timer: 0.0,
         drag_origin: None,
+        seen_events: state.world.events.count,
     });
     commands.spawn((
         Camera2d,
@@ -245,14 +268,33 @@ fn director(
     time: Res<Time<Real>>,
 ) {
     if !cam.director {
+        cam.seen_events = state.world.events.count;
         return;
     }
     cam.director_timer -= time.delta_secs();
+    // New events with a place (meteor, rock wall, upwelling, vent) take priority.
+    let new_events = state.world.events.count.saturating_sub(cam.seen_events) as usize;
+    cam.seen_events = state.world.events.count;
+    let located = state
+        .world
+        .events
+        .entries
+        .iter()
+        .rev()
+        .take(new_events)
+        .find_map(|e| e.pos);
+    if let Some(p) = located {
+        selection.organism = None;
+        selection.follow = false;
+        cam.focus(Vec2::new(p.x, p.y), Some(2.5));
+        cam.director_timer = 30.0;
+        return;
+    }
     let current_alive = selection
         .organism
         .and_then(|id| state.world.find(id))
         .is_some();
-    if cam.director_timer > 0.0 && current_alive {
+    if cam.director_timer > 0.0 && (current_alive || selection.organism.is_none()) {
         return;
     }
     cam.director_timer = 25.0;

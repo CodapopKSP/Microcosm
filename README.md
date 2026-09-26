@@ -32,6 +32,9 @@ cargo run --release -- --new
 # Load a specific save
 cargo run --release -- --load saves/quicksave.bin
 
+# Saves keep their own config. To apply your edited config to a saved world:
+cargo run --release -- --load saves/autosave.bin --config configs/default.toml
+
 # Stream mode: UI hidden, auto camera
 cargo run --release -- --stream
 ```
@@ -51,6 +54,10 @@ cargo run --release -- --stream
 | L / G / E / T / H | Species list / charts (population, family tree) / event history / event ticker / help |
 | F5 | Quicksave (`saves/quicksave.bin`). The world also autosaves every 10 minutes and on exit; the previous save is kept as `*.prev.bin` |
 | Ctrl+1–4 | Trigger a plague, upwelling, meteor, or rock wall right now |
+
+### Art gallery
+
+`cargo run --release -- --gallery` opens a paused world with rows of organisms, each row sweeping one gene from `00` to `FF` (eye range, field of view, hunting, jaws, scavenging, speed, agility, armor, spikes). Use it to check how traits look.
 
 ### Headless
 

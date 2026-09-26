@@ -72,7 +72,8 @@ impl SimState {
             .map_err(|e| e.to_string())
             .and_then(|_| {
                 if path.exists() {
-                    std::fs::rename(&path, path.with_extension("prev.bin")).map_err(|e| e.to_string())?;
+                    std::fs::rename(&path, path.with_extension("prev.bin"))
+                        .map_err(|e| e.to_string())?;
                 }
                 self.world.save(&path)
             });

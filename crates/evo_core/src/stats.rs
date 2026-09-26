@@ -92,6 +92,9 @@ pub struct Event {
     /// Organism or species the event is about, if any (for "follow" links).
     pub organism: Option<u64>,
     pub species: Option<u32>,
+    /// Where it happened, if it has a place (vents, walls, impacts).
+    #[serde(default)]
+    pub pos: Option<glam::Vec2>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

@@ -48,6 +48,44 @@ struct Intent {
     activity: Activity,
 }
 
+/// Short-lived visual effects for the viewer (not saved).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FxKind {
+    /// Prey swallowed whole.
+    Engulf,
+    /// A hunter took a bite.
+    Bite,
+    /// A scavenger took a bite of a carcass.
+    Scavenge,
+    /// Meteor strike shockwave.
+    Impact,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Fx {
+    pub kind: FxKind,
+    pub pos: Vec2,
+    pub radius: f32,
+    pub color: [f32; 3],
+    pub tick: u64,
+}
+
+impl FxKind {
+    /// How long the effect lasts, in sim seconds.
+    pub fn duration(self) -> f32 {
+        match self {
+            FxKind::Engulf => 0.8,
+            FxKind::Bite => 0.6,
+            FxKind::Scavenge => 0.7,
+            FxKind::Impact => 6.0,
+        }
+    }
+}
+
+/// Don't emit more than one bite/scavenge effect per organism within this many ticks.
+const FX_THROTTLE: u64 = 12;
+const MAX_FX: usize = 20_000;
+
 /// Accumulated wall-clock time per phase (seconds), for profiling and the debug overlay.
 #[derive(Clone, Debug, Default)]
 pub struct Timings {
@@ -132,6 +170,9 @@ pub struct World {
     scratch: Option<Scratch>,
     #[serde(skip)]
     pub timings: Timings,
+    /// Visual effects from recent ticks (for the viewer).
+    #[serde(skip)]
+    pub fx: Vec<Fx>,
 }
 
 #[inline]
@@ -528,6 +569,7 @@ impl World {
             rng,
             scratch: None,
             timings: Timings::default(),
+            fx: Vec::new(),
         };
         let initial = world.config.population.initial;
         world.spawn_ancestors(initial);
@@ -566,6 +608,19 @@ impl World {
         Ok(world)
     }
 
+    /// Swap in a new config for a running world (e.g. after tuning). The world size must match.
+    pub fn replace_config(&mut self, config: Config) -> Result<(), String> {
+        if config.world.width != self.config.world.width
+            || config.world.height != self.config.world.height
+        {
+            return Err("the new config has a different world size".into());
+        }
+        self.config = config;
+        self.scratch = None;
+        self.after_load();
+        Ok(())
+    }
+
     /// Rebuild derived state that isn't saved (decoded traits).
     fn after_load(&mut self) {
         for o in &mut self.organisms {
@@ -578,6 +633,17 @@ impl World {
     }
 
     fn log(&mut self, kind: EventKind, text: String, organism: Option<u64>, species: Option<u32>) {
+        self.log_at(kind, text, organism, species, None);
+    }
+
+    fn log_at(
+        &mut self,
+        kind: EventKind,
+        text: String,
+        organism: Option<u64>,
+        species: Option<u32>,
+        pos: Option<Vec2>,
+    ) {
         let event = Event {
             tick: self.tick,
             time: self.time(),
@@ -585,6 +651,7 @@ impl World {
             text,
             organism,
             species,
+            pos,
         };
         self.events.push(event, self.config.stats.max_events);
     }
@@ -751,6 +818,10 @@ impl World {
         self.apply_events(effects, time);
 
         // 5. Feed.
+        let keep_after = self.tick.saturating_sub((6.0 / dt) as u64);
+        self.fx.retain(|f| {
+            f.tick >= keep_after && (self.tick - f.tick) as f32 * dt <= f.kind.duration()
+        });
         self.feed();
         lap(&mut timings.feed);
 
@@ -772,17 +843,19 @@ impl World {
         // 7. Events and statistics.
         for e in env_events {
             match e {
-                EnvEvent::VentOpened(p) => self.log(
+                EnvEvent::VentOpened(p) => self.log_at(
                     EventKind::Environment,
                     format!("A hydrothermal vent opens on the seafloor at x={:.0}.", p.x),
                     None,
                     None,
+                    Some(p),
                 ),
-                EnvEvent::VentDied(p) => self.log(
+                EnvEvent::VentDied(p) => self.log_at(
                     EventKind::Environment,
                     format!("The vent at x={:.0} falls silent.", p.x),
                     None,
                     None,
+                    Some(p),
                 ),
             }
         }
@@ -840,11 +913,13 @@ impl World {
             }
         }
         if let Some((x, _)) = fx.start_upwelling {
-            self.log(
+            let pos = Vec2::new(x, self.config.world.height - 400.0);
+            self.log_at(
                 EventKind::Environment,
                 format!("Cold, mineral-rich water wells up to the surface near x={x:.0}."),
                 None,
                 None,
+                Some(pos),
             );
         }
         if let Some(p) = fx.impact {
@@ -861,19 +936,29 @@ impl World {
                 p + Vec2::splat(r),
                 self.config.events.impact_minerals,
             );
-            self.log(
+            self.fx.push(Fx {
+                kind: FxKind::Impact,
+                pos: p,
+                radius: r,
+                color: [1.0, 0.7, 0.3],
+                tick: self.tick,
+            });
+            self.log_at(
                 EventKind::Disaster,
                 format!("A meteor strikes the ocean at x={:.0}, killing {killed}! Dust darkens the sky.", p.x),
                 None,
                 None,
+                Some(p),
             );
         }
         if let Some((x, _)) = fx.start_barrier {
-            self.log(
+            let pos = Vec2::new(x, self.terrain.floor_at(x) + 400.0);
+            self.log_at(
                 EventKind::Environment,
                 format!("The seafloor heaves: a wall of rock begins to rise at x={x:.0}, splitting the ocean."),
                 None,
                 None,
+                Some(pos),
             );
         }
 
@@ -920,11 +1005,13 @@ impl World {
             match e {
                 WorldEvent::Barrier { x, width, .. } => {
                     dirty.push((x - width * 1.5, x + width * 1.5));
-                    self.log(
+                    let pos = Vec2::new(*x, self.terrain.floor_at(*x) + 400.0);
+                    self.log_at(
                         EventKind::Environment,
                         format!("The wall at x={x:.0} has sunk back into the seafloor. The waters mix again."),
                         None,
                         None,
+                        Some(pos),
                     );
                 }
                 WorldEvent::ImpactWinter { .. } => self.log(
@@ -985,6 +1072,8 @@ impl World {
         let m_area = minerals.cell_area();
         let d_area = detritus.cell_area();
         let mut first_kill = None;
+        let tick = self.tick;
+        let fx = &mut self.fx;
 
         for i in 0..self.organisms.len() {
             if self.organisms[i].dead.is_some() {
@@ -1007,6 +1096,8 @@ impl World {
             };
             let r = o.radius;
             let mut gained = 0.0;
+            let mut absorbed = 0.0;
+            let mut grazed = 0.0;
 
             if t.chemo > 0.0 {
                 let idx = minerals.index_at(o.pos);
@@ -1016,6 +1107,7 @@ impl World {
                     let take = want.min(conc * m_area);
                     minerals.data[idx] -= take / m_area;
                     gained += take * fc.chemo_yield;
+                    absorbed += take * fc.chemo_yield;
                 }
             }
             if t.scavenge > 0.0 {
@@ -1027,7 +1119,16 @@ impl World {
                     let take = want.min(conc * d_area);
                     detritus.data[idx] -= take / d_area;
                     gained += take;
+                    grazed += take;
                 }
+            }
+            // Label what it's living on, when that's a meaningful share of its needs.
+            let need = o.cost_rate.max(1e-6) * dt;
+            if grazed > need * 0.5 && grazed >= absorbed {
+                o.activity = Activity::Grazing;
+                o.ate_tick = tick;
+            } else if absorbed > need * 0.5 {
+                o.activity = Activity::Absorbing;
             }
             if intent.carcass != NONE
                 && let Some(c) = self.carcasses.get_mut(intent.carcass as usize)
@@ -1040,7 +1141,19 @@ impl World {
                 c.energy -= take;
                 gained += take * fc.assimilation;
                 detritus.add(o.pos, take * (1.0 - fc.assimilation) / d_area);
-                o.activity = Activity::Feeding;
+                o.activity = Activity::Scavenging;
+                if tick >= o.ate_tick + FX_THROTTLE && fx.len() < MAX_FX {
+                    let dir = (c.pos - o.pos).normalize_or_zero();
+                    fx.push(Fx {
+                        kind: FxKind::Scavenge,
+                        pos: o.pos + dir * r,
+                        radius: r.max(c.radius * 0.5),
+                        color: c.color,
+                        tick,
+                    });
+                }
+                o.ate_tick = tick;
+                c.hurt_tick = tick;
             }
             o.energy += gained;
             o.gain_rate += gained / dt;
@@ -1061,6 +1174,15 @@ impl World {
                             taken_mass = prey.mass;
                             taken_energy = prey.body_value(config);
                             prey.dead = Some(DeathCause::Eaten);
+                            if fx.len() < MAX_FX {
+                                fx.push(Fx {
+                                    kind: FxKind::Engulf,
+                                    pos: prey.pos,
+                                    radius: prey.radius,
+                                    color: prey.traits.color,
+                                    tick,
+                                });
+                            }
                         }
                     } else {
                         let bite =
@@ -1074,6 +1196,17 @@ impl World {
                             taken_energy = dm * body_energy + reserves;
                             prey.hp -= dm * prey.traits.hp_factor;
                             prey.set_mass(prey.mass - dm);
+                            if tick >= hunter.ate_tick + FX_THROTTLE && fx.len() < MAX_FX {
+                                let dir = (prey.pos - hunter.pos).normalize_or_zero();
+                                fx.push(Fx {
+                                    kind: FxKind::Bite,
+                                    pos: hunter.pos + dir * hunter.radius,
+                                    radius: hunter.radius.max(prey.radius * 0.5),
+                                    color: prey.traits.color,
+                                    tick,
+                                });
+                            }
+                            prey.hurt_tick = tick;
                             if prey.hp <= 0.0 || prey.mass < min_mass {
                                 prey.dead = Some(DeathCause::Predation);
                             }
@@ -1085,6 +1218,7 @@ impl World {
                         hunter.gain_rate += assimilated / dt;
                         detritus.add(hunter.pos, (taken_energy - assimilated) / d_area);
                         hunter.activity = Activity::Feeding;
+                        hunter.ate_tick = tick;
                         if prey.traits.spikes > 0.0 {
                             hunter.hp -= fc.spike_damage * prey.traits.spikes * taken_mass;
                             if hunter.hp <= 0.0 {
@@ -1128,7 +1262,6 @@ impl World {
         let config = &self.config;
         let dt = config.time.dt;
         let phys = &config.physics;
-        let body_energy = config.metabolism.body_energy;
         let time = self.time() as f32;
         let detritus = &mut self.env.detritus;
         let area = detritus.cell_area();
@@ -1144,13 +1277,14 @@ impl World {
             );
             c.pos += (c.vel + water) * dt;
             self.terrain.collide(&mut c.pos, &mut c.vel, c.radius);
-            let lost = c.energy * phys.carcass_decay * dt;
+            // Small bodies decompose faster (microbes within about a minute).
+            let rate = phys.carcass_decay * (6.0 / c.radius.max(0.5)).clamp(1.0, 5.0);
+            let lost = c.energy * rate * dt;
             c.energy -= lost;
             detritus.add(c.pos, lost / area);
-            c.update_radius(body_energy);
         }
         self.carcasses.retain(|c| {
-            if c.energy < 1.0 {
+            if c.energy < 0.3 || c.consumed() > 0.92 {
                 detritus.add(c.pos, c.energy.max(0.0) / area);
                 false
             } else {
@@ -1266,16 +1400,21 @@ impl World {
             }
             let value = o.mass * body_energy + o.energy.max(0.0);
             if o.radius >= config.physics.carcass_min_radius {
-                let mut c = Carcass {
+                self.carcasses.push(Carcass {
                     pos: o.pos,
                     vel: o.vel * 0.5,
                     energy: value,
                     radius: o.radius,
                     color: o.traits.color,
                     species: o.species,
-                };
-                c.update_radius(body_energy);
-                self.carcasses.push(c);
+                    initial_energy: value,
+                    heading: o.heading,
+                    armor: o.traits.armor,
+                    spikes: o.traits.spikes,
+                    pattern: o.traits.pattern,
+                    seed: ((o.id.wrapping_mul(2_654_435_761) >> 8) % 1000) as f32 / 1000.0,
+                    hurt_tick: 0,
+                });
             } else {
                 detritus.add(o.pos, value / area);
             }
@@ -1378,6 +1517,7 @@ fn check_milestones(
                 text,
                 organism: Some(parent.id),
                 species: Some(parent.species),
+                pos: None,
             },
             config.stats.max_events,
         );

@@ -170,7 +170,7 @@ fn draw_ui(
         egui::Id::new("evo_root"),
         egui::UiBuilder::new(),
     );
-    top_bar(&mut root, &mut ui_state, &mut sim, &mut cam);
+    top_bar(&mut root, &mut ui_state, &mut sim, &mut cam, &mut selection);
 
     if ui_state.show_species {
         species_panel(&mut root, &sim.world, &mut selection, &mut cam);
@@ -226,7 +226,13 @@ fn draw_ui(
     Ok(())
 }
 
-fn top_bar(root: &mut egui::Ui, ui_state: &mut UiState, sim: &mut SimState, cam: &mut CameraState) {
+fn top_bar(
+    root: &mut egui::Ui,
+    ui_state: &mut UiState,
+    sim: &mut SimState,
+    cam: &mut CameraState,
+    selection: &mut Selection,
+) {
     egui::Panel::top("top_bar").show(root, |ui| {
         ui.horizontal(|ui| {
             let world = &sim.world;
@@ -243,35 +249,6 @@ fn top_bar(root: &mut egui::Ui, ui_state: &mut UiState, sim: &mut SimState, cam:
             ui.label(format!("Species {}", world.species.living().count()));
             ui.separator();
 
-            // Active events.
-            for e in &world.happenings.active {
-                use evo_core::events::WorldEvent;
-                let (text, color) = match e {
-                    WorldEvent::Plague { species, .. } => (
-                        format!("Plague: {}", world.species.name(*species)),
-                        egui::Color32::from_rgb(255, 120, 60),
-                    ),
-                    WorldEvent::ImpactWinter { .. } => (
-                        format!(
-                            "Impact winter ({:.0}% sun)",
-                            world.happenings.sun_factor(world.time()) * 100.0
-                        ),
-                        egui::Color32::from_rgb(255, 120, 60),
-                    ),
-                    WorldEvent::Upwelling { x, .. } => (
-                        format!("Upwelling at x={x:.0}"),
-                        egui::Color32::from_rgb(120, 190, 240),
-                    ),
-                    WorldEvent::Barrier { x, .. } => (
-                        format!("Rock wall at x={x:.0}"),
-                        egui::Color32::from_rgb(200, 170, 130),
-                    ),
-                };
-                ui.label(egui::RichText::new(text).color(color));
-            }
-            if !world.happenings.active.is_empty() {
-                ui.separator();
-            }
             let speed_index = sim.speed_index;
             for (i, s) in SPEEDS.iter().enumerate() {
                 let label = match *s {
@@ -330,6 +307,64 @@ fn top_bar(root: &mut egui::Ui, ui_state: &mut UiState, sim: &mut SimState, cam:
             });
         });
     });
+    // Active events get their own row so they never crowd the controls.
+    if !sim.world.happenings.active.is_empty() {
+        egui::Panel::top("events_bar").show(root, |ui| {
+            ui.horizontal(|ui| {
+                let world = &sim.world;
+                ui.label(egui::RichText::new("Now:").weak());
+                // Active events (click to look).
+                let mut goto: Option<Vec2> = None;
+                for e in &world.happenings.active {
+                    use evo_core::events::WorldEvent;
+                    let h = world.config.world.height;
+                    let (text, color, target) = match e {
+                        WorldEvent::Plague { species, .. } => (
+                            format!("Plague: {}", world.species.name(*species)),
+                            egui::Color32::from_rgb(255, 120, 60),
+                            world
+                                .organisms
+                                .iter()
+                                .find(|o| {
+                                    world.species.established_ancestor(o.species) == Some(*species)
+                                })
+                                .map(|o| Vec2::new(o.pos.x, o.pos.y)),
+                        ),
+                        WorldEvent::ImpactWinter { .. } => (
+                            format!(
+                                "Impact winter ({:.0}% sun)",
+                                world.happenings.sun_factor(world.time()) * 100.0
+                            ),
+                            egui::Color32::from_rgb(255, 120, 60),
+                            None,
+                        ),
+                        WorldEvent::Upwelling { x, .. } => (
+                            format!("Upwelling at x={x:.0}"),
+                            egui::Color32::from_rgb(120, 190, 240),
+                            Some(Vec2::new(*x, h - 500.0)),
+                        ),
+                        WorldEvent::Barrier { x, built, .. } => (
+                            format!("Rock wall at x={x:.0}"),
+                            egui::Color32::from_rgb(200, 170, 130),
+                            Some(Vec2::new(*x, built.min(h) - 300.0)),
+                        ),
+                    };
+                    let response = ui.add(
+                        egui::Label::new(egui::RichText::new(text).color(color))
+                            .sense(egui::Sense::click()),
+                    );
+                    if response.clicked() {
+                        goto = target;
+                    }
+                }
+                if let Some(p) = goto {
+                    cam.director = false;
+                    selection.follow = false;
+                    cam.focus(p, Some(2.0));
+                }
+            });
+        });
+    }
 }
 
 fn species_panel(
@@ -363,8 +398,10 @@ fn species_panel(
                         swatch(ui, s.color, 12.0);
                         // Main diet of the species (from its founder).
                         let t = evo_core::Traits::decode(&s.founder, &world.config);
-                        let (rect, r) = ui.allocate_exact_size(egui::vec2(6.0, 12.0), egui::Sense::hover());
-                        ui.painter().rect_filled(rect, 1.0, diet_color(t.main_diet()));
+                        let (rect, r) =
+                            ui.allocate_exact_size(egui::vec2(6.0, 12.0), egui::Sense::hover());
+                        ui.painter()
+                            .rect_filled(rect, 1.0, diet_color(t.main_diet()));
                         r.on_hover_text(DIET_NAMES[t.main_diet()]);
                         let text = egui::RichText::new(&s.name);
                         let response = ui.selectable_label(selected, text);
@@ -435,15 +472,8 @@ fn event_ticker(
                                 )
                                 .sense(egui::Sense::click()),
                             );
-                            if response.clicked()
-                                && let Some(sp) = e.species
-                            {
-                                selection.species = Some(sp);
-                                if let Some(o) = world.organisms.iter().find(|o| o.species == sp) {
-                                    selection.organism = Some(o.id);
-                                    selection.follow = true;
-                                    cam.focus(Vec2::new(o.pos.x, o.pos.y), None);
-                                }
+                            if response.clicked() {
+                                goto_event(e, world, selection, cam);
                             }
                         });
                     }
@@ -511,19 +541,33 @@ fn history(
                         egui::Label::new(egui::RichText::new(&e.text).color(event_color(e.kind)))
                             .sense(egui::Sense::click()),
                     );
-                    if response.clicked()
-                        && let Some(sp) = e.species
-                    {
-                        selection.species = Some(sp);
-                        if let Some(o) = world.organisms.iter().find(|o| o.species == sp) {
-                            selection.organism = Some(o.id);
-                            selection.follow = true;
-                            cam.focus(Vec2::new(o.pos.x, o.pos.y), None);
-                        }
+                    if response.clicked() {
+                        goto_event(e, world, selection, cam);
                     }
                 });
             }
         });
+}
+
+/// Jump the camera to where an event happened (or to a member of its species).
+fn goto_event(
+    e: &evo_core::stats::Event,
+    world: &World,
+    selection: &mut Selection,
+    cam: &mut CameraState,
+) {
+    if let Some(p) = e.pos {
+        selection.follow = false;
+        cam.director = false;
+        cam.focus(Vec2::new(p.x, p.y), Some(2.0));
+    } else if let Some(sp) = e.species {
+        selection.species = Some(sp);
+        if let Some(o) = world.organisms.iter().find(|o| o.species == sp) {
+            selection.organism = Some(o.id);
+            selection.follow = true;
+            cam.focus(Vec2::new(o.pos.x, o.pos.y), None);
+        }
+    }
 }
 
 /// Minimal overlay for stream mode (UI hidden).

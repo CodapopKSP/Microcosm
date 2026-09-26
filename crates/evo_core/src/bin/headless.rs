@@ -37,6 +37,9 @@ struct Args {
     /// Resume from a saved world instead of starting fresh.
     #[arg(long)]
     load: Option<PathBuf>,
+    /// With --load: replace the saved world's config with --config.
+    #[arg(long)]
+    apply_config: bool,
     /// Worker threads (default: all cores).
     #[arg(long)]
     threads: Option<usize>,
@@ -65,7 +68,14 @@ fn main() {
     }
 
     let mut world = match &args.load {
-        Some(path) => World::load(path).unwrap_or_else(|e| fail(&e)),
+        Some(path) => {
+            let mut w = World::load(path).unwrap_or_else(|e| fail(&e));
+            if args.apply_config {
+                let cfg = Config::load(&args.config).unwrap_or_else(|e| fail(&e));
+                w.replace_config(cfg).unwrap_or_else(|e| fail(&e));
+            }
+            w
+        }
         None => {
             let mut config = Config::load(&args.config).unwrap_or_else(|e| fail(&e));
             if let Some(seed) = args.seed {

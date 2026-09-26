@@ -543,7 +543,7 @@ impl Default for PhysicsConfig {
             armor_speed_penalty: 0.3,
             armor_density: 0.5,
             carcass_sink: 2.0,
-            carcass_min_radius: 6.0,
+            carcass_min_radius: 0.0,
             carcass_decay: 0.01,
         }
     }
@@ -726,7 +726,7 @@ impl Default for EventsConfig {
             plague_kill_rate: 0.002,
             upwelling_every: 3.0,
             upwelling_duration: 1800.0,
-            upwelling_rate: 20.0,
+            upwelling_rate: 40.0,
             upwelling_width: 1500.0,
             impact_every: 48.0,
             impact_radius: 700.0,
@@ -735,7 +735,7 @@ impl Default for EventsConfig {
             impact_minerals: 5000.0,
             barrier_every: 30.0,
             barrier_duration: 20.0,
-            barrier_rise: 1.0,
+            barrier_rise: 0.1,
             barrier_width: 200.0,
         }
     }

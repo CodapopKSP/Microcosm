@@ -1,6 +1,7 @@
 //! Viewer for the evolution simulator: pan/zoom around the ocean, inspect organisms and species.
 
 mod camera;
+mod gallery;
 mod render;
 mod sim;
 mod ui;
@@ -16,7 +17,8 @@ use evo_core::{Config, World};
 #[derive(Parser, Debug, Clone)]
 #[command(about = "Evolution simulator viewer")]
 pub struct Args {
-    /// Config file for a new world (implies `--new`). Default: configs/default.toml.
+    /// Config file for a new world (implies `--new`), or, with `--load`, a config to apply to the
+    /// loaded world. Default: configs/default.toml.
     #[arg(long)]
     pub config: Option<PathBuf>,
     /// Start a new world even if an autosave exists.
@@ -66,6 +68,9 @@ pub struct Args {
     /// Trigger an event at the start (plague, upwelling, impact, barrier). Repeatable.
     #[arg(long)]
     pub trigger: Vec<evo_core::events::Trigger>,
+    /// Art test: a paused world with rows of organisms, each row sweeping one gene 00→FF.
+    #[arg(long)]
+    pub gallery: bool,
 }
 
 /// Viewer-wide options from the command line.
@@ -87,21 +92,36 @@ fn main() {
     // By default, pick up where the last session left off.
     let autosave = args.save_dir.join("autosave.bin");
     let resume = args.load.clone().or_else(|| {
-        let fresh = args.new || args.config.is_some() || args.seed.is_some() || args.screenshot.is_some();
+        let fresh =
+            args.new || args.config.is_some() || args.seed.is_some() || args.screenshot.is_some();
         (!fresh && autosave.exists()).then(|| autosave.clone())
     });
-    let mut world = match &resume {
-        Some(path) => {
-            eprintln!("resuming {} (use --new for a fresh world)", path.display());
-            World::load(path).unwrap_or_else(|e| fail(&format!("failed to load {}: {e}", path.display())))
-        }
-        None => {
-            let path = args.config.clone().unwrap_or_else(|| PathBuf::from("configs/default.toml"));
-            let mut config = Config::load(&path).unwrap_or_else(|e| fail(&e));
-            if let Some(seed) = args.seed {
-                config.world.seed = seed;
+    let mut world = if args.gallery {
+        gallery::build()
+    } else {
+        match &resume {
+            Some(path) => {
+                eprintln!("resuming {} (use --new for a fresh world)", path.display());
+                let mut w = World::load(path)
+                    .unwrap_or_else(|e| fail(&format!("failed to load {}: {e}", path.display())));
+                if let Some(cfg_path) = &args.config {
+                    let cfg = Config::load(cfg_path).unwrap_or_else(|e| fail(&e));
+                    w.replace_config(cfg).unwrap_or_else(|e| fail(&e));
+                    eprintln!("applied {} to the loaded world", cfg_path.display());
+                }
+                w
             }
-            World::new(config)
+            None => {
+                let path = args
+                    .config
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("configs/default.toml"));
+                let mut config = Config::load(&path).unwrap_or_else(|e| fail(&e));
+                if let Some(seed) = args.seed {
+                    config.world.seed = seed;
+                }
+                World::new(config)
+            }
         }
     };
 
@@ -125,7 +145,13 @@ fn main() {
         }))
         .add_plugins(EguiPlugin::default())
         .insert_resource(ClearColor(Color::srgb(0.01, 0.02, 0.05)))
-        .insert_resource(sim::SimState::new(world, &args))
+        .insert_resource({
+            let mut state = sim::SimState::new(world, &args);
+            if args.gallery {
+                state.speed_index = 0;
+            }
+            state
+        })
         .insert_resource(ViewerOptions {
             stream: args.stream,
             screenshot: args.screenshot.clone(),
@@ -134,7 +160,8 @@ fn main() {
                 .view
                 .as_ref()
                 .filter(|v| v.len() == 3)
-                .map(|v| (v[0], v[1], v[2])),
+                .map(|v| (v[0], v[1], v[2]))
+                .or(args.gallery.then(|| gallery::view_for(&Config::default()))),
             select: args.select,
             charts: args.charts || args.tree,
             tree: args.tree,
