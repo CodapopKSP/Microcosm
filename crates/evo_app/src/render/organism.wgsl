@@ -575,6 +575,63 @@ fn mouth(q: vec2<f32>, dq: f32, angle: f32, hunt: f32, jaws: f32, scav: f32, eat
     return m;
 }
 
+// Body shape constants (keep in sync with `parts.rs`).
+const SEGMENT_LENGTH: f32 = 0.5;
+const SEGMENT_OVERLAP: f32 = 1.12;
+const HEAD_WIDTH: f32 = 1.08;
+
+struct Body {
+    hl: f32,       // half-length
+    hw: f32,       // half-width at the front
+    taper: f32,    // tail narrowing
+    segments: u32,
+};
+
+fn body_shape(elongation: f32, segments: u32) -> Body {
+    var b: Body;
+    let n = clamp(segments, 1u, 6u);
+    let aspect = 1.0 + 3.0 * elongation;
+    b.hl = sqrt(aspect) * (1.0 + SEGMENT_LENGTH * f32(n - 1u));
+    b.hw = 1.0 / sqrt(aspect);
+    b.taper = 0.3 * elongation + select(0.0, 0.15, n > 1u);
+    b.segments = n;
+    return b;
+}
+
+// Half-width of the body at x (narrower toward the tail).
+fn body_width(b: Body, x: f32) -> f32 {
+    let xc = clamp(x, -b.hl, b.hl);
+    return b.hw * (1.0 - b.taper * (b.hl - xc) / (2.0 * b.hl));
+}
+
+// Normalized distance to the outline (x; < 1 inside) at q0 (radius units), and how close q0
+// is to a crease between two segments (y, 0..1).
+fn segment_distance(b: Body, q0: vec2<f32>) -> vec2<f32> {
+    if b.segments <= 1u {
+        return vec2<f32>(length(q0 / vec2<f32>(b.hl, body_width(b, q0.x))), 0.0);
+    }
+    let n = f32(b.segments);
+    let half = b.hl / n;
+    var d1 = 1e3;
+    var d2 = 1e3;
+    for (var k = 0u; k < 6u; k++) {
+        if k >= b.segments {
+            break;
+        }
+        let c = b.hl - (2.0 * f32(k) + 1.0) * half;
+        let w = body_width(b, c) * select(1.0, HEAD_WIDTH, k == 0u);
+        let dk = length((q0 - vec2<f32>(c, 0.0)) / vec2<f32>(half * SEGMENT_OVERLAP, w));
+        if dk < d1 {
+            d2 = d1;
+            d1 = dk;
+        } else if dk < d2 {
+            d2 = dk;
+        }
+    }
+    let crease = (1.0 - smoothstep(0.0, 0.2, d2 - d1)) * step(d1, 1.0);
+    return vec2<f32>(d1, crease);
+}
+
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let flags = u32(in.state.z * 255.0 + 0.5);
@@ -594,15 +651,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let eating = in.motion.z;
     let hurt = in.motion.w;
 
-    // Body shape: an ellipse of the same area as the unit circle, split into segments.
-    let aspect = 1.0 + 3.0 * in.body.x;
-    let hl = sqrt(aspect);
-    let hw = 1.0 / hl;
-    let segments = u32(in.body.y * 6.0 + 0.5);
+    // Body shape (matches `parts::BodyShape`): an ellipse stretched by elongation and tapered
+    // toward the tail; each extra segment adds length, and segments are drawn as beads.
+    let bs = body_shape(in.body.x, u32(in.body.y * 6.0 + 0.5));
     let q0 = in.uv * in.shape.xy;        // radius units, organism frame (x = forward)
-    let p = q0 / vec2<f32>(hl, hw);      // normalized so the outline is the unit circle
+    let p = q0 / vec2<f32>(bs.hl, body_width(bs, q0.x)); // whole body = unit circle
     let d = length(p);
-    let aa = 1.2 / max(radius_px * hw, 0.3); // ~one pixel in normalized units
+    let aa = 1.2 / max(radius_px * body_width(bs, -bs.hl), 0.3); // ~one pixel, normalized
     let base = in.tint.rgb;
 
     // Selection ring and species highlight (drawn even for tiny organisms).
@@ -668,24 +723,21 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     let dq = length(q);
     let angle = atan2(q.y, q.x);
+    // Distance to the outline (1 = edge), bead by bead for segmented bodies, and a crease
+    // where neighboring segments meet.
+    let back = vec2<f32>(q.x * bs.hl, q.y * body_width(bs, q.x * bs.hl));
+    let beads = segment_distance(bs, back);
+    let db = beads.x;
+    let crease = beads.y;
 
-    // Membrane undulation (still for the dead), pinched in between segments.
+    // Membrane undulation (still for the dead).
     let wobble_amp = select(0.035, 0.05, dead);
     let wobble_t = select(time * 1.3, 0.0, dead);
-    var edge = 1.0 + wobble_amp * sin(angle * 5.0 + wobble_t + seed * 30.0);
-    var groove = 0.0;
-    if segments > 1u {
-        let xs = (1.0 - q.x) * 0.5 * f32(segments);
-        let k = round(xs);
-        if k >= 1.0 && k <= f32(segments - 1u) {
-            groove = 1.0 - smoothstep(0.0, 0.14, abs(xs - k));
-        }
-        edge -= 0.12 * groove * smoothstep(0.3, 0.9, abs(q.y));
-    }
-    var alpha = 1.0 - smoothstep(edge - aa, edge + aa, dq);
+    let edge = 1.0 + wobble_amp * sin(angle * 5.0 + wobble_t + seed * 30.0);
+    var alpha = 1.0 - smoothstep(edge - aa, edge + aa, db);
 
-    // Interior shading: lit center, darker rim.
-    var col = base * mix(1.25, 0.75, smoothstep(0.0, 1.0, dq));
+    // Interior shading: lit center, darker rim (per segment).
+    var col = base * mix(1.25, 0.75, smoothstep(0.0, 1.0, db));
 
     // Pattern (cosmetic).
     let style = pattern >> 6u;
@@ -700,7 +752,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         col = mix(col, col * 0.6, s * 0.6);
     }
     // Segment boundaries.
-    col *= 1.0 - 0.35 * groove;
+    col *= 1.0 - 0.45 * crease;
 
     var mouth_top = vec4<f32>(0.0);
     if !dead {
@@ -747,13 +799,19 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Nucleus.
+    // Nucleus (in the head segment of segmented bodies).
+    var nq = q;
+    if bs.segments > 1u {
+        let half = bs.hl / f32(bs.segments);
+        let head_w = body_width(bs, bs.hl - half) * HEAD_WIDTH;
+        nq = (back - vec2<f32>(bs.hl - half, 0.0)) / vec2<f32>(half * SEGMENT_OVERLAP, head_w);
+    }
     let nucleus_c = vec2<f32>(-0.15, 0.1 * sin(seed * 20.0));
-    let nucleus = 1.0 - smoothstep(0.24, 0.3, length(q - nucleus_c));
+    let nucleus = 1.0 - smoothstep(0.24, 0.3, length(nq - nucleus_c));
     col = mix(col, col * 0.45 + vec3<f32>(0.03, 0.02, 0.05), nucleus * 0.8);
 
     // Membrane rim light.
-    col += base * 0.5 * smoothstep(edge - 0.18, edge - 0.02, dq);
+    col += base * 0.5 * smoothstep(edge - 0.18, edge - 0.02, db);
 
     if !dead {
         // Detail fades in once the organism is big enough on screen to show it.

@@ -257,28 +257,55 @@ pub fn decode_parts(genome: &Genome) -> Vec<Part> {
     parts
 }
 
-/// Body shape in body-local units (area equals that of a unit circle).
+/// Extra body length per additional segment, as a fraction of a one-segment body.
+/// (`organism.wgsl` repeats these three constants to draw the body.)
+pub const SEGMENT_LENGTH: f32 = 0.5;
+/// Segments are drawn as overlapping beads this much longer than their share of the body,
+/// which leaves a narrow waist between them.
+pub const SEGMENT_OVERLAP: f32 = 1.12;
+/// The head segment is this much wider than its neighbors.
+pub const HEAD_WIDTH: f32 = 1.08;
+
+/// Body shape in body-local units (1.0 = the body's radius, x = forward).
+///
+/// Elongation stretches the body (keeping its area) and tapers it toward the tail; each extra
+/// segment adds length, so a four-segment worm is much longer than a one-segment blob.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodyShape {
     /// 0..1 from the elongation gene.
     pub elongation: f32,
     pub segments: u8,
-    /// Half-length along x and half-width along y.
+    /// Half-length along x and half-width (at the front) along y.
     pub half_length: f32,
     pub half_width: f32,
+    /// How much narrower the tail end is than the front (0..1).
+    pub taper: f32,
 }
 
 impl BodyShape {
-    pub fn from_genome(genome: &Genome) -> BodyShape {
-        let elongation = genome.frac(gene::ELONGATION);
-        let segments = 1 + (genome.get(gene::SEGMENTS) as u32 * 6 / 256) as u8;
+    pub fn new(elongation: f32, segments: u8) -> BodyShape {
+        let segments = segments.clamp(1, 6);
         let aspect = 1.0 + 3.0 * elongation;
+        let extra = (segments - 1) as f32;
         BodyShape {
             elongation,
             segments,
-            half_length: aspect.sqrt(),
+            half_length: aspect.sqrt() * (1.0 + SEGMENT_LENGTH * extra),
             half_width: 1.0 / aspect.sqrt(),
+            taper: 0.3 * elongation + if segments > 1 { 0.15 } else { 0.0 },
         }
+    }
+
+    pub fn from_genome(genome: &Genome) -> BodyShape {
+        let elongation = genome.frac(gene::ELONGATION);
+        let segments = 1 + (genome.get(gene::SEGMENTS) as u32 * 6 / 256) as u8;
+        BodyShape::new(elongation, segments)
+    }
+
+    /// Half-width of the body at position `x` along it (narrower toward the tail).
+    pub fn width_at(&self, x: f32) -> f32 {
+        let x = x.clamp(-self.half_length, self.half_length);
+        self.half_width * (1.0 - self.taper * (self.half_length - x) / (2.0 * self.half_length))
     }
 
     /// Center (x) and half-length of segment `k` (0 = head).
@@ -289,14 +316,50 @@ impl BodyShape {
         (self.half_length - (2.0 * k + 1.0) * half, half)
     }
 
+    /// Half-width of segment `k`'s bead.
+    pub fn segment_width(&self, k: u8) -> f32 {
+        let (cx, _) = self.segment(k);
+        let head = if k == 0 && self.segments > 1 {
+            HEAD_WIDTH
+        } else {
+            1.0
+        };
+        self.width_at(cx) * head
+    }
+
     /// Point on segment `k`'s outline at angle `theta`, and the outward direction there.
     pub fn attach(&self, k: u8, theta: f32) -> (Vec2, f32) {
-        let (cx, hl) = self.segment(k);
-        let hw = self.half_width;
-        let point = Vec2::new(cx + hl * theta.cos(), hw * theta.sin());
+        let (cos, sin) = (theta.cos(), theta.sin());
+        if self.segments <= 1 {
+            let hl = self.half_length;
+            let x = hl * cos;
+            let w = self.width_at(x);
+            return (Vec2::new(x, w * sin), (sin / w).atan2(cos / hl));
+        }
+        let (cx, half) = self.segment(k);
+        let a = half * SEGMENT_OVERLAP;
+        let b = self.segment_width(k);
         // Outward normal of an ellipse at parametric angle theta.
-        let dir = (theta.sin() / hw).atan2(theta.cos() / hl);
-        (point, dir)
+        (Vec2::new(cx + a * cos, b * sin), (sin / b).atan2(cos / a))
+    }
+
+    /// The front of the head (distance from the center along x).
+    pub fn nose(&self) -> f32 {
+        if self.segments <= 1 {
+            self.half_length
+        } else {
+            let (cx, half) = self.segment(0);
+            cx + half * SEGMENT_OVERLAP
+        }
+    }
+
+    /// Half-width of the head.
+    pub fn head_width(&self) -> f32 {
+        if self.segments <= 1 {
+            self.width_at(self.half_length * 0.5)
+        } else {
+            self.segment_width(0)
+        }
     }
 }
 
@@ -514,8 +577,29 @@ mod tests {
         let b = BodyShape::from_genome(&g);
         assert!((b.half_length * b.half_width - 1.0).abs() < 1e-5);
         assert!(b.half_length > 1.9);
+        assert!(
+            b.width_at(-b.half_length) < b.width_at(b.half_length),
+            "tapers to the tail"
+        );
         // Front attachment is at the nose.
         let (p, dir) = b.attach(0, 0.0);
         assert!((p.x - b.half_length).abs() < 1e-5 && dir.abs() < 1e-5);
+    }
+
+    #[test]
+    fn segments_lengthen_the_body() {
+        let one = BodyShape::new(0.3, 1);
+        let two = BodyShape::new(0.3, 2);
+        let four = BodyShape::new(0.3, 4);
+        assert!(two.half_length > one.half_length * 1.4);
+        assert!(four.half_length > two.half_length * 1.5);
+        // Parts on the sides of each segment sit on that segment.
+        let (p0, _) = four.attach(0, std::f32::consts::FRAC_PI_2);
+        let (p3, _) = four.attach(3, std::f32::consts::FRAC_PI_2);
+        assert!(
+            p0.x > 0.0 && p3.x < 0.0 && p0.y > p3.y,
+            "head is wider than the tail"
+        );
+        assert!(four.nose() > four.half_length);
     }
 }

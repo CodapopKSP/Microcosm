@@ -34,10 +34,18 @@ pub struct Traits {
     /// Number of part instances on the body (after symmetry and repetition).
     pub part_count: u8,
 
-    /// Damage blocked (shell plates), 0..1.
+    /// Damage blocked by shell plates, 0..1, averaged over all sides.
     pub armor: f32,
-    /// Damage reflected onto attackers (spines), 0..1.
+    /// Damage reflected onto attackers by spines, 0..1, averaged over all sides.
     pub spikes: f32,
+    /// Armor and spikes by side: front, left (+y), back, right (−y). Plates and spines guard
+    /// the side they're on; see [`Traits::defense_toward`].
+    pub armor_sides: [f32; 4],
+    pub spikes_sides: [f32; 4],
+    /// The mouth: its center's distance ahead of the body center, and its radius (body radii).
+    /// Food is eaten only at the mouth, or wherever tentacles reach.
+    pub mouth_offset: f32,
+    pub mouth_radius: f32,
     /// Bite strength (jaws), 0..1.
     pub jaws: f32,
     /// −1 (sinks) .. +1 (floats), after the weight of parts.
@@ -58,20 +66,31 @@ pub struct Traits {
     /// Max HP per unit of mass.
     pub hp_factor: f32,
 
-    /// Swimming strength 0..1 from the swimming parts (thrust against drag).
+    /// Swimming strength 0..1 in the best direction (thrust against drag).
     pub swim: f32,
-    /// Max swimming speed multiplier; × √radius for units/s.
+    /// Max swimming speed multiplier in the best direction; × √radius for units/s.
     pub speed_coeff: f32,
-    /// Walking speed multiplier on rock and seafloor (legs); × √radius for units/s.
+    /// Swimming speed multiplier in eight body-relative directions (0 = forward, then every
+    /// 45° counterclockwise). Organs only enable movement along (flagella, flukes) or across
+    /// (fins, cilia) the way they face.
+    pub swim_dirs: [f32; 8],
+    /// Best walking speed multiplier on rock and seafloor (legs); × √radius for units/s.
     pub crawl_coeff: f32,
+    /// Walking speed multiplier in the same eight directions.
+    pub crawl_dirs: [f32; 8],
+    /// Body-relative direction it moves best in (0 = forward). It turns so that this points
+    /// where it wants to go.
+    pub move_axis: f32,
     /// Fraction of the current resisted while touching rock (legs, tentacles, holdfasts).
     pub grip: f32,
     /// Holdfast strength: > 0 means it anchors when it touches rock.
     pub anchor: f32,
     /// Drag of the body and its parts (multiplies the cost of swimming).
     pub drag: f32,
-    /// Radians per second.
+    /// Radians per second while swimming (0 = no organ to turn with).
     pub turn_rate: f32,
+    /// Radians per second while walking on rock (legs).
+    pub walk_turn: f32,
     pub restlessness: f32,
 
     /// Signed drive weights (see `genome::drive`).
@@ -182,18 +201,70 @@ fn saturating(x: f32) -> f32 {
     1.0 - (-x).exp()
 }
 
+/// How much a plate or spine facing `dir` guards side `k` (0 front, 1 left, 2 back, 3 right):
+/// mostly the side it faces, a little all round.
+fn side_weight(dir: f32, k: usize) -> f32 {
+    let side = k as f32 * std::f32::consts::FRAC_PI_2;
+    (dir - side).cos().max(0.0) + 0.15
+}
+
+/// The eight body-relative movement directions (0 = forward, counterclockwise).
+pub const MOVE_DIRS: usize = 8;
+
+fn move_dir(k: usize) -> f32 {
+    k as f32 * std::f32::consts::TAU / MOVE_DIRS as f32
+}
+
+/// Add `amount` of thrust in every direction, weighted by how well an organ facing `dir`
+/// moves the body that way (`weight` of the angle between them).
+fn add_thrust(into: &mut [f32; 8], dir: f32, amount: f32, weight: fn(f32) -> f32) {
+    for (k, v) in into.iter_mut().enumerate() {
+        *v += amount * weight(move_dir(k) - dir);
+    }
+}
+
+/// Along the organ's axis, either way (a whip pushes or pulls).
+fn along(delta: f32) -> f32 {
+    delta.cos().abs()
+}
+
+/// Only away from where the organ points (a tail stroke pushes the body forward).
+fn pushing(delta: f32) -> f32 {
+    (-delta.cos()).max(0.0)
+}
+
+/// Across the organ's axis (fins row, cilia beat and legs step sideways to where they point).
+fn across(delta: f32) -> f32 {
+    delta.sin().abs()
+}
+
+/// Angle wrapped to (−π, π].
+fn wrap(a: f32) -> f32 {
+    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// Linear interpolation between the eight directions.
+fn toward(v: &[f32; 8], angle: f32) -> f32 {
+    let s = angle.rem_euclid(std::f32::consts::TAU) / (std::f32::consts::TAU / MOVE_DIRS as f32);
+    let i = (s.floor() as usize) % MOVE_DIRS;
+    let j = (i + 1) % MOVE_DIRS;
+    lerp(v[i], v[j], s - s.floor())
+}
+
 /// Sums of what the parts do.
 #[derive(Default)]
 struct PartSums {
-    thrust: f32,
+    /// Swimming and walking thrust in the eight body-relative directions.
+    thrust: [f32; 8],
+    crawl: [f32; 8],
     turning: f32,
+    walk_turning: f32,
     drag: f32,
-    crawl: f32,
     grip: f32,
     holdfast: f32,
-    spines: f32,
+    spines: [f32; 4],
     jaws: f32,
-    shell: f32,
+    shell: [f32; 4],
     antennae: f32,
     lure: f32,
     reach: f32,
@@ -217,7 +288,7 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
         p.mass += spec.mass * bulk;
         p.upkeep += spec.upkeep * bulk;
         p.drag += spec.drag * bulk;
-        let (cos, sin) = (inst.dir.cos(), inst.dir.sin());
+        let cos = inst.dir.cos();
         let raised = if inst.parent == Some(PartKind::Stalk) {
             pc.stalk_bonus
         } else {
@@ -225,34 +296,35 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
         };
         match inst.kind {
             PartKind::Flagellum => {
-                // Pushing (at the back) or pulling (at the front) both work; sideways is weak.
-                p.thrust += 1.0 * s * small * (0.6 + 0.4 * cos.abs());
+                add_thrust(&mut p.thrust, inst.dir, 1.0 * s * small, along);
                 p.turning += 0.3 * s;
             }
             PartKind::Cilia => {
-                p.thrust += 0.35 * s * small;
+                add_thrust(&mut p.thrust, inst.dir, 0.35 * s * small, across);
                 p.turning += 0.4 * s;
                 p.filter += 0.6 * s;
             }
             PartKind::Tentacle => {
-                p.thrust += 0.1 * s;
+                add_thrust(&mut p.thrust, inst.dir, 0.1 * s, along);
+                p.turning += 0.1 * s;
                 p.grip += 0.1 * s;
                 p.filter += 0.15 * s;
                 p.reach = p.reach.max(inst.length * pc.tentacle_reach * raised);
             }
             PartKind::Frond => p.fronds += inst.length * raised,
             PartKind::Fin => {
-                p.thrust += 0.5 * s * large * (0.5 + 0.5 * sin.abs());
+                add_thrust(&mut p.thrust, inst.dir, 0.5 * s * large, across);
                 p.turning += 0.6 * s;
             }
             PartKind::Fluke => {
-                p.thrust += 1.4 * s * large * (-cos).max(0.2);
+                add_thrust(&mut p.thrust, inst.dir, 1.4 * s * large, pushing);
                 p.turning += 0.2 * s;
             }
             PartKind::Leg => {
-                p.crawl += 0.8 * s;
+                add_thrust(&mut p.crawl, inst.dir, 0.8 * s, across);
+                add_thrust(&mut p.thrust, inst.dir, 0.08 * s, across);
+                p.walk_turning += 0.5 * s;
                 p.grip += 0.35 * s;
-                p.thrust += 0.08 * s;
             }
             PartKind::Holdfast => p.holdfast += s,
             PartKind::Stalk => {}
@@ -266,9 +338,17 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
             }
             PartKind::Antenna => p.antennae += s * raised,
             PartKind::Lure => p.lure += s * raised,
-            PartKind::Spine => p.spines += s,
+            PartKind::Spine => {
+                for (k, v) in p.spines.iter_mut().enumerate() {
+                    *v += side_weight(inst.dir, k) * s;
+                }
+            }
             PartKind::Jaw => p.jaws += s * cos.max(0.15),
-            PartKind::Shell => p.shell += 0.4 + 0.6 * s,
+            PartKind::Shell => {
+                for (k, v) in p.shell.iter_mut().enumerate() {
+                    *v += side_weight(inst.dir, k) * (0.4 + 0.6 * s);
+                }
+            }
         }
     }
     p
@@ -291,8 +371,15 @@ impl Traits {
         parts::layout(&parts::decode_parts(genome), &body, &mut instances);
         let mut p = sum_parts(&instances, adult_radius, config);
 
-        let armor = saturating(0.45 * p.shell);
-        let spikes = saturating(0.6 * p.spines);
+        let armor_sides = p.shell.map(|v| saturating(0.9 * v));
+        let spikes_sides = p.spines.map(|v| saturating(1.2 * v));
+        let armor = armor_sides.iter().sum::<f32>() / 4.0;
+        let spikes = spikes_sides.iter().sum::<f32>() / 4.0;
+        // The mouth sits at the front of the head. A round cell eats across most of its front
+        // half; a long body only at its nose.
+        let mouth_radius = (0.85 * body.head_width()).max(0.4);
+        let mouth_offset = body.nose() - 0.6 * mouth_radius;
+        let extra_segments = (body.segments - 1) as f32;
         let jaws = saturating(1.2 * p.jaws);
         let buoyancy_gene = genome.signed(gene::BUOYANCY);
         let buoyancy = (buoyancy_gene - p.mass * config.physics.part_density).clamp(-1.0, 1.0);
@@ -323,14 +410,51 @@ impl Traits {
         let brood = 1 + (genome.get(gene::BROOD) >> 5) as u32;
         let repro_threshold = 0.3 + 0.7 * f(gene::PATIENCE);
 
-        // Swimming: thrust against drag. Long bodies slip through the water but turn slowly.
-        let drag = 1.0 - 0.45 * body.elongation + p.drag;
-        let swim = saturating(p.thrust / drag);
-        let speed_coeff =
-            swim * gc.speed_scale * (1.0 - config.physics.armor_speed_penalty * armor);
-        let turn_rate =
-            lerp(gc.turn_min, gc.turn_max, saturating(p.turning)) * (1.0 - 0.35 * body.elongation);
-        let crawl_coeff = pc.crawl_speed * saturating(p.crawl);
+        // Swimming: thrust against drag in each direction. Long bodies slip through the water
+        // lengthwise but not sideways, and turn slowly.
+        let forward_drag = 1.0 - 0.45 * body.elongation;
+        let side_drag = 1.0 + 0.6 * body.elongation + 0.1 * extra_segments;
+        let drag = forward_drag + p.drag;
+        let armor_penalty = 1.0 - config.physics.armor_speed_penalty * armor;
+        let mut swim_dirs = [0.0; MOVE_DIRS];
+        let mut crawl_dirs = [0.0; MOVE_DIRS];
+        for k in 0..MOVE_DIRS {
+            let sideways = move_dir(k).sin().abs();
+            let d = lerp(forward_drag, side_drag, sideways) + p.drag;
+            swim_dirs[k] = saturating(p.thrust[k] / d) * gc.speed_scale * armor_penalty;
+            crawl_dirs[k] = pc.crawl_speed * saturating(p.crawl[k]);
+        }
+        let speed_coeff = swim_dirs.iter().cloned().fold(0.0, f32::max);
+        let swim = speed_coeff / (gc.speed_scale * armor_penalty).max(1e-6);
+        let crawl_coeff = crawl_dirs.iter().cloned().fold(0.0, f32::max);
+        // The best direction, preferring forward when others are about as good.
+        let axis_of = |v: &[f32; MOVE_DIRS]| {
+            (0..MOVE_DIRS)
+                .max_by(|&a, &b| {
+                    let score = |k: usize| v[k] * (1.0 + 0.05 * move_dir(k).cos());
+                    score(a)
+                        .partial_cmp(&score(b))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|k| wrap(move_dir(k)))
+                .unwrap_or(0.0)
+        };
+        let move_axis = if speed_coeff > 0.0 {
+            axis_of(&swim_dirs)
+        } else {
+            axis_of(&crawl_dirs)
+        };
+        // Turning needs an organ to turn with.
+        let shape_turn = (1.0 - 0.35 * body.elongation) / (1.0 + 0.1 * extra_segments);
+        let turn_with = |turning: f32| {
+            if turning > 0.0 {
+                lerp(gc.turn_min, gc.turn_max, saturating(turning)) * shape_turn
+            } else {
+                0.0
+            }
+        };
+        let turn_rate = turn_with(p.turning);
+        let walk_turn = turn_with(p.walk_turning);
         let anchor = saturating(2.0 * p.holdfast);
         let grip = saturating(p.grip + 2.0 * p.holdfast);
 
@@ -376,6 +500,7 @@ impl Traits {
             + up.fixation * fixation
             + up.toxin * toxin
             + up.resistance * resistance
+            + up.segments * extra_segments
             + up.parts * p.upkeep;
 
         let pigment = light.pigment_absorptance * photo;
@@ -397,6 +522,10 @@ impl Traits {
             part_count: instances.len() as u8,
             armor,
             spikes,
+            armor_sides,
+            spikes_sides,
+            mouth_offset,
+            mouth_radius,
             jaws,
             buoyancy,
             reserve_factor: lerp(gc.reserves_min, gc.reserves_max, reserves),
@@ -411,11 +540,15 @@ impl Traits {
             hp_factor: lerp(gc.toughness_min, gc.toughness_max, toughness),
             swim,
             speed_coeff,
+            swim_dirs,
             crawl_coeff,
+            crawl_dirs,
+            move_axis,
             grip,
             anchor,
             drag,
             turn_rate,
+            walk_turn,
             restlessness,
             drives,
             birth_fraction,
@@ -430,7 +563,7 @@ impl Traits {
             light_span: 1.0 + pc.frond_span * p.fronds,
             uptake_area: 1.0 + pc.frond_uptake * p.fronds,
             lure: saturating(1.5 * p.lure),
-            build_factor: 1.0 + p.mass,
+            build_factor: 1.0 + p.mass + gc.segment_cost * extra_segments,
             aerobic,
             ferment: (1.0 - aerobic + config.chemistry.ferment_floor).min(1.0),
             oxygenic: f(gene::OXYGENIC),
@@ -453,6 +586,31 @@ impl Traits {
     #[inline]
     pub fn max_speed(&self, radius: f32) -> f32 {
         self.speed_coeff * radius.sqrt()
+    }
+
+    /// Swimming speed multiplier toward a body-relative angle (0 = forward).
+    #[inline]
+    pub fn swim_toward(&self, angle: f32) -> f32 {
+        toward(&self.swim_dirs, angle)
+    }
+
+    /// Walking speed multiplier toward a body-relative angle (0 = forward).
+    #[inline]
+    pub fn crawl_toward(&self, angle: f32) -> f32 {
+        toward(&self.crawl_dirs, angle)
+    }
+
+    /// Armor and spikes facing an attack coming from `angle` (radians, body-local: 0 = from the
+    /// front, π = from behind), blended between the neighboring sides.
+    pub fn defense_toward(&self, angle: f32) -> (f32, f32) {
+        let s = angle.rem_euclid(std::f32::consts::TAU) / std::f32::consts::FRAC_PI_2;
+        let i = (s.floor() as usize) % 4;
+        let j = (i + 1) % 4;
+        let t = s - s.floor();
+        (
+            lerp(self.armor_sides[i], self.armor_sides[j], t),
+            lerp(self.spikes_sides[i], self.spikes_sides[j], t),
+        )
     }
 
     /// Can move under its own power (swimming, or walking on rock).
@@ -721,10 +879,33 @@ mod tests {
 
     #[test]
     fn parts_give_abilities() {
-        // A flagellum at the back makes a microbe swim.
+        // No organs: can't swim or turn.
+        let (g, config) = ancestor();
+        let t = Traits::decode(&g, &config);
+        assert!(!t.is_motile() && t.turn_rate == 0.0 && t.walk_turn == 0.0);
+        // A flagellum at the back makes a microbe swim forward and back, not sideways.
         let (g, config) = with_part(PartKind::Flagellum, 0, 0x80, 16);
         let t = Traits::decode(&g, &config);
         assert!(t.is_motile() && t.max_speed(t.adult_radius) > 5.0);
+        assert!(t.turn_rate > 0.0);
+        let half_pi = std::f32::consts::FRAC_PI_2;
+        assert!(t.swim_toward(0.0) > 5.0 * t.swim_toward(half_pi));
+        assert!((t.swim_toward(0.0) - t.swim_toward(std::f32::consts::PI)).abs() < 1e-4);
+        // A pair of flagella pointing up and down lets it swim vertically.
+        let (g, config) = with_part(PartKind::Flagellum, 1, 0x80, 8);
+        let t = Traits::decode(&g, &config);
+        assert!(t.swim_toward(half_pi) > 5.0 * t.swim_toward(0.0));
+        assert!(
+            (t.move_axis.abs() - half_pi).abs() < 1e-4,
+            "it swims sideways best"
+        );
+        // Fins on the sides row it forward; a fluke only pushes away from where it points.
+        let (g, config) = with_part(PartKind::Fin, 1, 0x80, 8);
+        let t = Traits::decode(&g, &config);
+        assert!(t.swim_toward(0.0) > 5.0 * t.swim_toward(half_pi));
+        let (g, config) = with_part(PartKind::Fluke, 0, 0x80, 16);
+        let t = Traits::decode(&g, &config);
+        assert!(t.swim_toward(0.0) > 0.0 && t.swim_toward(std::f32::consts::PI) == 0.0);
         // The same flagellum on a giant barely moves it; a fluke does better.
         let (mut big, _) = with_part(PartKind::Flagellum, 0, 0x80, 16);
         big.0[gene::SIZE] = 0xC0;
@@ -747,10 +928,32 @@ mod tests {
         let (g, config) = with_part(PartKind::Leg, 1, 0xC0, 6 << 5 | 8);
         let t = Traits::decode(&g, &config);
         assert!(t.crawl_coeff > 0.0 && t.grip > 0.0 && t.is_motile());
+        assert!(
+            t.walk_turn > 0.0 && t.turn_rate == 0.0,
+            "legs turn only when walking"
+        );
         let (g, config) = with_part(PartKind::Holdfast, 0, 0x80, 16);
         assert!(Traits::decode(&g, &config).anchor > 0.5);
         let (g, config) = with_part(PartKind::Frond, 1, 0xFF, 8);
         assert!(Traits::decode(&g, &config).light_span > 2.0);
+
+        // A plate on the back guards against attacks from behind, not from the front.
+        let (g, config) = with_part(PartKind::Shell, 0, 0xFF, 16);
+        let t = Traits::decode(&g, &config);
+        let (behind, _) = t.defense_toward(std::f32::consts::PI);
+        let (ahead, _) = t.defense_toward(0.0);
+        assert!(behind > 0.5 && ahead < 0.2, "behind {behind} ahead {ahead}");
+        // The mouth is at the front, farther out on a long body.
+        let (mut long, config) = with_part(PartKind::Fin, 1, 0x80, 8);
+        long.0[gene::ELONGATION] = 0xFF;
+        long.0[gene::SEGMENTS] = 0xFF;
+        let (round, _) = with_part(PartKind::Fin, 1, 0x80, 8);
+        let (l, r) = (
+            Traits::decode(&long, &config),
+            Traits::decode(&round, &config),
+        );
+        assert!(l.mouth_offset > 3.0 * r.mouth_offset);
+        assert!(l.turn_rate < r.turn_rate, "long bodies turn slowly");
 
         // A ring of shell plates is heavy armor that sinks.
         let (g, config) = with_part(PartKind::Shell, 5, 0xFF, 0);

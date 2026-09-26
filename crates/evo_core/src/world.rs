@@ -219,6 +219,68 @@ fn pair_mut<T>(v: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     }
 }
 
+/// Where an organism can eat: fully at its mouth (the front of its head) or anywhere its
+/// tentacles reach, and poorly through the rest of its body surface.
+#[derive(Clone, Copy)]
+struct Reach {
+    center: Vec2,
+    radius: f32,
+    mouth: Vec2,
+    mouth_radius: f32,
+    /// Tentacle reach from the center (0 = no tentacles).
+    tentacles: f32,
+    /// How well it eats through its body surface, away from the mouth (0..1).
+    body: f32,
+}
+
+impl Reach {
+    fn new(
+        pos: Vec2,
+        heading: f32,
+        radius: f32,
+        mouth_offset: f32,
+        mouth_radius: f32,
+        reach: f32,
+        body: f32,
+    ) -> Reach {
+        Reach {
+            center: pos,
+            radius,
+            body,
+            mouth: pos + Vec2::from_angle(heading) * (mouth_offset * radius),
+            mouth_radius: mouth_radius * radius,
+            tentacles: if reach > 0.0 {
+                radius * (1.0 + reach)
+            } else {
+                0.0
+            },
+        }
+    }
+
+    /// Distance from the center that covers everything reachable.
+    fn extent(&self) -> f32 {
+        (self.mouth.distance(self.center) + self.mouth_radius)
+            .max(self.tentacles)
+            .max(self.radius)
+    }
+
+    /// How well a body at `pos` with `radius` can be eaten: 1 at the mouth or within tentacle
+    /// reach, `body` if it only touches the body elsewhere, 0 out of reach.
+    fn touches(&self, pos: Vec2, radius: f32) -> f32 {
+        let m = self.mouth_radius + radius;
+        let t = self.tentacles + radius;
+        let b = self.radius + radius;
+        let d2 = pos.distance_squared(self.center);
+        if pos.distance_squared(self.mouth) < m * m || (self.tentacles > 0.0 && d2 < t * t) {
+            1.0
+        } else if d2 < b * b {
+            self.body
+        } else {
+            0.0
+        }
+    }
+}
+
 struct ThinkCtx<'a> {
     config: &'a Config,
     grid: &'a SpatialGrid,
@@ -244,22 +306,26 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     let is_kin =
         |e: &Entry| color_distance(t.hue, t.saturation, e.hue, e.saturation) < kin_threshold;
 
-    // Contacts: soft collision push, and a prey candidate within tentacle reach.
+    // Contacts: soft collision push, and a prey candidate at the mouth or within tentacle reach.
     let mass = r * r;
     let hunts = t.hunt > 0.0;
-    let reach = t.reach * r;
+    let reach = Reach::new(
+        pos,
+        o.heading,
+        r,
+        t.mouth_offset,
+        t.mouth_radius,
+        t.reach,
+        cfg.feeding.body_contact,
+    );
     let mut prey: Option<(u32, f32)> = None;
     let mut push = Vec2::ZERO;
-    ctx.grid.query(pos, r + reach, 0.0, |e| {
+    ctx.grid.query(pos, reach.extent().max(r), 0.0, |e| {
         if e.index as usize == i {
             return true;
         }
         let d = e.pos - pos;
         let dist2 = d.length_squared();
-        let grab = r + reach + e.radius;
-        if dist2 >= grab * grab {
-            return true;
-        }
         let min = r + e.radius;
         if dist2 < min * min {
             let dist = dist2.sqrt();
@@ -272,7 +338,11 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             let other_mass = e.radius * e.radius;
             push -= dir * (min - dist) * (other_mass / (mass + other_mass));
         }
-        if hunts && !is_kin(e) && prey.is_none_or(|(_, pr)| e.radius < pr) {
+        if hunts
+            && !is_kin(e)
+            && prey.is_none_or(|(_, pr)| e.radius < pr)
+            && reach.touches(e.pos, e.radius) > 0.0
+        {
             prey = Some((e.index, e.radius));
         }
         true
@@ -282,12 +352,11 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
         intent.attack = j;
     }
 
-    // Carcass contact (tentacles reach them too).
+    // Carcass contact (at the mouth, or within tentacle reach).
     let eats_carcasses = t.scavenge > 0.0 || t.hunt > 0.0;
     if eats_carcasses && !ctx.carcass_grid.is_empty() {
-        ctx.carcass_grid.query(pos, r + reach, 0.0, |e| {
-            let grab = r + reach + e.radius;
-            if e.pos.distance_squared(pos) < grab * grab {
+        ctx.carcass_grid.query(pos, reach.extent(), 0.0, |e| {
+            if reach.touches(e.pos, e.radius) > 0.0 {
                 intent.carcass = e.index;
                 return false;
             }
@@ -490,19 +559,26 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
         t.uses_contact() && ctx.terrain.distance(o.pos) < 1.5 * r + cfg.parts.contact_margin;
     let anchored = o.touching && t.anchor > 0.0 && intent.throttle < 0.3;
     o.anchored = anchored;
-    if t.is_motile() && !anchored {
-        let diff = wrap_angle(intent.heading - o.heading);
-        let max_turn = t.turn_rate * dt;
+    // Turning needs an organ to turn with (legs only while walking).
+    let turn_rate = if o.touching {
+        t.turn_rate.max(t.walk_turn)
+    } else {
+        t.turn_rate
+    };
+    if turn_rate > 0.0 && !anchored {
+        // Face so that its best way of moving points where it wants to go.
+        let diff = wrap_angle(intent.heading - t.move_axis - o.heading);
+        let max_turn = turn_rate * dt;
         o.heading = wrap_angle(o.heading + diff.clamp(-max_turn, max_turn));
     }
-    let swim_speed = t.max_speed(r);
-    let walk_speed = if o.touching {
-        t.crawl_coeff * r.sqrt()
+    // Organs only allow movement in some directions relative to the body; head whichever
+    // allowed way gets closest to where it wants to go.
+    let (direction, speed, walking) = if intent.throttle > 0.0 && t.is_motile() {
+        best_move(&t, o.heading, intent.heading, o.touching)
     } else {
-        0.0
+        (o.heading, 0.0, false)
     };
-    let walking = walk_speed > swim_speed;
-    let target = Vec2::from_angle(o.heading) * intent.throttle * swim_speed.max(walk_speed);
+    let target = Vec2::from_angle(direction) * intent.throttle * speed * r.sqrt();
     let response = (phys.response / r.sqrt() * dt).min(1.0);
     o.vel += (target - o.vel) * response;
     if anchored {
@@ -687,6 +763,42 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
                 .unwrap_or(DeathCause::Starvation),
         );
     }
+}
+
+/// The best way to move toward world angle `want` for a body facing `heading`: the world
+/// direction, its speed multiplier (× √radius), and whether that's walking. Tries sixteen
+/// directions around the body (and `want` itself) and keeps the one that makes the most
+/// progress toward `want`.
+fn best_move(
+    t: &crate::traits::Traits,
+    heading: f32,
+    want: f32,
+    touching: bool,
+) -> (f32, f32, bool) {
+    let want_local = wrap_angle(want - heading);
+    let speed_at = |local: f32| {
+        let swim = t.swim_toward(local);
+        let walk = if touching { t.crawl_toward(local) } else { 0.0 };
+        if walk > swim {
+            (walk, true)
+        } else {
+            (swim, false)
+        }
+    };
+    let mut best = (heading, 0.0, false, 0.0);
+    for k in 0..=16 {
+        let local = if k == 16 {
+            want_local
+        } else {
+            k as f32 * std::f32::consts::TAU / 16.0
+        };
+        let (speed, walking) = speed_at(local);
+        let progress = speed * (local - want_local).cos();
+        if progress > best.3 {
+            best = (heading + local, speed, walking, progress);
+        }
+    }
+    (best.0, best.1, best.2)
 }
 
 impl Organism {
@@ -1294,6 +1406,8 @@ impl World {
                 uptake: f32,
                 uptake_area: f32,
                 resistance: f32,
+                mouth_offset: f32,
+                mouth_radius: f32,
             }
             let t = Diet {
                 chemo: o.traits.chemo,
@@ -1305,9 +1419,19 @@ impl World {
                 uptake: o.traits.uptake,
                 uptake_area: o.traits.uptake_area,
                 resistance: o.traits.resistance,
+                mouth_offset: o.traits.mouth_offset,
+                mouth_radius: o.traits.mouth_radius,
             };
             let r = o.radius;
-            let reach = t.reach * r;
+            let reach = Reach::new(
+                o.pos,
+                o.heading,
+                r,
+                t.mouth_offset,
+                t.mouth_radius,
+                t.reach,
+                fc.body_contact,
+            );
             let mut gained = 0.0;
             let mut absorbed = 0.0;
             let mut grazed = 0.0;
@@ -1357,10 +1481,11 @@ impl World {
             if intent.carcass != NONE
                 && let Some(c) = self.carcasses.get_mut(intent.carcass as usize)
                 && c.energy > 0.0
-                && c.pos.distance(o.pos) < c.radius + r + reach
+                && let contact = reach.touches(c.pos, c.radius)
+                && contact > 0.0
             {
                 let skill = t.scavenge.max(0.7 * t.hunt);
-                let rate = fc.carcass_rate * skill * r * r * (0.3 + 1.7 * t.jaws);
+                let rate = fc.carcass_rate * skill * r * r * (0.3 + 1.7 * t.jaws) * contact;
                 let take = (rate * dt).min(c.energy);
                 let share = take / c.energy;
                 let n = c.nutrients * share;
@@ -1371,10 +1496,10 @@ impl World {
                 detritus.add(o.pos, take * (1.0 - fc.assimilation) / d_area);
                 o.activity = Activity::Scavenging;
                 if tick >= o.ate_tick + FX_THROTTLE && fx.len() < MAX_FX {
-                    let dir = (c.pos - o.pos).normalize_or_zero();
+                    let dir = (c.pos - reach.mouth).normalize_or_zero();
                     fx.push(Fx {
                         kind: FxKind::Scavenge,
-                        pos: o.pos + dir * r,
+                        pos: reach.mouth + dir * reach.mouth_radius * 0.5,
                         radius: r.max(c.radius * 0.5),
                         color: c.color,
                         tick,
@@ -1390,14 +1515,18 @@ impl World {
             let j = intent.attack as usize;
             if intent.attack != NONE && j < self.organisms.len() && j != i {
                 let (hunter, prey) = pair_mut(&mut self.organisms, i, j);
-                if prey.dead.is_none()
-                    && prey.pos.distance(hunter.pos) < prey.radius + hunter.radius + reach
-                {
-                    let protection = 1.0 - fc.armor_protection * prey.traits.armor;
+                let contact = reach.touches(prey.pos, prey.radius);
+                if prey.dead.is_none() && contact > 0.0 {
+                    // Plates and spines only guard the side the attack comes from.
+                    let from = hunter.pos - prey.pos;
+                    let (armor, spikes) = prey
+                        .traits
+                        .defense_toward(from.y.atan2(from.x) - prey.heading);
+                    let protection = 1.0 - fc.armor_protection * armor;
                     let mut taken_mass = 0.0;
                     let mut taken_energy = 0.0;
                     if prey.radius <= fc.engulf_ratio * hunter.radius {
-                        let p = fc.engulf_rate * t.hunt * protection * dt;
+                        let p = fc.engulf_rate * t.hunt * protection * contact * dt;
                         if hunter.rng.chance(p) {
                             taken_mass = prey.mass;
                             taken_energy = prey.body_value(config);
@@ -1415,8 +1544,14 @@ impl World {
                             }
                         }
                     } else {
-                        let bite =
-                            fc.bite_rate * t.hunt * (0.2 + 1.8 * t.jaws) * r * r * dt * protection;
+                        let bite = fc.bite_rate
+                            * t.hunt
+                            * (0.2 + 1.8 * t.jaws)
+                            * r
+                            * r
+                            * dt
+                            * protection
+                            * contact;
                         let dm = bite.min(prey.mass);
                         if dm > 0.0 {
                             let frac = dm / prey.mass;
@@ -1430,10 +1565,10 @@ impl World {
                             prey.hp -= dm * prey.traits.hp_factor;
                             prey.set_mass(prey.mass - dm);
                             if tick >= hunter.ate_tick + FX_THROTTLE && fx.len() < MAX_FX {
-                                let dir = (prey.pos - hunter.pos).normalize_or_zero();
+                                let dir = (prey.pos - reach.mouth).normalize_or_zero();
                                 fx.push(Fx {
                                     kind: FxKind::Bite,
-                                    pos: hunter.pos + dir * hunter.radius,
+                                    pos: reach.mouth + dir * reach.mouth_radius * 0.5,
                                     radius: hunter.radius.max(prey.radius * 0.5),
                                     color: prey.traits.color,
                                     tick,
@@ -1452,8 +1587,8 @@ impl World {
                         detritus.add(hunter.pos, (taken_energy - assimilated) / d_area);
                         hunter.activity = Activity::Feeding;
                         hunter.ate_tick = tick;
-                        if prey.traits.spikes > 0.0 {
-                            hunter.hp -= fc.spike_damage * prey.traits.spikes * taken_mass;
+                        if spikes > 0.0 {
+                            hunter.hp -= fc.spike_damage * spikes * taken_mass;
                             if hunter.hp <= 0.0 {
                                 hunter.dead = Some(DeathCause::Spikes);
                             }
@@ -2079,6 +2214,8 @@ mod tests {
         );
         world.organisms.push(hunter);
         world.organisms.push(prey);
+        // It can't swim, so it has to face its prey: it eats with its mouth.
+        world.organisms[0].heading = 0.0;
         world.species.on_birth(0, &config, 0);
         world.species.on_birth(0, &config, 0);
         let e0 = world.organisms[0].energy;
@@ -2294,5 +2431,110 @@ mod tests {
         };
         assert_eq!(run(0), Activity::Hunting, "an eye facing the prey sees it");
         assert_ne!(run(16), Activity::Hunting, "an eye facing away doesn't");
+    }
+
+    #[test]
+    fn mouths_eat_in_front_and_tentacles_reach_around() {
+        // A sessile hunter facing right biting large prey in front of it or against its back.
+        let bite = |tentacles: bool, behind: bool| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let mut g = world.ancestor;
+            g.0[gene::SIZE] = 0x60;
+            g.0[gene::PHOTO] = 0x00;
+            g.0[gene::HUNT] = 0xFF;
+            if tentacles {
+                g = with_part(g, 0, PartKind::Tentacle, 2, 0xFF, 16);
+            }
+            let pos = Vec2::new(2000.0, h - 300.0);
+            let hunter = add(&mut world, g, pos);
+            world.organisms[hunter].heading = 0.0;
+            let mut prey = world.ancestor;
+            prey.0[gene::SIZE] = 0x58;
+            prey.0[gene::HUE] = 0xD0;
+            let side = if behind { -1.0 } else { 1.0 };
+            let p = add(&mut world, prey, pos + Vec2::new(side * 12.0, 0.0));
+            let m0 = world.organisms[p].mass;
+            world.step();
+            m0 - world.organisms[p].mass
+        };
+        let (front, back) = (bite(false, false), bite(false, true));
+        assert!(front > 0.0 && back > 0.0, "front {front} back {back}");
+        assert!(
+            back < front * 0.5,
+            "the body eats poorly: front {front} back {back}"
+        );
+        let reached = bite(true, true);
+        assert!(
+            reached > back * 2.0,
+            "tentacles bring food to the mouth: {reached} vs {back}"
+        );
+    }
+
+    #[test]
+    fn shells_guard_the_side_they_cover() {
+        // Prey with a plate on its back, bitten from behind or from the front.
+        let bites = |from_behind: bool| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let mut hunter = world.ancestor;
+            hunter.0[gene::SIZE] = 0x60;
+            hunter.0[gene::PHOTO] = 0;
+            hunter.0[gene::HUNT] = 0xFF;
+            let mut prey = with_part(world.ancestor, 0, PartKind::Shell, 0, 0xFF, 16);
+            prey.0[gene::SIZE] = 0x58;
+            prey.0[gene::HUE] = 0xD0;
+            let pos = Vec2::new(2000.0, h - 300.0);
+            let hi = add(&mut world, hunter, pos);
+            world.organisms[hi].heading = 0.0;
+            let pi = add(&mut world, prey, pos + Vec2::new(14.0, 0.0));
+            // The prey faces away from the hunter (back toward it) or toward it.
+            world.organisms[pi].heading = if from_behind {
+                0.0
+            } else {
+                std::f32::consts::PI
+            };
+            let m0 = world.organisms[pi].mass;
+            world.step();
+            m0 - world.organisms[pi].mass
+        };
+        let (behind, front) = (bites(true), bites(false));
+        assert!(
+            front > 0.0 && behind < front * 0.6,
+            "behind {behind} front {front}"
+        );
+    }
+
+    #[test]
+    fn organs_set_which_way_a_body_can_move() {
+        // Flagella pointing up and down: it swims up without facing up.
+        let mut world = empty_world();
+        let h = world.config.world.height;
+        let mut g = with_part(world.ancestor, 0, PartKind::Flagellum, 1, 0xFF, 8);
+        g.0[gene::BUOYANCY] = 0x80;
+        g.0[gene::DRIVES + drive::RISE] = 0xFF;
+        let i = add(&mut world, g, Vec2::new(2000.0, h - 1500.0));
+        for _ in 0..60 {
+            world.step();
+        }
+        let o = &world.organisms[i];
+        assert!(o.vel.y > 3.0, "swims up: {:?}", o.vel);
+        let facing = Vec2::from_angle(o.heading);
+        assert!(
+            facing.y.abs() < 0.5,
+            "sideways to its motion: heading {}",
+            o.heading
+        );
+
+        // No turning organ (a fluke facing back gives some): without any, it can't turn.
+        let mut world = empty_world();
+        let mut g = world.ancestor;
+        g.0[gene::DRIVES + drive::RISE] = 0xFF;
+        let i = add(&mut world, g, Vec2::new(2000.0, h - 1500.0));
+        let heading = world.organisms[i].heading;
+        for _ in 0..30 {
+            world.step();
+        }
+        assert_eq!(world.organisms[i].heading, heading);
     }
 }

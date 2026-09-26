@@ -7,7 +7,7 @@ use evo_core::rng::Rng;
 use evo_core::{Config, Genome, Organism, World};
 
 const COLUMNS: usize = 9;
-const SPACING: f32 = 40.0;
+const SPACING: f32 = 48.0;
 const TOP: f32 = 180.0;
 const LEFT: f32 = 1000.0;
 
@@ -71,7 +71,7 @@ pub fn rows() -> Vec<(&'static str, Setter)> {
         }),
         ("Elongation", |g, v| g.0[gene::ELONGATION] = v),
         ("Segments", |g, v| {
-            g.0[gene::ELONGATION] = 0xC0;
+            g.0[gene::ELONGATION] = 0x20;
             g.0[gene::SEGMENTS] = v;
         }),
         ("Hunting mouth", |g, v| {

@@ -339,6 +339,8 @@ pub struct GenesConfig {
     pub temp_max: f32,
     pub tolerance_min: f32,
     pub tolerance_max: f32,
+    /// Extra cost of building body mass per additional body segment (fraction).
+    pub segment_cost: f32,
     /// Diet generalist penalty: each diet loses this × the investment in the others
     /// (0.6 ⇒ two full diets give 40% each).
     pub generalist_penalty: f32,
@@ -364,6 +366,7 @@ impl Default for GenesConfig {
             temp_max: 40.0,
             tolerance_min: 1.0,
             tolerance_max: 15.0,
+            segment_cost: 0.1,
             generalist_penalty: 0.6,
         }
     }
@@ -437,6 +440,8 @@ pub struct UpkeepConfig {
     pub fixation: f32,
     pub toxin: f32,
     pub resistance: f32,
+    /// Per body segment beyond the first.
+    pub segments: f32,
     /// Multiplier on the upkeep of body parts (each part kind has its own, see `parts.rs`).
     pub parts: f32,
 }
@@ -458,6 +463,7 @@ impl Default for UpkeepConfig {
             fixation: 0.2,
             toxin: 0.3,
             resistance: 0.3,
+            segments: 0.05,
             parts: 1.0,
         }
     }
@@ -668,6 +674,9 @@ pub struct FeedingConfig {
     pub engulf_ratio: f32,
     /// Engulf success chance per second of contact at full hunting capability.
     pub engulf_rate: f32,
+    /// How well food touching the body away from the mouth (and out of tentacle reach) is
+    /// eaten, relative to at the mouth.
+    pub body_contact: f32,
     /// Bite: mass removed per second per hunter radius² at full capability and jaws.
     pub bite_rate: f32,
     /// Damage reduction at full armor.
@@ -690,6 +699,7 @@ impl Default for FeedingConfig {
             assimilation: 0.8,
             engulf_ratio: 0.5,
             engulf_rate: 3.0,
+            body_contact: 0.3,
             bite_rate: 0.3,
             armor_protection: 0.75,
             spike_damage: 0.6,

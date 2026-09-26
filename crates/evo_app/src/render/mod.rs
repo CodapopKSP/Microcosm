@@ -706,12 +706,7 @@ fn update_organisms(
     for o in &world.organisms {
         let t = &o.traits;
         let pos = o.prev_pos.lerp(o.pos, alpha);
-        let shape = BodyShape {
-            elongation: t.elongation,
-            segments: t.segments,
-            half_length: (1.0 + 3.0 * t.elongation).sqrt(),
-            half_width: 1.0 / (1.0 + 3.0 * t.elongation).sqrt(),
-        };
+        let shape = BodyShape::new(t.elongation, t.segments);
         let with_parts = t.part_count > 0 && o.radius >= parts_from;
         let instances = if with_parts {
             Some(cache.get(&o.genome))

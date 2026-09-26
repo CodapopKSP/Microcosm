@@ -308,17 +308,38 @@ fn body_plan(ui: &mut egui::Ui, world: &World, o: &evo_core::Organism) {
             }
             ui.add_space(2.0);
             let mut abilities: Vec<String> = Vec::new();
+            // Organs only allow movement in some directions relative to the body.
+            let directions = |at: &dyn Fn(f32) -> f32| {
+                let pi = std::f32::consts::PI;
+                let sides = at(pi * 0.5).max(at(-pi * 0.5));
+                let speed = |x: f32| x * o.radius.sqrt();
+                let mut out = vec![format!("forward {:.0}", speed(at(0.0)))];
+                if at(pi) > 0.05 {
+                    out.push(format!("back {:.0}", speed(at(pi))));
+                }
+                if sides > 0.05 {
+                    out.push(format!("sideways {:.0}", speed(sides)));
+                }
+                format!("{} u/s", out.join(", "))
+            };
             if t.speed_coeff > 0.0 {
-                abilities.push(format!("swims {:.0} u/s", t.max_speed(o.radius)));
+                abilities.push(format!("swims {}", directions(&|a| t.swim_toward(a))));
             }
             if t.crawl_coeff > 0.0 {
                 abilities.push(format!(
-                    "walks {:.0} u/s on rock",
-                    t.crawl_coeff * o.radius.sqrt()
+                    "walks on rock {}",
+                    directions(&|a| t.crawl_toward(a))
                 ));
             }
-            if t.is_motile() {
+            if t.turn_rate > 0.0 {
                 abilities.push(format!("turns {:.0}°/s", t.turn_rate.to_degrees()));
+            } else if t.walk_turn > 0.0 {
+                abilities.push(format!(
+                    "turns {:.0}°/s while walking",
+                    t.walk_turn.to_degrees()
+                ));
+            } else if t.is_motile() {
+                abilities.push("can't turn".into());
             }
             if t.anchor > 0.0 {
                 abilities.push(if o.anchored {
@@ -358,14 +379,32 @@ fn body_plan(ui: &mut egui::Ui, world: &World, o: &evo_core::Organism) {
             if t.filter > 0.01 {
                 abilities.push(format!("filters marine snow ×{:.1}", 1.0 + t.filter));
             }
+            // Plates and spines guard the side they're on.
+            let sides = |v: &[f32; 4], scale: f32| {
+                let names = ["front", "left", "back", "right"];
+                let max = v.iter().cloned().fold(0.0, f32::max);
+                if v.iter().all(|x| (x - max).abs() < 0.05) {
+                    format!("{:.0}% all round", max * scale * 100.0)
+                } else {
+                    names
+                        .iter()
+                        .zip(v)
+                        .map(|(n, x)| format!("{n} {:.0}%", x * scale * 100.0))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            };
             if t.armor > 0.01 {
                 abilities.push(format!(
-                    "shell blocks {:.0}%",
-                    t.armor * world.config.feeding.armor_protection * 100.0
+                    "shell blocks {}",
+                    sides(&t.armor_sides, world.config.feeding.armor_protection)
                 ));
             }
             if t.spikes > 0.01 {
-                abilities.push(format!("spines hurt attackers ({:.0}%)", t.spikes * 100.0));
+                abilities.push(format!(
+                    "spines hurt attackers: {}",
+                    sides(&t.spikes_sides, 1.0)
+                ));
             }
             if t.jaws > 0.01 {
                 abilities.push(format!("bite ×{:.1}", 0.2 + 1.8 * t.jaws));

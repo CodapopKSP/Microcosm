@@ -61,8 +61,8 @@ A genome is **60 bytes** in nine lettered chromosomes. **Every byte is one gene*
 | | B1 | Buoyancy | `00` sinks, `80` neutral, `FF` floats (heavy parts pull it down) | 0.3 f |
 | | B2 | Reserves | Energy storage = (0.3 + 2.7 f) × mass | 0.3 f |
 | | B3 | Longevity | Lifespan = 300 s × √radius × (1 + 3 f) | 0.4 f |
-| | B4 | Elongation | Round → 4:1 long (same area). Less drag, slower turns | — |
-| | B5 | Segments | 1–6 body segments; parts can repeat on every segment | — |
+| | B4 | Elongation | Round → 4:1 long (same area), tapering toward the tail. Less drag, slower turns | — |
+| | B5 | Segments | 1–6 body segments. Each extra segment makes the body 50% longer; parts can repeat on every segment | 0.05 per extra segment |
 | **C** Color | C0 | Hue | 0–360° | none |
 | | C1 | Saturation | 20–100% | none |
 | | C2 | Pattern | High 2 bits = style (plain/spots/stripes/rings), rest = scale | none |
@@ -133,7 +133,7 @@ Low mutation rates keep lineages coherent, so species persist and drift is visib
 
 ## 3. Body plans
 
-Bodies are ellipses of constant area: the Elongation gene stretches them from round to 4:1, and the Segments gene divides them into 1–6 segments. On the body sit up to **eight parts** from a fixed catalog of fifteen kinds. Every kind has its own look and job. How many, where, how big, mirrored or not, and what they attach to all evolve.
+Bodies are ellipses: the Elongation gene stretches them from round to 4:1 (keeping their area) and tapers them toward the tail. The Segments gene gives 1–6 segments, each extra one making the body 50% longer; segments are drawn as beads with a waist between them, the head bead a little larger and holding the nucleus. Extra segments cost upkeep (5% each), make building the body 10% dearer each, and slow turning. Every body has a front: its **mouth** is at the front of the head. On the body sit up to **eight parts** from a fixed catalog of fifteen kinds. Every kind has its own look and job. How many, where, how big, mirrored or not, and what they attach to all evolve.
 
 Each part is three bytes in chromosome P:
 
@@ -147,13 +147,13 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 
 | Kind | Job | Notes |
 |------|-----|-------|
-| Flagellum | Swimming thrust | Best for small bodies; pushing or pulling |
-| Cilia band | A little thrust, turning, filter feeding | Best for small bodies |
-| Tentacle | Reach: grabs prey and carcasses beyond the body | Also filters and grips |
+| Flagellum | Swimming along its axis | Best for small bodies; pushing or pulling |
+| Cilia band | A little thrust across its axis, turning, filter feeding | Best for small bodies |
+| Tentacle | Reach: grabs prey and carcasses all around the body, not just at the mouth | Also filters and grips |
 | Frond | Catches light over a wider span, takes up nutrients | Makes large photosynthesizers viable |
-| Fin | Swimming and turning | Best for larger bodies; works best on the sides |
-| Tail fluke | Powerful swimming | Best for larger bodies; must point back |
-| Leg | Walking on rock and the seafloor; grip against currents | Paddles weakly in open water |
+| Fin | Swimming across its axis (fins on the sides row forward) and turning | Best for larger bodies |
+| Tail fluke | Powerful swimming away from where it points | Best for larger bodies; points back to push forward |
+| Leg | Walking on rock and the seafloor across its axis (legs pointing down walk forward); turning while walking; grip against currents | Paddles weakly in open water |
 | Holdfast | Anchors to rock on contact; draws extra nutrients there | Anchored organisms can't be moved by currents |
 | Stalk | Raises whatever is attached to its tip | Parts on a stalk work 30% better |
 | Eye | Sight in a cone where it faces | Bigger = farther, narrower |
@@ -165,12 +165,13 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 
 **What parts add up to.** At birth the parts are laid out on the body and summed into plain numbers, so the per-tick simulation never looks at parts again:
 
-- **Swimming** = 1 − e^(−thrust / drag). Each swimming part adds thrust according to its size, its direction, and how well it suits the body's size. Every part adds drag; elongated bodies have less. Max speed = swimming × 20 × √radius.
-- **Turning** from fins, cilia and flagella; long bodies turn more slowly.
+- **Swimming is directional.** A movement organ doesn't push the body one fixed way; it *enables* movement along certain directions relative to the body. Flagella and tentacles allow movement along their own axis (either way), a tail fluke pushes away from where it points, and fins, cilia and legs row or step across their axis. So flagella trailing behind give a forward-and-back swimmer, a pair pointing up and down gives one that rises and sinks, and fins on the sides row it forward. Each organ's thrust also depends on its size and how well it suits the body's size. Swimming in each of eight body-relative directions = 1 − e^(−thrust / drag); every part adds drag, and long bodies have little drag lengthwise but a lot sideways. Max speed = swimming × 20 × √radius.
+- **Moving and facing.** Each tick an organism moves in whichever direction its organs allow that gets it closest to where it wants to go, and turns so that its best direction points there. Forward swimmers face their target; a body that swims best sideways travels sideways.
+- **Turning** needs an organ to turn with: fins, cilia, flagella, flukes and tentacles, or legs while walking on rock. A body without one keeps its orientation forever. Long and segmented bodies turn more slowly.
 - **Walking** speed from legs, **grip** from legs, tentacles and holdfasts, **anchoring** from holdfasts. Only organisms with such parts check whether they touch rock.
 - **Senses**: each eye is a view cone (up to six are tracked); antennae give a smell radius. No eyes and no antennae means blind (contact only).
 - **Reach** from the longest tentacle; **light span** and nutrient-uptake surface from fronds; **filtering** from cilia and tentacles; **glow** from lures.
-- **Armor** from shell plates, **spikes** from spines, **jaws** from jaws, each with diminishing returns (1 − e^(−x)).
+- **Armor** from shell plates and **spikes** from spines, **per side** (front, left, back, right): a plate or spine mostly guards the side it faces, so a shell on the back protects against chasers but not a head-on attack. **Jaws** from jaws, strongest facing forward. All with diminishing returns (1 − e^(−x)).
 - Every part costs **upkeep** and has **mass**: building a body with parts costs more, and heavy parts sink it.
 
 ---
@@ -231,13 +232,13 @@ needs     = (basal + movement) × breathing/fermentation cost (§4)
 |------|----------|-------------|
 | Photosynthesis | Share of light absorbed in the organism's light cell(s) (§1), limited by CO₂ or minerals (§4) | Width × frond span (big photosynthesizers need fronds) |
 | Chemosynthesis | Uptake from the mineral field: `2 × c × radius × concentration`, depleting it | Perimeter (favors small) |
-| Scavenging | Uptake from the detritus field, `12 × c × radius × (1 + filter) × concentration` (intercepting falling marine snow), plus a filter-feeding bonus when swimming; eating large carcasses on contact or within tentacle reach | Width; width × speed when swimming |
+| Scavenging | Uptake from the detritus field, `12 × c × radius × (1 + filter) × concentration` (intercepting falling marine snow), plus a filter-feeding bonus when swimming; eating large carcasses at the mouth or within tentacle reach | Width; width × speed when swimming |
 | Hunting | See below | Size, jaws |
 
-**Hunting.** On contact with a non-kin organism (or within reach of its tentacles):
+**Hunting.** When a non-kin organism touches the hunter's **mouth** (a circle at the front of its head: most of the front half of a round cell, only the nose of a long body), or anywhere its tentacles reach. Food that only touches the rest of the body is eaten at 30% of the rate, so facing your food pays:
 
-- **Engulf** if the prey's radius is ≤ 50% of the hunter's: the prey dies instantly, with the chance per second reduced by prey armor. The hunter's spikes don't matter, but the **prey's** spikes hurt the hunter.
-- Otherwise **bite**: the hunter tears off `0.3 × c_hunt × (0.2 + 1.8 × jaws) × radius²` of the prey's mass per second, reduced by prey armor. Bitten prey shrink and lose HP, and must regrow. The prey's spikes reflect damage.
+- **Engulf** if the prey's radius is ≤ 50% of the hunter's: the prey dies instantly, with the chance per second reduced by the prey's armor on the side it's attacked from. The hunter's spikes don't matter, but the **prey's** spikes hurt the hunter.
+- Otherwise **bite**: the hunter tears off `0.3 × c_hunt × (0.2 + 1.8 × jaws) × radius²` of the prey's mass per second, reduced by the prey's armor on the side it's bitten. Bitten prey shrink and lose HP, and must regrow. The prey's spikes on that side reflect damage.
 - The hunter assimilates **80% × c_hunt** of the prey's body energy (1 per unit mass, plus the prey's reserves), proportionally to damage dealt, and all of its nutrients. Anything it can't store becomes detritus (energy) or is excreted (nutrients).
 - Toxic prey poisons the hunter: damage = 0.8 × prey toxin × mass eaten × (1 − resistance).
 
@@ -269,7 +270,7 @@ Scavengers live two ways: eating carcasses on contact ("Eating a carcass"), and 
 
 ### Movement and physics
 
-- Swimming: the organism turns toward its desired heading (limited by its turn rate) and thrusts at `throttle × max speed`. Small organisms stop instantly (low Reynolds number); large ones coast.
+- Swimming: the organism turns (if it has an organ to turn with, limited by its turn rate) and moves at `throttle × speed` in the best direction its organs allow (§3). Small organisms stop instantly (low Reynolds number); large ones coast.
 - Walking: organisms with legs that touch rock or the seafloor move at their walking speed (if faster than swimming), and grip resists the current and buoyancy.
 - Anchoring: an organism with a holdfast that touches rock and isn't swimming off stays put. Anchored offspring settle next to their parents: reefs and kelp forests.
 - **Buoyancy** gives a vertical drift proportional to √radius. **Brownian jitter** affects only tiny organisms. **Currents** carry everything: large slow gyres, plus eddies in the upper 450 units (curl noise, so the flow neither piles up nor empties out).
