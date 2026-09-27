@@ -457,6 +457,8 @@ impl Genome {
         for i in 0..GENOME_LEN {
             let rate = if (gene::HUE..=gene::PATTERN).contains(&i) {
                 cfg.rate * cfg.color_rate_multiplier
+            } else if gene_info(i).kind == GeneKind::PartKind {
+                cfg.rate * cfg.part_type_rate_multiplier
             } else {
                 cfg.rate
             };
@@ -482,6 +484,7 @@ impl Genome {
                 } else {
                     8
                 };
+                let step = ((step as f32 * cfg.step_scale).round() as i32).max(1);
                 let delta = if rng.chance(0.5) { step } else { -step };
                 (old as i32 + delta).clamp(0, 255) as u8
             };
@@ -685,7 +688,7 @@ mod tests {
             }
         }
         let frac = unchanged as f32 / trials as f32;
-        assert!((0.45..0.7).contains(&frac), "exact-copy fraction {frac}");
+        assert!((0.15..0.45).contains(&frac), "exact-copy fraction {frac}");
     }
 
     #[test]

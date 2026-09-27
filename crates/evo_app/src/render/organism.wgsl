@@ -139,6 +139,17 @@ fn effect(in: VertexOutput) -> vec4<f32> {
         let grey = dot(in.tint.rgb, vec3<f32>(0.3, 0.5, 0.2));
         col = mix(vec3<f32>(grey), vec3<f32>(0.35, 0.22, 0.1), 0.6) * 1.6;
         a = crumbs * fade;
+    } else if kind == 5u {
+        // Budding: the neck between parent and bud, narrowing in the middle until it pinches off.
+        let q = in.uv * vec2<f32>(in.shape.x, 1.1); // width units
+        let len = max(in.shape.x - 1.0, 0.01);
+        let along = clamp(abs(q.x) / len, 0.0, 1.0);
+        let pinch = 1.0 - smoothstep(0.35, 0.8, age);
+        let hw = mix(0.9 * pinch, 0.9, along * along);
+        let cap = length(vec2<f32>(max(abs(q.x) - len, 0.0), q.y));
+        let dist = select(abs(q.y), cap, abs(q.x) > len);
+        a = (1.0 - smoothstep(hw - aa, hw + aa, dist)) * step(0.02, hw) * 0.95;
+        col = in.tint.rgb * mix(1.1, 0.8, abs(q.y) / max(hw, 1e-3));
     } else {
         // Impact: blinding flash, then an expanding shockwave ring.
         let flash = exp(-age * 18.0) * (1.0 - smoothstep(0.0, 1.0, d));
@@ -489,8 +500,8 @@ fn part(in: VertexOutput) -> vec4<f32> {
     col *= 0.55 + 0.45 * smoothstep(0.0, 0.35, in.state.x);
     if dead {
         let grey = dot(col, vec3<f32>(0.3, 0.5, 0.2));
-        col = mix(vec3<f32>(grey), col, 0.2) * 0.6;
-        alpha *= 0.85;
+        col = mix(mix(vec3<f32>(grey), col, 0.2) * 0.6, col, in.motion.y);
+        alpha *= 0.85 * (1.0 - in.motion.x);
     }
     col = mix(col, vec3<f32>(2.2, 0.15, 0.08), in.motion.w * 0.6 * step(0.01, alpha));
     return vec4<f32>(col, alpha);
@@ -678,13 +689,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let a = 1.0 - smoothstep(dot_r - aa, dot_r + aa, d);
         var col = base;
         if dead {
-            col = vec3<f32>(dot(base, vec3<f32>(0.3, 0.5, 0.2))) * 0.45;
+            // Just-dead bodies keep their colour briefly; everything dead can fade out.
+            col = mix(vec3<f32>(dot(base, vec3<f32>(0.3, 0.5, 0.2))) * 0.45, base, in.motion.y);
         }
         col += vec3<f32>(0.1, 0.9, 1.0) * in.diet.y * 0.6 * f32(!dead); // chemotrophs glow
         col += vec3<f32>(0.4, 1.2, 1.0) * in.chem.w * 1.5 * f32(!dead); // lures glow
         col = mix(col, vec3<f32>(2.0, 0.2, 0.1), hurt * 0.8);
         col += vec3<f32>(1.0, 0.8, 0.4) * eating * 0.6;
-        let body = vec4<f32>(col, a * select(0.95, 0.6, dead));
+        let body = vec4<f32>(col, a * select(0.95, 0.6, dead) * (1.0 - select(0.0, in.motion.x, dead)));
         return mix(body, vec4<f32>(overlay.rgb, 1.0), overlay.a * (1.0 - body.a * 0.5));
     }
 
@@ -702,7 +714,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let perp = vec2<f32>(-n.y, n.x);
         let zig = (abs(fract(dot(q, perp) * 3.5 + seed * 7.0) - 0.5) - 0.25) * 0.28;
         let side = dot(q, n) - zig;
-        let gap = 0.1 + 0.1 * consumed;
+        let gap = (0.1 + 0.1 * consumed) * (1.0 - in.motion.y);
         if abs(side) < gap * 0.5 {
             torn_away = 1.0;
         }
@@ -831,12 +843,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     if dead {
         // A grey, lifeless version of the organism with raw edges where it was torn or bitten.
+        // motion.y: how freshly dead (colour drains to grey); motion.x: fading away.
         let grey = dot(col, vec3<f32>(0.3, 0.5, 0.2));
-        col = mix(vec3<f32>(grey), col, 0.2) * 0.6;
-        col *= 0.85 + 0.15 * hash21(floor(q * 7.0) + seed);
+        let corpse = mix(vec3<f32>(grey), col, 0.2) * 0.6 * (0.85 + 0.15 * hash21(floor(q * 7.0) + seed));
+        col = mix(corpse, col, in.motion.y);
         col = mix(col, vec3<f32>(0.35, 0.08, 0.06), fresh_wound * 0.6);
         alpha *= 1.0 - torn_away;
-        alpha *= 0.92;
+        alpha *= 0.92 * (1.0 - in.motion.x);
     } else {
         // Feeding: a warm glow and specks of food swirling in.
         if eating > 0.01 {

@@ -296,7 +296,8 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
         };
         match inst.kind {
             PartKind::Flagellum => {
-                add_thrust(&mut p.thrust, inst.dir, 1.0 * s * small, along);
+                // A whip pushes the body away from the side it's on.
+                add_thrust(&mut p.thrust, inst.dir, 1.0 * s * small, pushing);
                 p.turning += 0.3 * s;
             }
             PartKind::Cilia => {
@@ -321,8 +322,10 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
                 p.turning += 0.2 * s;
             }
             PartKind::Leg => {
+                // Jointed legs walk on rock and row through open water (like a copepod's).
                 add_thrust(&mut p.crawl, inst.dir, 0.8 * s, across);
-                add_thrust(&mut p.thrust, inst.dir, 0.08 * s, across);
+                add_thrust(&mut p.thrust, inst.dir, 0.3 * s, across);
+                p.turning += 0.15 * s;
                 p.walk_turning += 0.5 * s;
                 p.grip += 0.35 * s;
             }
@@ -386,7 +389,7 @@ impl Traits {
         let reserves = f(gene::RESERVES);
         let longevity = f(gene::LONGEVITY);
 
-        let [photo, chemo, scavenge, hunt] = diet_capabilities(
+        let [photo, chemo, scavenge, hunt_raw] = diet_capabilities(
             [
                 f(gene::PHOTO),
                 f(gene::CHEMO),
@@ -395,6 +398,12 @@ impl Traits {
             ],
             gc.generalist_penalty,
         );
+        // Trace hunting genes from drift don't bite.
+        let hunt = if hunt_raw < config.feeding.min_hunt {
+            0.0
+        } else {
+            hunt_raw
+        };
 
         let regen = f(gene::REGEN);
         let toughness = f(gene::TOUGHNESS);
@@ -402,7 +411,9 @@ impl Traits {
 
         let mut drives = [0.0; drive::COUNT];
         for (k, d) in drives.iter_mut().enumerate() {
-            *d = genome.signed(gene::DRIVES + k);
+            // Drives reach full strength halfway to either end of the byte's range, so a few
+            // mutations are enough to change behavior.
+            *d = (genome.signed(gene::DRIVES + k) * 2.0).clamp(-1.0, 1.0);
         }
 
         let birth_fraction =
@@ -467,7 +478,8 @@ impl Traits {
         let mut eyes = [Eye::default(); MAX_EYES];
         let eye_count = p.eyes.len().min(MAX_EYES);
         eyes[..eye_count].copy_from_slice(&p.eyes[..eye_count]);
-        let smell_radii = pc.smell_range * saturating(1.2 * p.antennae);
+        // Everyone smells what's right next to them; antennae reach much farther.
+        let smell_radii = pc.base_smell + pc.smell_range * saturating(1.2 * p.antennae);
         let sense_radii = eyes[..eye_count]
             .iter()
             .map(|e| e.range)
@@ -730,7 +742,9 @@ pub fn describe_gene(index: usize, genome: &Genome, traits: &Traits, config: &Co
         gene::REGEN => format!("{:.1}% HP/s", traits.regen * 100.0),
         gene::TOUGHNESS => format!("{:.2} HP per mass", traits.hp_factor),
         gene::RESTLESSNESS => pct(traits.restlessness),
-        i if (gene::DRIVES..gene::DRIVES + drive::COUNT).contains(&i) => signed(genome.signed(i)),
+        i if (gene::DRIVES..gene::DRIVES + drive::COUNT).contains(&i) => {
+            signed(traits.drives[i - gene::DRIVES])
+        }
         gene::OFFSPRING_SIZE => format!(
             "newborn {} of adult mass",
             pct_precise(traits.birth_fraction)
@@ -818,7 +832,11 @@ mod tests {
         assert_eq!(t.brood, 1);
         assert!((t.birth_fraction - 0.5).abs() < 1e-6);
         assert!(t.buoyancy > 0.0);
-        assert_eq!(t.sense_radii, 0.0);
+        assert_eq!(t.eye_count, 0);
+        assert_eq!(
+            t.sense_radii, config.parts.base_smell,
+            "it only smells what's close"
+        );
         assert_eq!(t.part_count, 0);
         assert!(t.aerobic > 0.5 && t.oxygenic > 0.9);
         assert!(
@@ -883,14 +901,19 @@ mod tests {
         let (g, config) = ancestor();
         let t = Traits::decode(&g, &config);
         assert!(!t.is_motile() && t.turn_rate == 0.0 && t.walk_turn == 0.0);
-        // A flagellum at the back makes a microbe swim forward and back, not sideways.
+        // A flagellum at the back pushes a microbe forward (not back, not sideways).
         let (g, config) = with_part(PartKind::Flagellum, 0, 0x80, 16);
         let t = Traits::decode(&g, &config);
         assert!(t.is_motile() && t.max_speed(t.adult_radius) > 5.0);
         assert!(t.turn_rate > 0.0);
         let half_pi = std::f32::consts::FRAC_PI_2;
         assert!(t.swim_toward(0.0) > 5.0 * t.swim_toward(half_pi));
-        assert!((t.swim_toward(0.0) - t.swim_toward(std::f32::consts::PI)).abs() < 1e-4);
+        assert_eq!(t.swim_toward(std::f32::consts::PI), 0.0);
+        // One at the front pushes it backward, so it swims tail-first.
+        let (g, config) = with_part(PartKind::Flagellum, 0, 0x80, 0);
+        let t = Traits::decode(&g, &config);
+        assert!(t.swim_toward(std::f32::consts::PI) > 0.0 && t.swim_toward(0.0) == 0.0);
+        assert!((t.move_axis.abs() - std::f32::consts::PI).abs() < 1e-4);
         // A pair of flagella pointing up and down lets it swim vertically.
         let (g, config) = with_part(PartKind::Flagellum, 1, 0x80, 8);
         let t = Traits::decode(&g, &config);
@@ -929,8 +952,8 @@ mod tests {
         let t = Traits::decode(&g, &config);
         assert!(t.crawl_coeff > 0.0 && t.grip > 0.0 && t.is_motile());
         assert!(
-            t.walk_turn > 0.0 && t.turn_rate == 0.0,
-            "legs turn only when walking"
+            t.walk_turn > t.turn_rate && t.speed_coeff > 0.0,
+            "legs row in open water and turn best while walking"
         );
         let (g, config) = with_part(PartKind::Holdfast, 0, 0x80, 16);
         assert!(Traits::decode(&g, &config).anchor > 0.5);

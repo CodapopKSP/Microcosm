@@ -380,10 +380,27 @@ impl Environment {
 
     fn new_vent(&mut self, config: &Config, terrain: &Terrain) -> Option<Vent> {
         let v = &config.vents;
-        for _ in 0..200 {
+        // Keep a few vents shallow (on the shelf and upper slope): stepping stones between the
+        // sunlit water and the deep. The rest open on the deep floor.
+        let height = config.world.height;
+        let shallow_now = self
+            .vents
+            .iter()
+            .filter(|o| height - o.pos.y < v.shallow_max_depth)
+            .count() as u32;
+        let deep = (v.deep_min_depth, f32::MAX);
+        let (lo, hi) = if shallow_now < v.shallow {
+            (v.min_depth, v.shallow_max_depth)
+        } else {
+            deep
+        };
+        for attempt in 0..600 {
+            // If no shallow spot turns up, settle for a deep one.
+            let (lo, hi) = if attempt >= 400 { deep } else { (lo, hi) };
             let x = self.rng.range(0.03, 0.97) * config.world.width;
             let floor = terrain.floor_at(x);
-            if config.world.height - floor < v.min_depth {
+            let depth = height - floor;
+            if depth < lo || depth > hi {
                 continue;
             }
             let pos = Vec2::new(x, floor + 12.0);

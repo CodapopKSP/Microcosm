@@ -136,7 +136,7 @@ impl PartKind {
             PartKind::Frond => "catches sunlight over a wide area",
             PartKind::Fin => "swims and steers (best for larger bodies)",
             PartKind::Fluke => "powerful swimming stroke (best for larger bodies)",
-            PartKind::Leg => "walks along rock and grips against currents",
+            PartKind::Leg => "rows through the water, walks along rock, grips against currents",
             PartKind::Holdfast => "anchors to rock and draws nutrients from it",
             PartKind::Stalk => "raises the parts attached to it",
             PartKind::Eye => "sees in the direction it faces",

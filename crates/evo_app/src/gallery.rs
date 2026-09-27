@@ -130,12 +130,115 @@ pub fn build() -> World {
             id += 1;
         }
     }
+    animation_rows(&mut world, rows().len(), &mut id);
     world
+}
+
+/// Rows below the gene rows showing the budding and dying animations frozen at nine stages.
+fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
+    use crate::render::{BUD_TIME, DEATH_FADE};
+    use evo_core::world::{Fx, FxBody, FxKind};
+    let config = world.config.clone();
+    let dt = config.time.dt;
+    let h = config.world.height;
+    // The world is paused, so each animation stays at the stage it started at.
+    world.tick = 10_000;
+    let now = world.tick;
+    let ago = |secs: f32| now - (secs / dt).round() as u64;
+    let mut base = world.ancestor;
+    base.0[gene::SIZE] = 0x40;
+    base.0[gene::PATTERN] = 0x50;
+    let y_of = |row: usize| h - TOP - row as f32 * SPACING;
+
+    // Budding: a small bud, then fission (two halves).
+    for (k, offspring_size) in [0xD0u8, 0xFF].into_iter().enumerate() {
+        let mut genome = base;
+        genome.0[gene::OFFSPRING_SIZE] = offspring_size;
+        let traits = evo_core::Traits::decode(&genome, &config);
+        let child_mass = traits.adult_mass * traits.birth_fraction;
+        let parent_mass = traits.adult_mass - child_mass;
+        let y = y_of(first_row + k);
+        for col in 0..COLUMNS {
+            let stage = col as f32 / (COLUMNS - 1) as f32;
+            let x = LEFT + col as f32 * SPACING - 6.0;
+            let make = |id: u64, pos: glam::Vec2, mass: f32| {
+                let mut o = Organism::new(
+                    id,
+                    0,
+                    0,
+                    0,
+                    genome,
+                    0,
+                    &config,
+                    pos,
+                    mass,
+                    mass,
+                    Rng::new(id),
+                    0,
+                );
+                o.heading = 0.0;
+                o.steer_heading = 0.0;
+                o
+            };
+            let mut parent = make(*id, glam::Vec2::new(x, y), parent_mass);
+            parent.budded_tick = ago(stage * BUD_TIME);
+            parent.bud_scale = (traits.adult_mass / parent_mass).sqrt();
+            let offset = glam::Vec2::new(parent.radius + child_mass.sqrt() + 0.5, 0.0);
+            let mut child = make(*id + 1, parent.pos + offset, child_mass);
+            child.born = ago(stage * BUD_TIME);
+            child.bud_offset = offset;
+            world.organisms.push(parent);
+            world.organisms.push(child);
+            *id += 2;
+        }
+    }
+
+    // Dying: the colours drain to grey.
+    let traits = evo_core::Traits::decode(&base, &config);
+    let y = y_of(first_row + 2);
+    for col in 0..COLUMNS {
+        let stage = col as f32 / (COLUMNS - 1) as f32;
+        let pos = glam::Vec2::new(LEFT + col as f32 * SPACING, y);
+        let value = traits.adult_mass * 2.0;
+        world.carcasses.push(evo_core::organism::Carcass {
+            pos,
+            vel: glam::Vec2::ZERO,
+            energy: value,
+            radius: traits.adult_radius,
+            color: traits.color,
+            species: 0,
+            initial_energy: value,
+            nutrients: 0.0,
+            heading: 0.0,
+            genome: base,
+            seed: col as f32 * 0.11,
+            hurt_tick: 0,
+            died_tick: ago(stage * DEATH_FADE),
+        });
+    }
+
+    // Swallowed whole: the prey flashes into a corpse and fades away.
+    let y = y_of(first_row + 3);
+    for col in 0..COLUMNS {
+        let stage = col as f32 / (COLUMNS - 1) as f32;
+        world.fx.push(Fx {
+            kind: FxKind::Engulf,
+            pos: glam::Vec2::new(LEFT + col as f32 * SPACING, y),
+            radius: traits.adult_radius,
+            color: traits.color,
+            tick: ago(stage * FxKind::Engulf.duration() * 0.999),
+            body: Some(FxBody {
+                genome: base,
+                heading: 0.0,
+                seed: col as f32 * 0.13,
+            }),
+        });
+    }
 }
 
 /// The gallery's view centre depends on the world height, so compute it at runtime.
 pub fn view_for(config: &Config) -> (f32, f32, f32) {
-    let rows = rows().len() as f32;
+    let rows = rows().len() as f32 + 4.0;
     (
         VIEW.0,
         config.world.height - TOP - (rows - 1.0) * SPACING * 0.5,

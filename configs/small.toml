@@ -14,8 +14,10 @@ rocks = 7
 rock_size = 180.0
 
 [vents]
-count = 2
-min_depth = 1500.0
+count = 3
+min_depth = 400.0
+shallow_max_depth = 1200.0
+deep_min_depth = 1500.0
 
 [population]
 initial = 800

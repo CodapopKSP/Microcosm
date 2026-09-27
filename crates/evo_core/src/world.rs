@@ -54,7 +54,7 @@ struct Intent {
 /// Short-lived visual effects for the viewer (not saved).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FxKind {
-    /// Prey swallowed whole.
+    /// Prey swallowed whole: its body flashes into a corpse and fades.
     Engulf,
     /// A hunter took a bite.
     Bite,
@@ -71,13 +71,23 @@ pub struct Fx {
     pub radius: f32,
     pub color: [f32; 3],
     pub tick: u64,
+    /// The body it shows, for effects that draw an organism (a swallowed prey's corpse).
+    pub body: Option<FxBody>,
+}
+
+/// An organism's look, for an effect that draws it.
+#[derive(Clone, Copy, Debug)]
+pub struct FxBody {
+    pub genome: Genome,
+    pub heading: f32,
+    pub seed: f32,
 }
 
 impl FxKind {
     /// How long the effect lasts, in sim seconds.
     pub fn duration(self) -> f32 {
         match self {
-            FxKind::Engulf => 0.8,
+            FxKind::Engulf => 0.5,
             FxKind::Bite => 0.6,
             FxKind::Scavenge => 0.7,
             FxKind::Impact => 6.0,
@@ -167,6 +177,11 @@ pub struct World {
     /// Active random events (plagues, upwellings, impact winters, barriers).
     pub happenings: Events,
     pub ancestor: Genome,
+    /// The second founding lineage at the vents, and its root species.
+    #[serde(default)]
+    pub vent_ancestor: Option<Genome>,
+    #[serde(default)]
+    pub vent_species: Option<u32>,
     pub next_id: u64,
     rng: Rng,
     #[serde(skip)]
@@ -305,6 +320,9 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     let kin_threshold = cfg.species.kin_threshold;
     let is_kin =
         |e: &Entry| color_distance(t.hue, t.saturation, e.hue, e.saturation) < kin_threshold;
+    // Hunters spare look-alikes unless they're starving.
+    let hunger = 1.0 - (o.energy / o.max_energy().max(1e-6)).clamp(0.0, 1.0);
+    let spares = |e: &Entry| is_kin(e) && hunger < cfg.feeding.kin_hunger;
 
     // Contacts: soft collision push, and a prey candidate at the mouth or within tentacle reach.
     let mass = r * r;
@@ -339,7 +357,7 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             push -= dir * (min - dist) * (other_mass / (mass + other_mass));
         }
         if hunts
-            && !is_kin(e)
+            && !spares(e)
             && prey.is_none_or(|(_, pr)| e.radius < pr)
             && reach.touches(e.pos, e.radius) > 0.0
         {
@@ -378,7 +396,6 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
 
     // Steering by drives.
     let d = &t.drives;
-    let hunger = 1.0 - (o.energy / o.max_energy().max(1e-6)).clamp(0.0, 1.0);
     let fc = &cfg.feeding;
     let food = fc.hunger_min + (fc.hunger_max - fc.hunger_min) * hunger;
     let probe = (2.0 * r).max(24.0);
@@ -426,15 +443,18 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     let cap = cfg.genes.sense_cap;
     let range = (t.sense_radii * r).min(cap);
     if range > r {
-        // Antennae smell all around; eyes see within their cones.
+        // Smell works all around and in the dark; eyes see within their cones, and need light.
         let smell = (t.smell_radii * r).min(cap);
         let eye_count = t.eye_count as usize;
+        let pc = &cfg.parts;
+        let brightness = env.light.level_at(pos) / cfg.light.surface_intensity.max(1e-6);
+        let sight = pc.eye_dark + (1.0 - pc.eye_dark) * (brightness / pc.eye_light).min(1.0);
         let mut cones = [(Vec2::ZERO, 0.0f32, 0.0f32); MAX_EYES];
         for (cone, eye) in cones.iter_mut().zip(&t.eyes[..eye_count]) {
             *cone = (
                 Vec2::from_angle(o.heading + eye.dir),
                 eye.cos_half,
-                (eye.range * r).min(cap),
+                (eye.range * r * sight).min(cap),
             );
         }
         let perceives = |dir: Vec2, dist: f32, other: f32| {
@@ -461,7 +481,7 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             }
             seen += 1;
             let closeness = 1.0 - dist / reach;
-            if is_kin(e) {
+            if spares(e) {
                 schooling += dir * closeness;
             } else if e.radius < 0.8 * r {
                 if dist < nearest_smaller {
@@ -814,7 +834,11 @@ impl World {
         let terrain = Terrain::generate(&config);
         let env = Environment::new(&config, &terrain);
         let ancestor = Genome::parse(&config.population.ancestor).expect("config validated");
-        let species = SpeciesRegistry::new(&ancestor, &config);
+        let mut species = SpeciesRegistry::new(&ancestor, &config);
+        let vent_ancestor = Some(config.population.vent_ancestor.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| Genome::parse(s).expect("config validated"));
+        let vent_species = vent_ancestor.map(|g| species.add_root(&g, &config, 0));
         let rng = Rng::new(config.world.seed);
         let happenings = Events::new(config.world.seed);
         let mut world = World {
@@ -830,6 +854,8 @@ impl World {
             milestones: Milestones::default(),
             happenings,
             ancestor,
+            vent_ancestor,
+            vent_species,
             next_id: 1,
             rng,
             scratch: None,
@@ -838,6 +864,10 @@ impl World {
         };
         let initial = world.config.population.initial;
         world.spawn_ancestors(initial);
+        let vents: Vec<Vec2> = world.env.vents.iter().map(|v| v.pos).collect();
+        for p in vents {
+            world.seed_vent(p, world.config.population.vent_initial);
+        }
         world.log(
             EventKind::Milestone,
             "Life begins: the first microbes drift in the sunlit shallows.".into(),
@@ -967,6 +997,38 @@ impl World {
                 self.tick,
             );
             self.species.on_birth(0, cfg, self.tick);
+            self.organisms.push(o);
+        }
+        self.species.events.clear();
+    }
+
+    /// Settle `count` vent ancestors around a vent at `pos`.
+    fn seed_vent(&mut self, pos: Vec2, count: u32) {
+        let (Some(genome), Some(species)) = (self.vent_ancestor, self.vent_species) else {
+            return;
+        };
+        let cfg = &self.config;
+        let traits = crate::traits::Traits::decode(&genome, cfg);
+        let r = traits.adult_radius;
+        for _ in 0..count {
+            let mut rng = self.rng.fork();
+            let mut spot = None;
+            for _ in 0..30 {
+                let p = pos + Vec2::new(rng.range(-90.0, 90.0), rng.range(0.0, 60.0));
+                if self.terrain.is_free(p, r) {
+                    spot = Some(p);
+                    break;
+                }
+            }
+            let Some(p) = spot else { continue };
+            let mass = traits.adult_mass;
+            let energy = 0.5 * mass * traits.reserve_factor;
+            let id = self.next_id;
+            self.next_id += 1;
+            let o = Organism::new(
+                id, 0, species, 0, genome, 0, cfg, p, mass, energy, rng, self.tick,
+            );
+            self.species.on_birth(species, cfg, self.tick);
             self.organisms.push(o);
         }
         self.species.events.clear();
@@ -1128,13 +1190,22 @@ impl World {
         // 7. Events and statistics.
         for e in env_events {
             match e {
-                EnvEvent::VentOpened(p) => self.log_at(
-                    EventKind::Environment,
-                    format!("A hydrothermal vent opens on the seafloor at x={:.0}.", p.x),
-                    None,
-                    None,
-                    Some(p),
-                ),
+                EnvEvent::VentOpened(p) => {
+                    self.log_at(
+                        EventKind::Environment,
+                        format!("A hydrothermal vent opens on the seafloor at x={:.0}.", p.x),
+                        None,
+                        None,
+                        Some(p),
+                    );
+                    // Drifting spores settle there if no vent life lives nearby.
+                    let settled = self.organisms.iter().any(|o| {
+                        o.traits.chemo > 0.3 && o.pos.distance_squared(p) < 1500.0 * 1500.0
+                    });
+                    if !settled {
+                        self.seed_vent(p, self.config.population.vent_seed);
+                    }
+                }
                 EnvEvent::VentDied(p) => self.log_at(
                     EventKind::Environment,
                     format!("The vent at x={:.0} falls silent.", p.x),
@@ -1227,6 +1298,7 @@ impl World {
                 radius: r,
                 color: [1.0, 0.7, 0.3],
                 tick: self.tick,
+                body: None,
             });
             self.log_at(
                 EventKind::Disaster,
@@ -1503,6 +1575,7 @@ impl World {
                         radius: r.max(c.radius * 0.5),
                         color: c.color,
                         tick,
+                        body: None,
                     });
                 }
                 o.ate_tick = tick;
@@ -1540,6 +1613,13 @@ impl World {
                                     radius: prey.radius,
                                     color: prey.traits.color,
                                     tick,
+                                    body: Some(FxBody {
+                                        genome: prey.genome,
+                                        heading: prey.heading,
+                                        seed: ((prey.id.wrapping_mul(2_654_435_761) >> 8) % 1000)
+                                            as f32
+                                            / 1000.0,
+                                    }),
                                 });
                             }
                         }
@@ -1572,6 +1652,7 @@ impl World {
                                     radius: hunter.radius.max(prey.radius * 0.5),
                                     color: prey.traits.color,
                                     tick,
+                                    body: None,
                                 });
                             }
                             prey.hurt_tick = tick;
@@ -1581,7 +1662,8 @@ impl World {
                         }
                     }
                     if taken_energy > 0.0 {
-                        let assimilated = taken_energy * fc.assimilation * t.hunt;
+                        // Even a weak hunter digests much of what it catches.
+                        let assimilated = taken_energy * fc.assimilation * (0.4 + 0.6 * t.hunt);
                         hunter.energy += assimilated;
                         hunter.gain_rate += assimilated / dt;
                         detritus.add(hunter.pos, (taken_energy - assimilated) / d_area);
@@ -1684,7 +1766,6 @@ impl World {
 
     fn reproduce(&mut self) {
         let config = &self.config;
-        let met = &config.metabolism;
         let rc = &config.reproduction;
         let cc = &config.chemistry;
         let min_mass = config.genes.min_radius * config.genes.min_radius;
@@ -1707,19 +1788,52 @@ impl World {
                 break;
             }
             let t = o.traits;
+            // Budding: the child's body comes out of the parent's, which then regrows. The
+            // parent keeps at least half its adult mass (fission-sized offspring: one child,
+            // two halves). Building the body is paid later, as the parent regrows.
             let child_mass = (t.adult_mass * t.birth_fraction).max(min_mass);
             let child_reserves = child_mass * t.reserve_factor * rc.newborn_reserves;
-            let cost = child_mass * met.build_cost * t.build_factor + child_reserves;
-            // Each child needs the nutrients for its body plus a starting store.
             let child_store = 0.25 * child_mass * cc.nutrient_store;
-            let child_nutrients = child_mass * cc.nutrient_per_mass + child_store;
+            let spare_mass = o.mass - 0.5 * t.adult_mass;
             let count = t
                 .brood
-                .min((o.energy / cost) as u32)
-                .min((o.nutrients.max(0.0) / child_nutrients) as u32);
+                .min(((spare_mass + 1e-3) / child_mass) as u32)
+                .min((o.energy / child_reserves.max(1e-6)) as u32)
+                .min((o.nutrients.max(0.0) / child_store.max(1e-6)) as u32);
             if count == 0 {
                 continue;
             }
+            let old_mass = o.mass;
+            let old_radius = o.radius;
+            let new_mass = old_mass - child_mass * count as f32;
+            o.hp *= new_mass / old_mass;
+            o.set_mass(new_mass);
+            o.energy -= child_reserves * count as f32;
+            o.nutrients -= child_store * count as f32;
+            // Reserves and nutrients the smaller parent can't hold go to the children.
+            let child_energy_room = child_mass * t.reserve_factor - child_reserves;
+            let spare_energy = (o.energy - o.max_energy()).max(0.0);
+            o.energy -= spare_energy;
+            let extra_energy = (spare_energy / count as f32).min(child_energy_room);
+            let child_store_room = child_mass * cc.nutrient_store - child_store;
+            let spare_nutrients = (o.nutrients - o.max_nutrients(config)).max(0.0);
+            o.nutrients -= spare_nutrients;
+            let extra_nutrients = (spare_nutrients / count as f32).min(child_store_room);
+            // Anything left over (rare) is released into the water.
+            let leftover_energy = spare_energy - extra_energy * count as f32;
+            let leftover_nutrients = spare_nutrients - extra_nutrients * count as f32;
+            if leftover_energy > 1e-6 {
+                self.env
+                    .detritus
+                    .add(o.pos, leftover_energy / self.env.detritus.cell_area());
+            }
+            if leftover_nutrients > 1e-6 {
+                self.env
+                    .nutrients
+                    .add(o.pos, leftover_nutrients / self.env.nutrients.cell_area());
+            }
+            o.budded_tick = tick;
+            o.bud_scale = old_radius / o.radius;
             for _ in 0..count {
                 let mut rng = o.rng.fork();
                 let mut genome = o.genome;
@@ -1750,19 +1864,18 @@ impl World {
                     config,
                     pos,
                     child_mass,
-                    child_reserves,
+                    child_reserves + extra_energy,
                     rng,
                     tick,
                 );
                 child.vel = o.vel;
-                child.nutrients = child_store;
+                child.nutrients = child_store + extra_nutrients;
+                child.bud_offset = pos - o.pos;
                 self.species.on_birth(species, config, tick);
                 self.stats.record_birth();
                 births.push(child);
                 population += 1;
             }
-            o.energy -= cost * count as f32;
-            o.nutrients -= child_nutrients * count as f32;
             o.offspring += count;
             o.repro_cooldown = rc.cooldown;
             parents.push(i);
@@ -1813,6 +1926,7 @@ impl World {
                     genome: o.genome,
                     seed: ((o.id.wrapping_mul(2_654_435_761) >> 8) % 1000) as f32 / 1000.0,
                     hurt_tick: 0,
+                    died_tick: tick,
                 });
             } else {
                 detritus.add(o.pos, value / area);
@@ -2059,7 +2173,37 @@ mod tests {
         c.vents.min_depth = 1500.0;
         c.population.initial = 300;
         c.population.min_population = 10;
+        c.population.vent_initial = 0;
+        c.population.vent_seed = 0;
         c
+    }
+
+    #[test]
+    fn optional_vent_lineage_starts_at_vents() {
+        let mut c = small_config();
+        c.population.vent_initial = 30;
+        c.population.vent_ancestor = "B:207060300000 C:10C040 D:00FF0000 G:400080000000 H:2030 \
+            N:80808080808080808000 P:086010 000000 000000 000000 000000 000000 000000 000000 \
+            R:FF00B0 T:FFFF"
+            .into();
+        let world = World::new(c);
+        let vent_species = world.vent_species.expect("a vent lineage");
+        assert_ne!(vent_species, 0);
+        let at_vents: Vec<_> = world
+            .organisms
+            .iter()
+            .filter(|o| o.species == vent_species)
+            .collect();
+        assert!(!at_vents.is_empty());
+        for o in at_vents {
+            assert!(o.traits.chemo > 0.9);
+            let near = world
+                .env
+                .vents
+                .iter()
+                .any(|v| v.pos.distance(o.pos) < 150.0);
+            assert!(near, "vent life starts at a vent");
+        }
     }
 
     #[test]
@@ -2334,8 +2478,8 @@ mod tests {
         let walker = add(&mut world, w, Vec2::new(x + 400.0, floor + 60.0));
         let t = &world.organisms[walker].traits;
         assert!(
-            t.crawl_coeff > 2.0 * t.speed_coeff,
-            "legs walk much faster than they paddle"
+            t.crawl_coeff > 0.0 && t.speed_coeff > 0.0,
+            "legs walk and row"
         );
         for _ in 0..(40.0 / world.config.time.dt) as usize {
             world.step();
@@ -2536,5 +2680,40 @@ mod tests {
             world.step();
         }
         assert_eq!(world.organisms[i].heading, heading);
+    }
+
+    #[test]
+    fn budding_takes_the_body_from_the_parent() {
+        let run = |offspring_size: u8| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let mut g = world.ancestor;
+            g.0[gene::OFFSPRING_SIZE] = offspring_size;
+            g.0[gene::BROOD] = 0;
+            g.0[gene::SIZE] = 0x60;
+            let i = add(&mut world, g, Vec2::new(2000.0, h - 50.0));
+            let o = &mut world.organisms[i];
+            o.energy = o.max_energy();
+            o.nutrients = o.max_nutrients(&world.config);
+            let (mass, energy) = (o.mass, o.energy);
+            world.reproduce();
+            assert_eq!(world.organisms.len(), 2, "one child");
+            let (p, c) = (&world.organisms[0], &world.organisms[1]);
+            // Mass moves from parent to child; no reserves are lost.
+            assert!((p.mass + c.mass - mass).abs() < 1e-3);
+            assert!((p.energy + c.energy - energy).abs() < 1e-3);
+            assert!(p.bud_scale > 1.0 && c.bud_offset.length() > 0.0);
+            (p.mass / mass, c.mass / mass)
+        };
+        let (parent, child) = run(0xFF);
+        assert!(
+            (parent - 0.5).abs() < 0.01 && (child - 0.5).abs() < 0.01,
+            "fission halves"
+        );
+        let (parent, child) = run(0x90);
+        assert!(
+            parent > 0.9 && child < 0.1,
+            "a small bud: parent {parent}, child {child}"
+        );
     }
 }

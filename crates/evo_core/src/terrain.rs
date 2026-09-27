@@ -283,6 +283,66 @@ impl Terrain {
             }
         }
 
+        // Caves: a mound of rock with a hollow, dark chamber inside and a narrow entrance on
+        // one side (a refuge for small bodies, a lair for ambushers). Half sit on the shelf.
+        let carve = |solid: &mut Vec<bool>, shape: &dyn Fn(Vec2) -> bool, lo: Vec2, hi: Vec2| {
+            let x0 = ((lo.x / cell).floor().max(0.0)) as usize;
+            let y0 = ((lo.y / cell).floor().max(0.0)) as usize;
+            let x1 = ((hi.x / cell).ceil() as usize).min(nx - wall);
+            let y1 = ((hi.y / cell).ceil() as usize).min(ny);
+            for y in y0..y1 {
+                for x in x0.max(wall)..x1 {
+                    let p = Vec2::new((x as f32 + 0.5) * cell, (y as f32 + 0.5) * cell);
+                    if shape(p) {
+                        solid[y * nx + x] = false;
+                    }
+                }
+            }
+        };
+        let shelf_x = cfg.shelf_start * width;
+        for k in 0..cfg.caves {
+            let size = cfg.cave_size * rng.range(0.7, 1.3);
+            let cx = if k % 2 == 0 {
+                rng.range(shelf_x + 400.0, width * 0.97 - size)
+            } else {
+                rng.range(0.06, 0.9) * width
+            };
+            let base = floor_at(cx);
+            let nseed = seed.wrapping_add(0xCA7E + k as u64 * 7_919);
+            let (mound_w, mound_h) = (size * 1.6, size * 1.1);
+            let mound = move |p: Vec2| {
+                let a = (p - Vec2::new(cx, base)).to_angle();
+                let wobble = 1.0 + 0.12 * value_noise(nseed, a * 4.0);
+                let q = Vec2::new((p.x - cx) / mound_w, (p.y - base) / mound_h);
+                q.length() < wobble && p.y > base - 60.0
+            };
+            stamp(
+                &mut solid,
+                &mound,
+                Vec2::new(cx - mound_w * 1.2, base - 60.0),
+                Vec2::new(cx + mound_w * 1.2, base + mound_h * 1.2),
+            );
+            let chamber_c = Vec2::new(cx, base + mound_h * 0.4);
+            let (ch_w, ch_h) = (size * 0.9, size * 0.35);
+            let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+            let tunnel_y = chamber_c.y - ch_h * 0.3;
+            let tunnel_half = (size * 0.08).max(cell * 1.5);
+            let hollow = move |p: Vec2| {
+                let wobble = 1.0 + 0.15 * value_noise(nseed ^ 0x55, p.x / 60.0);
+                let q = (p - chamber_c) / Vec2::new(ch_w, ch_h * wobble);
+                let tunnel = (p.x - cx) * side > 0.0
+                    && (p.y - tunnel_y).abs()
+                        < tunnel_half * (1.0 + 0.3 * value_noise(nseed ^ 0x77, p.x / 40.0));
+                q.length() < 1.0 || tunnel
+            };
+            carve(
+                &mut solid,
+                &hollow,
+                Vec2::new(cx - mound_w * 1.3, chamber_c.y - ch_h * 1.3),
+                Vec2::new(cx + mound_w * 1.3, chamber_c.y + ch_h * 1.3),
+            );
+        }
+
         let mut terrain = Terrain {
             sdf: field,
             base_mask: solid.clone(),

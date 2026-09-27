@@ -263,6 +263,16 @@ impl SpeciesRegistry {
         reg
     }
 
+    /// Add another founding lineage (its own genus and established species) and return its id.
+    pub fn add_root(&mut self, founder: &Genome, config: &Config, tick: u64) -> u32 {
+        let genus = self.new_genus(founder, config);
+        let id = self.insert_species(founder, genus, None, tick, config);
+        let s = self.species.get_mut(&id).unwrap();
+        s.established = true;
+        s.established_at = Some(tick);
+        id
+    }
+
     fn new_genus(&mut self, founder: &Genome, config: &Config) -> u32 {
         let id = self.next_genus;
         self.next_genus += 1;
@@ -499,7 +509,9 @@ mod tests {
         far.0[gene::HUNT] = 0xFF;
         far.0[gene::PHOTO] = 0x00;
         far.0[gene::RESPIRATION] = 0x00;
+        far.0[gene::SIZE] = 0x80;
         far.0[parts::slot_offset(0)] = PartKind::Jaw.code();
+        far.0[parts::slot_offset(1)] = PartKind::Fin.code();
         let id = reg.classify(0, &far, 5, &config);
         assert_ne!(id, 0);
         for _ in 0..config.species.established {
@@ -516,6 +528,8 @@ mod tests {
         other.0[gene::PHOTO] = 0x00;
         other.0[gene::BUOYANCY] = 0x00;
         other.0[gene::OXYGENIC] = 0x00;
+        other.0[gene::TEMP_PREF] = 0xFF;
+        other.0[parts::slot_offset(0)] = PartKind::Holdfast.code();
         let id2 = reg.classify(0, &other, 5, &config);
         assert_ne!(id2, 0);
         reg.on_birth(id2, &config, 6);

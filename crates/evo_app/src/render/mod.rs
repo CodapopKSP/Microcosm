@@ -524,6 +524,16 @@ impl LayoutCache {
     }
 }
 
+/// Seconds a newborn takes to bud off its parent (the animation).
+pub const BUD_TIME: f32 = 0.8;
+/// Seconds for a dead body's colours to drain to grey.
+pub const DEATH_FADE: f32 = 0.4;
+
+fn smooth(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Extra room around a part (in part lengths) for its bending animation.
 fn part_margin(kind: PartKind) -> f32 {
     match kind {
@@ -670,7 +680,13 @@ fn update_organisms(
             body: body_attr(&shape, 0.0, c.genome.get(evo_core::genome::gene::PATTERN)),
             diet: [unorm(c.consumed()), 0, 0, 0],
             state: [0, 0, FLAG_DEAD, 255],
-            motion: [0, 0, 0, flash(c.hurt_tick, 0.5)],
+            // Dying: the colours drain to grey just after death.
+            motion: [
+                0,
+                flash(c.died_tick, DEATH_FADE),
+                0,
+                flash(c.hurt_tick, 0.5),
+            ],
             chem: [0; 4],
         };
         let owner = PartOwner {
@@ -705,9 +721,35 @@ fn update_organisms(
 
     for o in &world.organisms {
         let t = &o.traits;
-        let pos = o.prev_pos.lerp(o.pos, alpha);
+        let mut pos = o.prev_pos.lerp(o.pos, alpha);
         let shape = BodyShape::new(t.elongation, t.segments);
-        let with_parts = t.part_count > 0 && o.radius >= parts_from;
+        // Budding: a parent shrinks back from its size before the split; a newborn grows out of
+        // its parent through a neck that pinches off.
+        let since = |tick: u64| world.tick.saturating_sub(tick) as f32 * dt;
+        let mut radius = o.radius;
+        if o.budded_tick > 0 && since(o.budded_tick) < BUD_TIME {
+            let e = smooth(since(o.budded_tick) / BUD_TIME);
+            radius *= o.bud_scale + (1.0 - o.bud_scale) * e;
+        }
+        let mut neck = None;
+        let offset = o.bud_offset.length();
+        if offset > 0.0 && since(o.born) < BUD_TIME {
+            let t = since(o.born) / BUD_TIME;
+            let e = smooth(t);
+            let dir = o.bud_offset / offset;
+            let parent_center = pos - o.bud_offset;
+            let parent_r = (offset - o.radius - 0.5).max(o.radius * 0.5);
+            let start = parent_center + dir * (parent_r - o.radius * 0.6).max(0.0);
+            pos = start.lerp(pos, e);
+            radius = o.radius * (0.6 + 0.4 * e);
+            neck = Some((
+                parent_center + dir * parent_r * 0.7,
+                pos,
+                parent_r.min(radius),
+                t,
+            ));
+        }
+        let with_parts = t.part_count > 0 && radius >= parts_from;
         let instances = if with_parts {
             Some(cache.get(&o.genome))
         } else {
@@ -717,7 +759,7 @@ fn update_organisms(
             Some(i) => reach(i, &shape),
             None => shape.half_length * 1.4,
         };
-        if !visible(pos, (o.radius * extent).max(min_half)) {
+        if !visible(pos, (radius * extent).max(min_half)) {
             continue;
         }
         let mut flags = 0u8;
@@ -743,7 +785,7 @@ fn update_organisms(
             }
         }
         let seed = ((o.id.wrapping_mul(2_654_435_761) >> 8) % 1000) as f32 / 1000.0;
-        let ext = (body_extent(&shape) * o.radius).max(glam::Vec2::splat(min_half));
+        let ext = (body_extent(&shape) * radius).max(glam::Vec2::splat(min_half));
         let energy = o.energy / o.max_energy().max(1e-6);
         let health = o.hp / o.max_hp().max(1e-6);
         let max_speed = t.max_speed(o.radius).max(t.crawl_coeff * o.radius.sqrt());
@@ -754,7 +796,7 @@ fn update_organisms(
         };
         let walking = o.touching && t.crawl_coeff > 0.0 && !o.anchored;
         let quad = Quad {
-            shape: [ext.x / o.radius, ext.y / o.radius, o.radius / px, seed],
+            shape: [ext.x / radius, ext.y / radius, radius / px, seed],
             tint: linear_tint(t.color),
             body: body_attr(&shape, t.jaws, t.pattern),
             diet: [
@@ -784,11 +826,30 @@ fn update_organisms(
         };
         let owner = PartOwner {
             pos,
-            radius: o.radius,
+            radius,
             heading: o.heading,
             seed,
             quad,
         };
+        if let Some((from, to, width, t)) = neck {
+            // The neck between parent and bud narrows in the middle and pinches off.
+            let along = to - from;
+            let length = along.length().max(1e-3);
+            let half =
+                glam::Vec2::new(length * 0.5 + width, width * 1.1).max(glam::Vec2::splat(px));
+            b.push_oriented(
+                (from + to) * 0.5,
+                half,
+                along / length,
+                Quad {
+                    shape: [half.x / width, width / px, 5.0, t],
+                    tint: quad.tint,
+                    body: [0, 0, 0, 0],
+                    state: [0, 0, FLAG_FX, 255],
+                    ..Default::default()
+                },
+            );
+        }
         if let Some(i) = &instances {
             push_parts(&mut b, i, &owner, false, px);
         }
@@ -801,6 +862,49 @@ fn update_organisms(
     // Effects (bites, gulps, shockwaves) on top.
     for f in &world.fx {
         use evo_core::world::FxKind;
+        // A swallowed prey flashes into a grey corpse and fades away.
+        if let (FxKind::Engulf, Some(body)) = (f.kind, f.body) {
+            let age =
+                (world.tick.saturating_sub(f.tick) as f32 * dt / f.kind.duration()).clamp(0.0, 1.0);
+            let shape = BodyShape::from_genome(&body.genome);
+            if !visible(f.pos, f.radius * shape.half_length * 1.6) {
+                continue;
+            }
+            let ext = (body_extent(&shape) * f.radius).max(glam::Vec2::splat(min_half));
+            let quad = Quad {
+                shape: [ext.x / f.radius, ext.y / f.radius, f.radius / px, body.seed],
+                tint: linear_tint(f.color),
+                body: body_attr(
+                    &shape,
+                    0.0,
+                    body.genome.get(evo_core::genome::gene::PATTERN),
+                ),
+                diet: [0; 4],
+                state: [0, 0, FLAG_DEAD, 255],
+                motion: [unorm(age), unorm(1.0 - age * 3.0), 0, 0],
+                chem: [0; 4],
+            };
+            let owner = PartOwner {
+                pos: f.pos,
+                radius: f.radius,
+                heading: body.heading,
+                seed: body.seed,
+                quad,
+            };
+            let instances = if f.radius >= parts_from {
+                Some(cache.get(&body.genome))
+            } else {
+                None
+            };
+            if let Some(i) = &instances {
+                push_parts(&mut b, i, &owner, false, px);
+            }
+            b.push_oriented(f.pos, ext, glam::Vec2::from_angle(body.heading), quad);
+            if let Some(i) = &instances {
+                push_parts(&mut b, i, &owner, true, px);
+            }
+            continue;
+        }
         let (kind, scale) = match f.kind {
             FxKind::Engulf => (1.0, 2.0),
             FxKind::Bite => (2.0, 2.4),

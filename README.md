@@ -62,7 +62,7 @@ cargo run --release -- --stream
 
 ### Art gallery
 
-`cargo run --release -- --gallery` opens a paused world with rows of organisms, each row sweeping one gene from `00` to `FF`: the size of each of the fifteen body parts, elongation, segments, mouths, and the chemistry genes that show on the body. Use it to check how traits look.
+`cargo run --release -- --gallery` opens a paused world with rows of organisms, each row sweeping one gene from `00` to `FF`: the size of each of the fifteen body parts, elongation, segments, mouths, and the chemistry genes that show on the body. The last four rows freeze the budding (small bud, fission), dying and swallowed animations at nine stages each. Use it to check how things look.
 
 ### Headless
 

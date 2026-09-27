@@ -158,6 +158,16 @@ pub struct Organism {
     #[serde(default)]
     pub hurt_tick: u64,
     pub born: u64,
+    /// Where it budded off its parent: offset from the parent's center at birth (zero for
+    /// founders). Used for the budding animation.
+    #[serde(default)]
+    pub bud_offset: Vec2,
+    /// Tick it last budded off offspring, and how much it shrank doing so (radius before ÷
+    /// after). Used for the budding animation.
+    #[serde(default)]
+    pub budded_tick: u64,
+    #[serde(default)]
+    pub bud_scale: f32,
     pub offspring: u32,
     pub kills: u32,
     /// Last-tick diagnostics (energy/s), for the inspector.
@@ -216,6 +226,9 @@ impl Organism {
             ate_tick: 0,
             hurt_tick: 0,
             born: tick,
+            bud_offset: Vec2::ZERO,
+            budded_tick: 0,
+            bud_scale: 1.0,
             offspring: 0,
             kills: 0,
             gain_rate: 0.0,
@@ -300,6 +313,9 @@ pub struct Carcass {
     pub seed: f32,
     #[serde(default)]
     pub hurt_tick: u64,
+    /// Tick the organism died (for the dying animation).
+    #[serde(default)]
+    pub died_tick: u64,
 }
 
 impl Carcass {

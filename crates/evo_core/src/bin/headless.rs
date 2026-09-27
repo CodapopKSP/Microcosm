@@ -137,6 +137,7 @@ fn main() {
     summary(&world);
     if args.diag {
         mean_genome(&world);
+        ecology(&world);
     }
     println!("\nms per tick by phase:");
     for (name, ms) in world.timings.per_tick_ms() {
@@ -353,4 +354,106 @@ fn mean_genome(world: &World) {
         }
         println!("{line}");
     }
+}
+
+/// Who lives where: per depth band, diets, sizes, movement, senses, chasing and fleeing.
+fn ecology(world: &World) {
+    use evo_core::genome::drive;
+    use evo_core::parts::PartKind;
+    let h = world.config.world.height;
+    let bands: [(&str, f32, f32); 4] = [
+        ("surface <300", 0.0, 300.0),
+        ("sunlit 300-900", 300.0, 900.0),
+        ("twilight 900-2500", 900.0, 2500.0),
+        ("deep >2500", 2500.0, f32::MAX),
+    ];
+    println!("\necology by depth:");
+    println!(
+        "  {:<18} {:>6} {:>18} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+        "band",
+        "pop",
+        "photo/chem/scav/hunt",
+        "meanR",
+        "maxR",
+        "motile",
+        "senses",
+        "chase",
+        "flee",
+        "anchor"
+    );
+    for (name, lo, hi) in bands {
+        let mut n = 0u32;
+        let mut diets = [0u32; 4];
+        let (mut r_sum, mut r_max) = (0.0f32, 0.0f32);
+        let (mut motile, mut senses, mut chase, mut flee, mut anchor) = (0, 0, 0, 0, 0);
+        for o in &world.organisms {
+            let depth = h - o.pos.y;
+            if depth < lo || depth >= hi {
+                continue;
+            }
+            let t = &o.traits;
+            n += 1;
+            diets[t.main_diet()] += 1;
+            r_sum += o.radius;
+            r_max = r_max.max(o.radius);
+            motile += t.is_motile() as u32;
+            senses += (t.sense_radii > 0.0) as u32;
+            chase += (t.is_motile() && t.hunt > 0.2 && t.drives[drive::SMALLER] > 0.15) as u32;
+            flee += (t.is_motile() && t.drives[drive::LARGER] < -0.15) as u32;
+            anchor += o.anchored as u32;
+        }
+        let pct = |x: u32| format!("{:.0}%", x as f32 * 100.0 / n.max(1) as f32);
+        println!(
+            "  {:<18} {:>6} {:>18} {:>6.1} {:>6.1} {:>6} {:>6} {:>6} {:>6} {:>6}",
+            name,
+            n,
+            format!("{}/{}/{}/{}", diets[0], diets[1], diets[2], diets[3]),
+            r_sum / n.max(1) as f32,
+            r_max,
+            pct(motile),
+            pct(senses),
+            pct(chase),
+            pct(flee),
+            pct(anchor)
+        );
+    }
+    // How common each part kind is.
+    let mut has = [0u32; 15];
+    for o in &world.organisms {
+        let mut seen = [false; 15];
+        for p in evo_core::parts::decode_parts(&o.genome) {
+            seen[p.kind as usize - 1] = true;
+        }
+        for (k, s) in seen.iter().enumerate() {
+            has[k] += *s as u32;
+        }
+    }
+    let n = world.organisms.len().max(1) as f32;
+    let list: Vec<String> = PartKind::ALL
+        .iter()
+        .zip(has)
+        .filter(|(_, c)| *c > 0)
+        .map(|(k, c)| format!("{} {:.0}%", k.plural(), c as f32 * 100.0 / n))
+        .collect();
+    println!("  parts carried: {}", list.join(", "));
+    let d = |k: usize| {
+        world
+            .organisms
+            .iter()
+            .map(|o| o.traits.drives[k])
+            .sum::<f32>()
+            / n
+    };
+    println!(
+        "  mean drives: light {:+.2} warmth {:+.2} minerals {:+.2} carrion {:+.2} smaller {:+.2} larger {:+.2} kin {:+.2} rise {:+.2} oxygen {:+.2}",
+        d(0),
+        d(1),
+        d(2),
+        d(3),
+        d(4),
+        d(5),
+        d(6),
+        d(7),
+        d(8)
+    );
 }

@@ -68,6 +68,10 @@ impl Config {
         }
         crate::genome::Genome::parse(&self.population.ancestor)
             .map_err(|e| format!("population.ancestor: {e}"))?;
+        if !self.population.vent_ancestor.trim().is_empty() {
+            crate::genome::Genome::parse(&self.population.vent_ancestor)
+                .map_err(|e| format!("population.vent_ancestor: {e}"))?;
+        }
         Ok(())
     }
 }
@@ -115,6 +119,10 @@ pub struct TerrainConfig {
     pub rocks: u32,
     /// Typical rock outcrop size.
     pub rock_size: f32,
+    /// Number of caves: hollow rock chambers with a narrow entrance, dark inside.
+    pub caves: u32,
+    /// Typical cave size.
+    pub cave_size: f32,
 }
 
 impl Default for TerrainConfig {
@@ -130,6 +138,8 @@ impl Default for TerrainConfig {
             trench_depth: 1100.0,
             rocks: 16,
             rock_size: 260.0,
+            caves: 7,
+            cave_size: 320.0,
         }
     }
 }
@@ -249,9 +259,9 @@ impl Default for MineralsConfig {
     fn default() -> Self {
         Self {
             cell: 32.0,
-            diffusion: 400.0,
+            diffusion: 100.0,
             decay: 0.004,
-            plume_rise: 12.0,
+            plume_rise: 4.0,
             plume_width: 96.0,
         }
     }
@@ -275,8 +285,8 @@ impl Default for DetritusConfig {
     fn default() -> Self {
         Self {
             cell: 32.0,
-            sink_speed: 6.0,
-            decay: 0.002,
+            sink_speed: 3.0,
+            decay: 0.0015,
             to_minerals: 0.5,
             diffusion: 100.0,
         }
@@ -297,17 +307,26 @@ pub struct VentsConfig {
     pub lifetime_max: f32,
     /// Vents only open at least this deep below the surface.
     pub min_depth: f32,
+    /// How many vents are kept shallow (between `min_depth` and `shallow_max_depth`): stepping
+    /// stones between the sunlit water and the deep.
+    pub shallow: u32,
+    pub shallow_max_depth: f32,
+    /// The other vents open at least this deep.
+    pub deep_min_depth: f32,
 }
 
 impl Default for VentsConfig {
     fn default() -> Self {
         Self {
-            count: 4,
-            output: 15.0,
+            count: 5,
+            output: 30.0,
             radius: 48.0,
             lifetime_min: 2.0,
             lifetime_max: 8.0,
-            min_depth: 3000.0,
+            min_depth: 700.0,
+            shallow: 2,
+            shallow_max_depth: 1800.0,
+            deep_min_depth: 3000.0,
         }
     }
 }
@@ -367,7 +386,7 @@ impl Default for GenesConfig {
             tolerance_min: 1.0,
             tolerance_max: 15.0,
             segment_cost: 0.1,
-            generalist_penalty: 0.6,
+            generalist_penalty: 0.4,
         }
     }
 }
@@ -400,6 +419,12 @@ pub struct PartsConfig {
     pub lure_radius: f32,
     /// Distance from rock (beyond the body) that still counts as touching it.
     pub contact_margin: f32,
+    /// Every organism smells others this close (in body radii), even without antennae.
+    pub base_smell: f32,
+    /// Eyes need light: in darkness they see this fraction of their range…
+    pub eye_dark: f32,
+    /// …reaching full range at this light level (fraction of surface noon light).
+    pub eye_light: f32,
 }
 
 impl Default for PartsConfig {
@@ -417,6 +442,9 @@ impl Default for PartsConfig {
             lure_brightness: 0.3,
             lure_radius: 160.0,
             contact_margin: 2.0,
+            base_smell: 6.0,
+            eye_dark: 0.15,
+            eye_light: 0.1,
         }
     }
 }
@@ -455,7 +483,7 @@ impl Default for UpkeepConfig {
             photo: 0.3,
             chemo: 0.3,
             scavenge: 0.3,
-            hunt: 0.4,
+            hunt: 0.3,
             regen: 0.2,
             toughness: 0.3,
             tolerance: 0.4,
@@ -464,7 +492,7 @@ impl Default for UpkeepConfig {
             toxin: 0.3,
             resistance: 0.3,
             segments: 0.05,
-            parts: 1.0,
+            parts: 1.5,
         }
     }
 }
@@ -674,6 +702,10 @@ pub struct FeedingConfig {
     pub engulf_ratio: f32,
     /// Engulf success chance per second of contact at full hunting capability.
     pub engulf_rate: f32,
+    /// Hunters spare look-alikes (kin) unless hungrier than this (0 = fed, 1 = starving).
+    pub kin_hunger: f32,
+    /// Hunting capability below this does nothing (trace genes from drift don't bite).
+    pub min_hunt: f32,
     /// How well food touching the body away from the mouth (and out of tentacle reach) is
     /// eaten, relative to at the mouth.
     pub body_contact: f32,
@@ -697,8 +729,10 @@ impl Default for FeedingConfig {
             filter_rate: 0.05,
             carcass_rate: 0.5,
             assimilation: 0.8,
-            engulf_ratio: 0.5,
+            engulf_ratio: 0.6,
             engulf_rate: 3.0,
+            kin_hunger: 0.5,
+            min_hunt: 0.05,
             body_contact: 0.3,
             bite_rate: 0.3,
             armor_protection: 0.75,
@@ -804,6 +838,11 @@ pub struct MutationConfig {
     pub rate: f32,
     /// Of mutations, the fraction that re-roll the gene to a random value.
     pub reroll: f32,
+    /// Multiplier on the size of a mutation's step (±1, 2, 4 or 8 before scaling).
+    pub step_scale: f32,
+    /// Part-type genes mutate this many times as often as other genes (type shifts and
+    /// symmetry changes are big steps).
+    pub part_type_rate_multiplier: f32,
     /// Color genes mutate this many times as often (a fast "molecular clock", so lineages
     /// visibly diverge in color).
     pub color_rate_multiplier: f32,
@@ -818,12 +857,14 @@ pub struct MutationConfig {
 impl Default for MutationConfig {
     fn default() -> Self {
         Self {
-            rate: 0.01,
+            rate: 0.03,
             reroll: 0.05,
+            step_scale: 2.0,
+            part_type_rate_multiplier: 0.3,
             color_rate_multiplier: 3.0,
-            part_duplicate: 0.004,
-            part_delete: 0.003,
-            part_new: 0.01,
+            part_duplicate: 0.003,
+            part_delete: 0.004,
+            part_new: 0.005,
         }
     }
 }
@@ -848,8 +889,8 @@ pub struct SpeciesConfig {
 impl Default for SpeciesConfig {
     fn default() -> Self {
         Self {
-            threshold: 0.022,
-            genus_threshold: 0.045,
+            threshold: 0.035,
+            genus_threshold: 0.07,
             color_weight: 0.25,
             gene_cap: 0.3,
             established: 20,
@@ -873,6 +914,12 @@ pub struct PopulationConfig {
     pub reseed_count: u32,
     /// Hard safety cap: no births above this population.
     pub max_population: u32,
+    /// A second founding lineage that lives at the vents (empty = none).
+    pub vent_ancestor: String,
+    /// Vent ancestors spawned around each vent at the start.
+    pub vent_initial: u32,
+    /// Vent ancestors that settle at a newly opened vent when no vent life lives nearby.
+    pub vent_seed: u32,
 }
 
 impl Default for PopulationConfig {
@@ -887,6 +934,9 @@ impl Default for PopulationConfig {
             min_population: 100,
             reseed_count: 300,
             max_population: 250_000,
+            vent_ancestor: String::new(),
+            vent_initial: 40,
+            vent_seed: 20,
         }
     }
 }

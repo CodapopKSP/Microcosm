@@ -19,9 +19,10 @@ A **side-on cross-section of an ocean**. `y` grows upward; the water surface is 
 | Sunlit surface | Most light; warm; phototrophs bloom and shade each other |
 | Twilight / open water | Light fades exponentially with depth; hunters and drifters |
 | Deep / seafloor | Dark and cold; detritus ("marine snow") settles into sediment |
-| Vents | Point sources on the seafloor: hot, mineral-rich; chemotroph oases |
+| Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Two are kept shallow (on the shelf and upper slope, in dim light), stepping stones between the sunlit water and the deep vents |
 | Shelf | A shallow region where the seafloor itself is sunlit |
 | Rocks & crevices | Block movement and cast shade; narrow gaps shelter small organisms |
+| Caves | Hollow rock chambers with a narrow entrance, on the shelf and the deep floor. Dark inside; only small bodies fit through the entrance |
 | Currents | Slow gyres everywhere and faster eddies in the upper ~450 units stir plankton through the sunlit water |
 
 ### Environmental fields
@@ -78,7 +79,7 @@ A genome is **60 bytes** in nine lettered chromosomes. **Every byte is one gene*
 | | G5 | Resistance | Ignores up to 90% of toxins | 0.3 f |
 | **H** Health | H0 | Regeneration | 0.2–5% of max HP per second (1.5 energy per HP) | 0.2 f |
 | | H1 | Toughness | Max HP = (0.3 + 1.7 f) × mass | 0.3 f |
-| **N** Nature | N0–N8 | Drives | Signed: `80` = 0, `FF` = +1 (toward), `00` = −1 (away). See §5 | — |
+| **N** Nature | N0–N8 | Drives | Signed: `80` = 0, full strength (±1) from `C0` toward / `40` away. See §6 | — |
 | | N9 | Restlessness | Cruising throttle and random wandering when nothing is sensed | — |
 | **P** Parts | P0–P23 | Eight body parts, 3 bytes each | See §3 | per part |
 | **R** Reproduction | R0 | Offspring size | Newborn mass = 0.5 × 2^(−(255−g)/32) × adult mass (`FF` = 50%, fission-like; `00` ≈ 0.2%) | — |
@@ -99,9 +100,11 @@ With `x_i` the four diet genes as fractions, each diet is weakened by the invest
 c_i = x_i × (1 − 0.6 × Σ_{j≠i} x_j)
 ```
 
-A specialist (one gene only) gets `c = x`. Taking up a second diet is gradual: a small second gene works linearly and costs the main diet a little. But true generalists lose overall: two full diets give 0.4 each (0.8 total). Upkeep is charged on **capability**, not on the raw gene, so a weak unused diet gene is cheap. It drifts as cryptic variation until the environment makes it useful — one of the main routes to **exaptation**.
+With the default penalty of 0.4, a specialist (one gene only) gets `c = x`. Taking up a second diet is gradual: a small second gene works linearly and costs the main diet a little. But true generalists lose overall: two full diets give 0.6 each (1.2 total, where two specialists would have 2). Upkeep is charged on **capability**, not on the raw gene, so a weak unused diet gene is cheap. It drifts as cryptic variation until the environment makes it useful — one of the main routes to **exaptation**.
 
 ### Example: the ancestor
+
+A tiny, floating, green photosynthesizer with no body parts, so it can neither move nor sense anything. Every other ability has to evolve.
 
 A tiny, floating, green photosynthesizer with no body parts, so it can neither move nor sense anything. Every other ability has to evolve.
 
@@ -117,15 +120,17 @@ R: FF 00 B0            fission-like: one half-size offspring when ~75% full
 T: 80 A0               prefers ~20 °C, ±10 °C
 ```
 
+Optionally (`population.vent_ancestor`), a second lineage can start at the vents; by default life has to find its way down on its own, via marine snow, shallow vents and mixed diets.
+
 ### Mutation
 
 Applied independently to each gene of each offspring:
 
-- Probability **1%** per gene (3% for the three color genes, a fast-ticking "molecular clock" so lineages visibly diverge in color). About half of offspring are exact copies.
-- 5% of mutations **re-roll** the gene to a random value. The rest step by ±1 (50%), ±2 (25%), ±4 (12.5%) or ±8 (12.5%).
+- Probability **3%** per gene (9% for the three color genes, a fast-ticking "molecular clock" so lineages visibly diverge in color; 0.9% for part types). About a quarter of offspring are exact copies.
+- 5% of mutations **re-roll** the gene to a random value. The rest step by ±2 (50%), ±4 (25%), ±8 (12.5%) or ±16 (12.5%).
 - Values clamp at `00` and `FF`.
 - A part's **type** byte doesn't step: it shifts to a neighboring kind in the catalog (fin ↔ leg, spine ↔ jaw, eye ↔ antenna, …) or gains or loses symmetry (single → pair → ring).
-- Whole parts: **duplication** (0.4% per offspring: a part is copied into an empty slot, often to a new place), **deletion** (0.3%), and **new parts** (1%: a random kind grows in an empty slot from its leftover bytes).
+- Whole parts: **duplication** (0.3% per offspring: a part is copied into an empty slot, often to a new place), **deletion** (0.4%), and **new parts** (0.5%: a random kind grows in an empty slot from its leftover bytes).
 
 Low mutation rates keep lineages coherent, so species persist and drift is visible. Deleted parts leave their size and placement bytes behind as cryptic variation that a later part can reuse.
 
@@ -147,13 +152,13 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 
 | Kind | Job | Notes |
 |------|-----|-------|
-| Flagellum | Swimming along its axis | Best for small bodies; pushing or pulling |
+| Flagellum | Pushes the body away from the side it's on (a trailing flagellum pushes it forward) | Best for small bodies |
 | Cilia band | A little thrust across its axis, turning, filter feeding | Best for small bodies |
 | Tentacle | Reach: grabs prey and carcasses all around the body, not just at the mouth | Also filters and grips |
 | Frond | Catches light over a wider span, takes up nutrients | Makes large photosynthesizers viable |
 | Fin | Swimming across its axis (fins on the sides row forward) and turning | Best for larger bodies |
 | Tail fluke | Powerful swimming away from where it points | Best for larger bodies; points back to push forward |
-| Leg | Walking on rock and the seafloor across its axis (legs pointing down walk forward); turning while walking; grip against currents | Paddles weakly in open water |
+| Leg | Rowing through open water and walking on rock, both across its axis (legs pointing down move forward), like a copepod's; grip against currents | Walks faster than it rows; turns best while walking |
 | Holdfast | Anchors to rock on contact; draws extra nutrients there | Anchored organisms can't be moved by currents |
 | Stalk | Raises whatever is attached to its tip | Parts on a stalk work 30% better |
 | Eye | Sight in a cone where it faces | Bigger = farther, narrower |
@@ -165,7 +170,7 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 
 **What parts add up to.** At birth the parts are laid out on the body and summed into plain numbers, so the per-tick simulation never looks at parts again:
 
-- **Swimming is directional.** A movement organ doesn't push the body one fixed way; it *enables* movement along certain directions relative to the body. Flagella and tentacles allow movement along their own axis (either way), a tail fluke pushes away from where it points, and fins, cilia and legs row or step across their axis. So flagella trailing behind give a forward-and-back swimmer, a pair pointing up and down gives one that rises and sinks, and fins on the sides row it forward. Each organ's thrust also depends on its size and how well it suits the body's size. Swimming in each of eight body-relative directions = 1 − e^(−thrust / drag); every part adds drag, and long bodies have little drag lengthwise but a lot sideways. Max speed = swimming × 20 × √radius.
+- **Swimming is directional.** A movement organ doesn't push the body one fixed way; it *enables* movement along certain directions relative to the body. A flagellum or tail fluke pushes the body away from the side it's on, tentacles allow a little movement along their own axis (either way), and fins, cilia and legs row or step across their axis. So a flagellum trailing behind drives the body forward, one at the front drives it tail-first, a pair pointing up and down lets it rise and sink, and fins on the sides row it forward. Each organ's thrust also depends on its size and how well it suits the body's size. Swimming in each of eight body-relative directions = 1 − e^(−thrust / drag); every part adds drag, and long bodies have little drag lengthwise but a lot sideways. Max speed = swimming × 20 × √radius.
 - **Moving and facing.** Each tick an organism moves in whichever direction its organs allow that gets it closest to where it wants to go, and turns so that its best direction points there. Forward swimmers face their target; a body that swims best sideways travels sideways.
 - **Turning** needs an organ to turn with: fins, cilia, flagella, flukes and tentacles, or legs while walking on rock. A body without one keeps its orientation forever. Long and segmented bodies turn more slowly.
 - **Walking** speed from legs, **grip** from legs, tentacles and holdfasts, **anchoring** from holdfasts. Only organisms with such parts check whether they touch rock.
@@ -237,9 +242,10 @@ needs     = (basal + movement) × breathing/fermentation cost (§4)
 
 **Hunting.** When a non-kin organism touches the hunter's **mouth** (a circle at the front of its head: most of the front half of a round cell, only the nose of a long body), or anywhere its tentacles reach. Food that only touches the rest of the body is eaten at 30% of the rate, so facing your food pays:
 
-- **Engulf** if the prey's radius is ≤ 50% of the hunter's: the prey dies instantly, with the chance per second reduced by the prey's armor on the side it's attacked from. The hunter's spikes don't matter, but the **prey's** spikes hurt the hunter.
+- **Engulf** if the prey's radius is ≤ 60% of the hunter's: the prey dies instantly, with the chance per second reduced by the prey's armor on the side it's attacked from. The hunter's spikes don't matter, but the **prey's** spikes hurt the hunter.
 - Otherwise **bite**: the hunter tears off `0.3 × c_hunt × (0.2 + 1.8 × jaws) × radius²` of the prey's mass per second, reduced by the prey's armor on the side it's bitten. Bitten prey shrink and lose HP, and must regrow. The prey's spikes on that side reflect damage.
-- The hunter assimilates **80% × c_hunt** of the prey's body energy (1 per unit mass, plus the prey's reserves), proportionally to damage dealt, and all of its nutrients. Anything it can't store becomes detritus (energy) or is excreted (nutrients).
+- Hunting capability below 5% does nothing (trace genes from drift don't bite).
+- The hunter assimilates **80% × (0.4 + 0.6 c_hunt)** of the prey's body energy (1 per unit mass, plus the prey's reserves), proportionally to damage dealt, and all of its nutrients. Anything it can't store becomes detritus (energy) or is excreted (nutrients).
 - Toxic prey poisons the hunter: damage = 0.8 × prey toxin × mass eaten × (1 − resistance).
 
 Energy moves up the food chain with losses, so predators are rarer than prey, and populations can oscillate.
@@ -251,7 +257,14 @@ Energy moves up the food chain with losses, so predators are rarer than prey, an
 
 ### Reproduction
 
-When an organism is **adult** and its reserves are at least the patience threshold (R2), it produces up to `brood` offspring (R1) of the newborn size (R0). Each offspring costs `newborn_mass × 1.25` (more with heavy parts) plus the newborn's starting reserves (50% of its capacity), and the nutrients for its body plus a quarter-full store. It produces as many as it can afford. Offspring appear beside the parent and mutate independently.
+When an organism is **adult** and its reserves are at least the patience threshold (R2), it **buds**: up to `brood` offspring (R1) of the newborn size (R0) grow out of its body and pinch off.
+
+- The child's body comes **out of the parent's**: the parent loses the child's mass (fission-sized offspring leave two halves; a small bud barely changes the parent) and then regrows to adult size, paying the usual building cost (1.25 energy and 1 nutrient per unit of mass) as it grows. So a child's body costs the same as before; it's paid afterwards, as regrowth.
+- Each child gets starting reserves (50% of its capacity) and a quarter-full nutrient store from the parent. Reserves and nutrients the smaller parent can no longer hold go to the children, so nothing is wasted.
+- A parent keeps at least half its adult mass, so it can't split into more than its own body (a fission-sized brood is one child).
+- Offspring appear beside the parent and mutate independently.
+
+The viewer shows the child swelling out of the parent through a neck that pinches off, while the parent shrinks by what it gave.
 
 - **r-strategists**: many tiny offspring, most of which die young.
 - **K-strategists**: few large offspring.
@@ -262,9 +275,9 @@ When an organism is **adult** and its reserves are at least the patience thresho
 |-------|--------|
 | HP reaches 0 (starvation, predation, temperature, spikes, suffocation, poison) | Corpse |
 | Old age (past lifespan: 20% chance per second) | Corpse |
-| Engulfed | No corpse — eaten whole |
+| Engulfed | No lasting corpse — eaten whole (the viewer shows its body flash into a corpse and fade in half a second) |
 
-Every corpse becomes a **carcass**: a grey, torn version of the organism (parts included) that sinks, can be eaten on contact (bites show), and decays into the **detritus field** (marine snow). Small carcasses decompose within about a minute; large ones last much longer, so a whale fall feeds a seafloor community.
+Every corpse becomes a **carcass**: its colours drain away and it becomes a grey, torn version of the organism (parts included) that sinks, can be eaten on contact (bites show), and decays into the **detritus field** (marine snow). Small carcasses decompose within about a minute; large ones last much longer, so a whale fall feeds a seafloor community.
 
 Scavengers live two ways: eating carcasses on contact ("Eating a carcass"), and filtering marine snow from the water and the sediment that piles up on the seafloor ("Eating marine snow").
 
@@ -296,9 +309,9 @@ Motile organisms (anything that can swim or walk) steer by a weighted sum of **d
 
 - Food-related drives (light, minerals, carrion, smaller) are scaled by **hunger**, so fed organisms relax.
 - When nothing is sensed, restlessness (N9) sets a cruising throttle and random turning.
-- **Fields** (light, warmth, minerals, detritus, oxygen) are sensed without organs. **Other organisms and carcasses** are only perceived with eyes (within each eye's view cone) or antennae (all around). They only perceive individuals at least ~1/8 of their own size — a whale doesn't track single bacteria; it swims toward dense food fields instead.
+- **Fields** (light, warmth, minerals, detritus, oxygen) are sensed without organs. **Other organisms and carcasses** are smelled by everyone within 6 body radii; antennae extend smell much farther (all around, in the dark too), and eyes see far within their view cones but **need light**: in darkness they see only 15% as far (full sight from 10% of surface noon light). So the surface favors eyes and the deep favors smell. They only perceive individuals at least ~1/8 of their own size — a whale doesn't track single bacteria; it swims toward dense food fields instead.
 - **Lures** count as light: anything with a positive light drive swims toward them.
-- **Kin** = similar color (hue and saturation). Hunters never attack kin. This makes color matter for predators, so camouflage-by-mimicry is possible.
+- **Kin** = similar color (hue and saturation). Hunters spare kin unless they're hungry (below half-full reserves they turn cannibal). This makes color matter for predators, so camouflage-by-mimicry is possible, while a single-colored early world can still evolve predators.
 
 Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Minerals, +Warmth), hunting (+Smaller), fleeing (−Larger), schooling (+Kin), bottom-dwelling (−Rise).
 
@@ -326,7 +339,7 @@ Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Min
 | **Plague** | ~every 8 h | Strikes the most common species (only if it holds ≥35% of all life); ~70% of its members die over 10 min. Kill-the-winner keeps any one species from taking over |
 | **Rock wall** | ~every 30 h | A wall rises from the seafloor to the surface over about 6 minutes and splits the ocean in two for ~20 h, then sinks. Separated populations drift apart genetically (allopatric speciation), then meet again |
 | **Meteor impact** | ~every 48 h | Kills everything within 700 units, releases minerals, and dims the sun by up to 70% for ~4 days (an impact winter) |
-| **Seed bank** | Always | If population falls below a minimum, the ancestor recolonizes so the world never goes dark |
+| **Seed bank** | Always | If population falls below a minimum, the ancestor recolonizes so the world never goes dark. (With the optional vent ancestor, a new vent with no vent life nearby is settled by 20 of them.) |
 
 ## 9. Future extensions
 
