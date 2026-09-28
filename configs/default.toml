@@ -58,10 +58,12 @@ update_interval = 1.0
 
 [minerals]
 cell = 32.0
-diffusion = 100.0
-decay = 0.004
+diffusion = 250.0
+decay = 0.0025
 plume_rise = 4.0         # minerals rise in vent plumes
-plume_width = 96.0
+plume_width = 160.0
+chimney_rise = 30.0      # much faster up a shaft above a vent (the shelf chimney), to the sunlit water
+chimney_width = 48.0
 
 [detritus]
 cell = 32.0
@@ -74,6 +76,9 @@ diffusion = 100.0
 count = 4                # besides the permanent vents
 output = 30.0            # mineral energy/s at full strength
 radius = 48.0
+halo = 0.35              # share of the output seeping out over a wide area around the vent
+halo_radius = 240.0
+dead_zone = 60.0         # vent water strips the oxygen out to this distance
 lifetime_min = 2.0       # hours
 lifetime_max = 8.0
 min_depth = 700.0        # vents only open at least this deep
@@ -101,7 +106,7 @@ temp_max = 40.0
 tolerance_min = 1.0
 tolerance_max = 15.0
 segment_cost = 0.1          # extra body-building cost per additional segment
-generalist_penalty = 0.4   # each diet loses this x the investment in the others
+generalist_penalty = 0.5   # each diet loses this x the investment in the others
 
 # Body parts (P chromosome). Per-kind numbers live in parts.rs; these are the shared knobs.
 [parts]
@@ -127,7 +132,7 @@ buoyancy = 0.3
 reserves = 0.3
 longevity = 0.4
 photo = 0.3
-chemo = 0.3
+chemo = 0.2
 scavenge = 0.3
 hunt = 0.3
 regen = 0.2
@@ -172,7 +177,7 @@ nutricline_depth = 1200.0
 deep_oxygen = 0.7           # deep water holds this much oxygen relative to the surface
 vent_co2 = 4.0              # per second at full strength
 vent_nutrients = 2.0
-vent_oxygen_sink = 0.05     # vents release oxygen-free water
+vent_oxygen_sink = 0.025    # vents release oxygen-free water
 anoxic_decay = 0.5          # decomposition without oxygen is slower...
 anoxic_minerals = 0.9       # ...and releases more minerals (sulfides)
 decomposition_oxygen = 1.0  # oxygen used by rotting marine snow (x oxygen_per_energy)
@@ -200,21 +205,24 @@ temp_damage = 0.05
 old_age_death_rate = 0.2
 
 [feeding]
-chemo_rate = 2.0
-chemo_yield = 1.0
+chemo_rate = 3.0
+chemo_yield = 2.0
 scavenge_rate = 12.0
 filter_rate = 0.05
 carcass_rate = 0.5
 assimilation = 0.8
-engulf_ratio = 0.6       # prey at most this fraction of the hunter's radius is swallowed whole
+engulf_ratio = 0.65      # prey at most this fraction of the hunter's radius is swallowed whole
+gulps = 4                # small prey at the mouth swallowed in one tick, at most (x hunt^2)
+small_prey_value = 0.6   # tiny prey (<=5% of the hunter's radius) are worth this share, full at 30%
+shell_bulk = 0.4         # a shell makes prey count as up to 40% bigger for swallowing whole
 engulf_rate = 3.0
 kin_hunger = 0.5         # hunters spare look-alikes unless this hungry (0 fed .. 1 starving)
 min_hunt = 0.05          # hunting capability below this does nothing (trace genes don't bite)
-body_contact = 0.3       # eating through the body away from the mouth and jaws works this well
 tentacle_pull = 12.0     # speed tentacles drag what they hold to the mouth (x sqrt(radius))
-jaw_pierce = 0.6         # full jaws bite through this fraction of a shell's protection
+jaw_pierce = 0.5         # full jaws bite through this fraction of a shell's protection
+full = 0.9               # hunters and scavengers ignore food while their energy is above this
 bite_rate = 0.3
-armor_protection = 0.75
+armor_protection = 0.85
 spike_damage = 0.6
 hunger_min = 0.3
 hunger_max = 1.7
@@ -224,7 +232,7 @@ buoyancy_speed = 3.0
 brownian = 8.0
 response = 20.0
 push_stiffness = 0.5
-armor_speed_penalty = 0.3
+armor_speed_penalty = 0.2
 part_density = 1.5       # sinking per unit of part mass
 carcass_sink = 2.0
 carcass_min_radius = 0.0 # every corpse leaves a carcass (small ones decompose within a minute)

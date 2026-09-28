@@ -27,6 +27,10 @@ pub struct Terrain {
     /// Where permanent vents sit (in the shelf's vent chamber, on the cliff, inside the island).
     #[serde(default)]
     pub vent_sites: Vec<Vec2>,
+    /// Vent sites right under a shaft open to the water above: their plume shoots up it (a
+    /// chimney), carrying minerals up into the sunlit water.
+    #[serde(default)]
+    pub chimneys: Vec<Vec2>,
 }
 
 /// A wall rising from the seafloor (from an event).
@@ -369,6 +373,7 @@ impl Terrain {
             p.distance(a + ab * t)
         };
         let mut vent_sites = Vec::new();
+        let mut chimneys = Vec::new();
 
         // The shelf's vent system: a chamber under the shelf with a permanent vent, a small
         // shaft up to the water, and a tunnel out through the cliff. A second vent sits
@@ -394,7 +399,12 @@ impl Terrain {
                 Vec2::new(tunnel_end, chamber.y - ch_h - 60.0),
                 Vec2::new(cx + ch_w + 40.0, top + 80.0),
             );
-            vent_sites.push(Vec2::new(cx - 30.0, chamber.y - ch_h + 14.0));
+            // The vent sits on the chamber floor right under the shaft: a chimney.
+            let shaft_x = cx + 40.0;
+            let floor_y = chamber.y - ch_h * (1.0 - ((shaft_x - cx) / ch_w).powi(2)).sqrt();
+            let vent = Vec2::new(shaft_x, floor_y + 14.0);
+            vent_sites.push(vent);
+            chimneys.push(vent);
             // Down the cliff: the first spot, left of the shelf, that's 600 below the chamber.
             let mut x = cx;
             while x > cell * 4.0 && floor_at(x) > chamber.y - 600.0 {
@@ -468,6 +478,7 @@ impl Terrain {
             height,
             version: 0,
             vent_sites,
+            chimneys,
         };
         terrain.recompute_sdf(0, nx);
         terrain
@@ -690,13 +701,14 @@ mod tests {
         assert!(!t.is_solid(Vec2::new(x, y - c.island_height)));
         // The shelf chamber's shaft opens to the water above.
         let chamber_vent = t.vent_sites[0];
-        let mut p = chamber_vent + Vec2::new(70.0, 100.0);
+        assert_eq!(t.chimneys, vec![chamber_vent], "its plume goes up the shaft");
+        let mut p = chamber_vent + Vec2::new(0.0, 100.0);
         while p.y < config.world.height - 10.0 && !t.is_solid(p) {
             p.y += 8.0;
         }
         assert!(
             p.y >= t.floor_at(p.x),
-            "shaft reaches up to the shelf surface"
+            "shaft right above the vent reaches up to the shelf surface"
         );
     }
 }

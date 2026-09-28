@@ -138,8 +138,8 @@ pub fn build() -> World {
     world
 }
 
-/// Rows below the gene rows showing the budding, dying, swallowing and grasping animations
-/// frozen at nine stages.
+/// Rows below the gene rows showing the budding, dying, swallowing, grasping and bitten
+/// animations frozen at nine stages.
 fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
     use crate::render::{BUD_TIME, DEATH_FADE, GRASP_TIME};
     use evo_core::world::{Fx, FxBody, FxKind};
@@ -218,26 +218,54 @@ fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
             genome: base,
             seed: col as f32 * 0.11,
             hurt_tick: 0,
+            hurt_dir: 0.0,
             died_tick: ago(stage * DEATH_FADE),
         });
     }
 
-    // Swallowed whole: the prey flashes into a corpse and fades away.
+    // Swallowed whole: the prey slides into a hunter's mouth, passes inside and is digested.
     let y = y_of(first_row + 3);
-    for col in 0..COLUMNS {
-        let stage = col as f32 / (COLUMNS - 1) as f32;
+    let mut hunter = base;
+    hunter.0[gene::SIZE] = 0x58;
+    hunter.0[gene::PHOTO] = 0x20;
+    hunter.0[gene::HUNT] = 0xC0;
+    hunter.0[gene::HUE] = 0xE0;
+    let hunter_traits = evo_core::Traits::decode(&hunter, &config);
+    // Seconds since the swallow: the quick slide and entry first, then digestion.
+    let times = [0.0, 0.08, 0.16, 0.25, 0.35, 0.5, 1.2, 2.0, 2.7];
+    for (col, &secs) in times.iter().enumerate().take(COLUMNS) {
+        let mut o = Organism::new(
+            *id,
+            0,
+            0,
+            0,
+            hunter,
+            0,
+            &config,
+            glam::Vec2::new(LEFT + col as f32 * SPACING - 4.0, y),
+            hunter_traits.adult_mass,
+            hunter_traits.adult_mass,
+            Rng::new(*id),
+            0,
+        );
+        o.heading = 0.0;
+        o.steer_heading = 0.0;
+        let prey_at = o.pos + glam::Vec2::new(o.radius + traits.adult_radius + 1.0, 0.0);
         world.fx.push(Fx {
             kind: FxKind::Engulf,
-            pos: glam::Vec2::new(LEFT + col as f32 * SPACING, y),
+            pos: prey_at,
             radius: traits.adult_radius,
             color: traits.color,
-            tick: ago(stage * FxKind::Engulf.duration() * 0.999),
+            tick: ago(secs),
             body: Some(FxBody {
                 genome: base,
                 heading: 0.0,
                 seed: col as f32 * 0.13,
+                hunter: Some(o.id),
             }),
         });
+        world.organisms.push(o);
+        *id += 1;
     }
 
     // Grasping: a tentacle closing on prey behind (first columns), then holding prey around the
@@ -309,11 +337,59 @@ fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
         }
         world.organisms.push(o);
     }
+
+    // Bitten: live organisms (left) and carcasses being eaten (right), from the moment of the
+    // bite until the effect is gone.
+    let y = y_of(first_row + 5);
+    let traits = evo_core::Traits::decode(&base, &config);
+    for col in 0..COLUMNS {
+        let stage = col as f32 / (COLUMNS - 1) as f32;
+        let pos = glam::Vec2::new(LEFT + col as f32 * SPACING, y);
+        if col % 2 == 0 {
+            let mut o = Organism::new(
+                *id,
+                0,
+                0,
+                0,
+                base,
+                0,
+                &config,
+                pos,
+                traits.adult_mass,
+                traits.adult_mass,
+                Rng::new(*id),
+                0,
+            );
+            o.heading = 0.0;
+            o.hurt_tick = ago(stage * 0.5).max(1);
+            o.hurt_dir = 0.6;
+            world.organisms.push(o);
+            *id += 1;
+        } else {
+            let value = traits.adult_mass * 2.0;
+            world.carcasses.push(evo_core::organism::Carcass {
+                pos,
+                vel: glam::Vec2::ZERO,
+                energy: value * 0.7,
+                radius: traits.adult_radius,
+                color: traits.color,
+                species: 0,
+                initial_energy: value,
+                nutrients: 0.0,
+                heading: 0.0,
+                genome: base,
+                seed: col as f32 * 0.11,
+                hurt_tick: ago(stage * 0.5).max(1),
+                hurt_dir: 0.6,
+                died_tick: ago(5.0),
+            });
+        }
+    }
 }
 
 /// The gallery's view centre depends on the world height, so compute it at runtime.
 pub fn view_for(config: &Config) -> (f32, f32, f32) {
-    let rows = rows().len() as f32 + 5.0;
+    let rows = rows().len() as f32 + 6.0;
     (
         VIEW.0,
         config.world.height - TOP - (rows - 1.0) * SPACING * 0.5,

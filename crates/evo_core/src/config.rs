@@ -269,16 +269,23 @@ pub struct MineralsConfig {
     pub plume_rise: f32,
     /// Half-width of a vent plume.
     pub plume_width: f32,
+    /// Upward drift above a vent under a shaft open to the water (a chimney), units/s: its
+    /// minerals shoot up the shaft and on to the sunlit water.
+    pub chimney_rise: f32,
+    /// Width of that fast-rising column.
+    pub chimney_width: f32,
 }
 
 impl Default for MineralsConfig {
     fn default() -> Self {
         Self {
             cell: 32.0,
-            diffusion: 100.0,
-            decay: 0.004,
+            diffusion: 250.0,
+            decay: 0.0025,
             plume_rise: 4.0,
-            plume_width: 96.0,
+            plume_width: 160.0,
+            chimney_rise: 30.0,
+            chimney_width: 48.0,
         }
     }
 }
@@ -318,6 +325,12 @@ pub struct VentsConfig {
     pub output: f32,
     /// Radius over which a vent releases minerals.
     pub radius: f32,
+    /// Share of the output that seeps out over `halo_radius` around the vent instead, so
+    /// dilute minerals reach oxygenated water nearby.
+    pub halo: f32,
+    pub halo_radius: f32,
+    /// Vent water strips the oxygen from the water out to this distance.
+    pub dead_zone: f32,
     /// Vent lifetime range in sim hours.
     pub lifetime_min: f32,
     pub lifetime_max: f32,
@@ -337,6 +350,9 @@ impl Default for VentsConfig {
             count: 4,
             output: 30.0,
             radius: 48.0,
+            halo: 0.35,
+            halo_radius: 240.0,
+            dead_zone: 60.0,
             lifetime_min: 2.0,
             lifetime_max: 8.0,
             min_depth: 700.0,
@@ -402,7 +418,7 @@ impl Default for GenesConfig {
             tolerance_min: 1.0,
             tolerance_max: 15.0,
             segment_cost: 0.1,
-            generalist_penalty: 0.4,
+            generalist_penalty: 0.5,
         }
     }
 }
@@ -497,7 +513,7 @@ impl Default for UpkeepConfig {
             reserves: 0.3,
             longevity: 0.4,
             photo: 0.3,
-            chemo: 0.3,
+            chemo: 0.2,
             scavenge: 0.3,
             hunt: 0.3,
             regen: 0.2,
@@ -618,7 +634,7 @@ impl Default for ChemistryConfig {
             deep_oxygen: 0.7,
             vent_co2: 4.0,
             vent_nutrients: 2.0,
-            vent_oxygen_sink: 0.05,
+            vent_oxygen_sink: 0.025,
             anoxic_decay: 0.5,
             anoxic_minerals: 0.9,
             decomposition_oxygen: 1.0,
@@ -716,20 +732,28 @@ pub struct FeedingConfig {
     pub assimilation: f32,
     /// Prey radius ≤ this × hunter radius can be engulfed whole.
     pub engulf_ratio: f32,
-    /// Engulf success chance per second of contact at full hunting capability.
+    /// Engulf rate (per second of contact at the mouth, at full hunting capability) for prey at
+    /// the size limit; smaller prey go down faster, by (limit / size ratio)².
     pub engulf_rate: f32,
+    /// Most small prey swallowed at the mouth in one tick (× hunting capability²).
+    pub gulps: u32,
+    /// Share of their energy that tiny prey (5% of the hunter's radius or less) are worth to it,
+    /// rising to full value at 30%.
+    pub small_prey_value: f32,
+    /// A shell makes prey harder to swallow whole: on its armored side it counts as up to this
+    /// much bigger.
+    pub shell_bulk: f32,
     /// Hunters spare look-alikes (kin) unless hungrier than this (0 = fed, 1 = starving).
     pub kin_hunger: f32,
     /// Hunting capability below this does nothing (trace genes from drift don't bite).
     pub min_hunt: f32,
-    /// How well food touching the body away from the mouth and jaws is eaten, relative to at
-    /// the mouth.
-    pub body_contact: f32,
     /// Speed at which full-strength tentacles drag what they hold toward the mouth
     /// (× √hunter radius), shared between the two bodies by mass.
     pub tentacle_pull: f32,
     /// Fraction of a shell's protection that full-strength jaws bite through.
     pub jaw_pierce: f32,
+    /// Hunters and scavengers ignore food while their energy is above this fraction of full.
+    pub full: f32,
     /// Bite: mass removed per second per hunter radius² at full capability and jaws.
     pub bite_rate: f32,
     /// Damage reduction at full armor.
@@ -744,21 +768,24 @@ pub struct FeedingConfig {
 impl Default for FeedingConfig {
     fn default() -> Self {
         Self {
-            chemo_rate: 2.0,
-            chemo_yield: 1.0,
+            chemo_rate: 3.0,
+            chemo_yield: 2.0,
             scavenge_rate: 12.0,
             filter_rate: 0.05,
             carcass_rate: 0.5,
             assimilation: 0.8,
-            engulf_ratio: 0.6,
+            engulf_ratio: 0.65,
             engulf_rate: 3.0,
+            gulps: 4,
+            small_prey_value: 0.6,
+            shell_bulk: 0.4,
             kin_hunger: 0.5,
             min_hunt: 0.05,
-            body_contact: 0.3,
             tentacle_pull: 12.0,
-            jaw_pierce: 0.6,
+            jaw_pierce: 0.5,
+            full: 0.9,
             bite_rate: 0.3,
-            armor_protection: 0.75,
+            armor_protection: 0.85,
             spike_damage: 0.6,
             hunger_min: 0.3,
             hunger_max: 1.7,
@@ -796,7 +823,7 @@ impl Default for PhysicsConfig {
             brownian: 8.0,
             response: 20.0,
             push_stiffness: 0.5,
-            armor_speed_penalty: 0.3,
+            armor_speed_penalty: 0.2,
             part_density: 1.5,
             carcass_sink: 2.0,
             carcass_min_radius: 0.0,

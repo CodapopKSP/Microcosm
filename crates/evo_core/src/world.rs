@@ -35,6 +35,8 @@ const PERCEPTION_LIMIT: u32 = 96;
 const NONE: u32 = u32::MAX;
 /// Marks a tentacle's target as a carcass (else an organism).
 const CARCASS: u32 = 1 << 31;
+/// Most small prey swallowed at once (see `feeding.gulps`).
+const MAX_GULPS: usize = 8;
 /// Ticks between steering decisions of motile organisms.
 const STEER_INTERVAL: u64 = 2;
 /// Drives weaker than this are ignored (skips sensing work for genes that drifted near neutral).
@@ -52,13 +54,16 @@ struct Intent {
     carcass: u32,
     /// What each tentacle grabs (organism index, or carcass index | CARCASS; NONE = nothing).
     grabs: [u32; MAX_GRASPS],
+    /// Small prey at the mouth to swallow along with `attack`.
+    gulps: [u32; MAX_GULPS],
     activity: Activity,
 }
 
 /// Short-lived visual effects for the viewer (not saved).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FxKind {
-    /// Prey swallowed whole: its body flashes into a corpse and fades.
+    /// Prey swallowed whole: the viewer shows it slide into the hunter's mouth and be
+    /// digested inside (purely visual; the prey is already dead).
     Engulf,
     /// A hunter took a bite.
     Bite,
@@ -85,13 +90,15 @@ pub struct FxBody {
     pub genome: Genome,
     pub heading: f32,
     pub seed: f32,
+    /// The organism that swallowed it (so the viewer can follow it), if any.
+    pub hunter: Option<u64>,
 }
 
 impl FxKind {
     /// How long the effect lasts, in sim seconds.
     pub fn duration(self) -> f32 {
         match self {
-            FxKind::Engulf => 0.5,
+            FxKind::Engulf => 3.0,
             FxKind::Bite => 0.6,
             FxKind::Scavenge => 0.7,
             FxKind::Impact => 6.0,
@@ -238,9 +245,9 @@ fn pair_mut<T>(v: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     }
 }
 
-/// Where an organism can eat: fully at its mouth (the front of its head) and at jaws away from
-/// it, and poorly through the rest of its body surface. Tentacles don't eat; they grasp food
-/// within reach of their bases and pull it to the mouth.
+/// Where an organism can eat: at its mouth (the front of its head) and at jaws away from it,
+/// never through the rest of its body. Tentacles don't eat; they grasp food within reach of
+/// their bases and pull it to the mouth.
 #[derive(Clone, Copy)]
 struct Reach {
     center: Vec2,
@@ -255,26 +262,22 @@ struct Reach {
     /// Tentacle grasps: world center (the tentacle's base), radius and pull strength.
     grasps: [(Vec2, f32, f32); MAX_GRASPS],
     grasp_count: usize,
-    /// How well it eats through its body surface, away from the mouth (0..1).
-    body: f32,
     extent: f32,
 }
 
 /// What a body in contact with an organism can be to it.
 #[derive(Clone, Copy, Default)]
 struct Contact {
-    /// How well it can be eaten there: 1 at the mouth or a jaw, `body` elsewhere on the body.
+    /// How well it can be eaten there: 1 at the mouth or a jaw, 0 elsewhere.
     eat: f32,
-    /// How well it can be swallowed whole: only at the mouth (or poorly, through the body).
-    engulf: f32,
     /// Strength of the jaws biting it.
     jaws: f32,
-    /// At the mouth.
+    /// At the mouth (the only place prey is swallowed whole).
     mouth: bool,
 }
 
 impl Reach {
-    fn new(pos: Vec2, heading: f32, radius: f32, t: &Traits, body: f32) -> Reach {
+    fn new(pos: Vec2, heading: f32, radius: f32, t: &Traits) -> Reach {
         let rot = Vec2::from_angle(heading);
         let place = |x: f32, y: f32| pos + rot.rotate(Vec2::new(x, y)) * radius;
         let mouth = place(t.mouth_offset, 0.0);
@@ -302,7 +305,6 @@ impl Reach {
             bite_count,
             grasps,
             grasp_count,
-            body,
             extent,
         }
     }
@@ -327,7 +329,6 @@ impl Reach {
         if within(self.mouth, self.mouth_radius) {
             return Contact {
                 eat: 1.0,
-                engulf: 1.0,
                 jaws: self.jaws,
                 mouth: true,
             };
@@ -341,12 +342,6 @@ impl Reach {
             Contact {
                 eat: 1.0,
                 jaws,
-                ..Default::default()
-            }
-        } else if within(self.center, self.radius) {
-            Contact {
-                eat: self.body,
-                engulf: self.body,
                 ..Default::default()
             }
         } else {
@@ -434,6 +429,7 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
         attack: NONE,
         carcass: NONE,
         grabs: [NONE; MAX_GRASPS],
+        gulps: [NONE; MAX_GULPS],
         activity: Activity::Drifting,
     };
     let kin_threshold = cfg.species.kin_threshold;
@@ -446,9 +442,16 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     // Contacts: soft collision push, and a prey candidate at the mouth or within tentacle reach.
     let mass = r * r;
     let hunts = t.hunt > 0.0;
-    let reach = Reach::new(pos, o.heading, r, t, cfg.feeding.body_contact);
-    // Eat the smallest prey in contact; each tentacle grabs one thing within its reach.
+    let reach = Reach::new(pos, o.heading, r, t);
+    // A well-fed organism leaves food alone.
+    let full = o.energy >= cfg.feeding.full * o.max_energy();
+    let hunts = hunts && !full;
+    // Eat the smallest prey in contact, swallowing other small prey at the mouth along with it;
+    // each tentacle grabs one thing within its reach.
     let mut prey: Option<(u32, f32)> = None;
+    // Swallowing several at once takes real hunting skill.
+    let max_gulps = ((cfg.feeding.gulps as f32 * t.hunt * t.hunt) as usize).min(MAX_GULPS);
+    let mut gulp_count = 0;
     let mut free: u8 = ((1u16 << reach.grasp_count) - 1) as u8;
     let mut push = Vec2::ZERO;
     ctx.grid.query(pos, reach.extent().max(r), 0.0, |e| {
@@ -470,9 +473,13 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             push -= dir * (min - dist) * (other_mass / (mass + other_mass));
         }
         if hunts && !spares(e) {
-            if reach.contact(e.pos, e.radius).eat > 0.0 && prey.is_none_or(|(_, pr)| e.radius < pr)
-            {
+            let c = reach.contact(e.pos, e.radius);
+            if c.eat > 0.0 && prey.is_none_or(|(_, pr)| e.radius < pr) {
                 prey = Some((e.index, e.radius));
+            }
+            if c.mouth && e.radius <= cfg.feeding.engulf_ratio * r && gulp_count < max_gulps {
+                intent.gulps[gulp_count] = e.index;
+                gulp_count += 1;
             }
             if let Some(k) = reach.grab(&mut free, e.pos, e.radius) {
                 intent.grabs[k] = e.index;
@@ -486,7 +493,7 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     }
 
     // Carcass contact (at the mouth or jaws), and free tentacles grab carcasses too.
-    let eats_carcasses = t.scavenge > 0.0 || t.hunt > 0.0;
+    let eats_carcasses = (t.scavenge > 0.0 || t.hunt > 0.0) && !full;
     if eats_carcasses && !ctx.carcass_grid.is_empty() {
         ctx.carcass_grid.query(pos, reach.extent(), 0.0, |e| {
             if intent.carcass == NONE && reach.contact(e.pos, e.radius).eat > 0.0 {
@@ -623,10 +630,16 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             });
         }
     }
-    let hunting = d[drive::SMALLER] * food * hunting;
+    // Full: no chasing prey or carrion.
+    let food_drive = if o.energy >= cfg.feeding.full * o.max_energy() {
+        0.0
+    } else {
+        food
+    };
+    let hunting = d[drive::SMALLER] * food_drive * hunting;
     let fleeing = d[drive::LARGER] * saturate(fleeing);
     let schooling = d[drive::KIN] * saturate(schooling);
-    let carrion = d[drive::CARRION] * food * saturate(carrion);
+    let carrion = d[drive::CARRION] * food_drive * saturate(carrion);
     steer += hunting + fleeing + schooling + carrion;
 
     let magnitude = steer.length();
@@ -1614,7 +1627,7 @@ impl World {
                 resistance: o.traits.resistance,
             };
             let r = o.radius;
-            let reach = Reach::new(o.pos, o.heading, r, &o.traits, fc.body_contact);
+            let reach = Reach::new(o.pos, o.heading, r, &o.traits);
             let mut gained = 0.0;
             let mut absorbed = 0.0;
             let mut grazed = 0.0;
@@ -1691,14 +1704,26 @@ impl World {
                 }
                 o.ate_tick = tick;
                 c.hurt_tick = tick;
+                c.hurt_dir = (o.pos - c.pos).to_angle();
             }
             o.energy += gained;
             o.gain_rate += gained / dt;
 
-            // Hunting.
-            let j = intent.attack as usize;
-            if intent.attack != NONE && j < self.organisms.len() && j != i {
+            // Hunting: the prey in contact, plus small prey swallowed along with it, until full.
+            let targets = std::iter::once(&intent.attack).chain(&intent.gulps);
+            for (n, &target) in targets.enumerate() {
+                let j = target as usize;
+                if target == NONE
+                    || j >= self.organisms.len()
+                    || j == i
+                    || (n > 0 && target == intent.attack)
+                {
+                    continue;
+                }
                 let (hunter, prey) = pair_mut(&mut self.organisms, i, j);
+                if hunter.dead.is_some() || hunter.energy >= fc.full * hunter.max_energy() {
+                    break;
+                }
                 let contact = reach.contact(prey.pos, prey.radius);
                 if prey.dead.is_none() && contact.eat > 0.0 {
                     // Plates and spines only guard the side the attack comes from; jaws bite
@@ -1711,11 +1736,29 @@ impl World {
                         1.0 - fc.armor_protection * armor * (1.0 - fc.jaw_pierce * contact.jaws);
                     let mut taken_mass = 0.0;
                     let mut taken_energy = 0.0;
-                    if prey.radius <= fc.engulf_ratio * hunter.radius && contact.engulf > 0.0 {
-                        let p = fc.engulf_rate * t.hunt * protection * contact.engulf * dt;
-                        if hunter.rng.chance(p) {
+                    // Tiny prey are worth less to a big hunter (it can't digest crumbs well).
+                    let size = (prey.radius / hunter.radius).max(1e-3);
+                    let worth = fc.small_prey_value
+                        + (1.0 - fc.small_prey_value) * ((size - 0.05) / 0.25).clamp(0.0, 1.0);
+                    // A shell makes prey harder to swallow whole: it counts as bigger.
+                    let bulk = size * (1.0 + fc.shell_bulk * armor);
+                    if n > 0 && (bulk > fc.engulf_ratio || !contact.mouth) {
+                        // Extra gulps only swallow; they never bite.
+                        continue;
+                    }
+                    if bulk <= fc.engulf_ratio && contact.mouth {
+                        // The smaller the prey is next to the mouth, the quicker a skilled
+                        // hunter gets it down (growing with the log of the size difference).
+                        let ease = 1.0 + 2.0 * t.hunt * (fc.engulf_ratio / bulk).ln();
+                        let rate = fc.engulf_rate * t.hunt * protection * ease;
+                        if hunter.rng.chance(1.0 - (-rate * dt).exp()) {
                             taken_mass = prey.mass;
-                            taken_energy = prey.body_value(config);
+                            taken_energy = prey.body_value(config) * worth;
+                            // What it can't use is lost to the water as detritus.
+                            detritus.add(
+                                prey.pos,
+                                prey.body_value(config) * (1.0 - worth) / d_area,
+                            );
                             hunter.nutrients += prey.body_nutrients(config);
                             prey.nutrients = 0.0;
                             prey.dead = Some(DeathCause::Eaten);
@@ -1732,6 +1775,7 @@ impl World {
                                         seed: ((prey.id.wrapping_mul(2_654_435_761) >> 8) % 1000)
                                             as f32
                                             / 1000.0,
+                                        hunter: Some(hunter.id),
                                     }),
                                 });
                             }
@@ -1768,6 +1812,7 @@ impl World {
                                 });
                             }
                             prey.hurt_tick = tick;
+                            prey.hurt_dir = (hunter.pos - prey.pos).to_angle();
                             if prey.hp <= 0.0 || prey.mass < min_mass {
                                 prey.dead = Some(DeathCause::Predation);
                             }
@@ -2087,6 +2132,7 @@ impl World {
                     genome: o.genome,
                     seed: ((o.id.wrapping_mul(2_654_435_761) >> 8) % 1000) as f32 / 1000.0,
                     hurt_tick: 0,
+                    hurt_dir: 0.0,
                     died_tick: tick,
                 });
             } else {
@@ -2740,34 +2786,135 @@ mod tests {
         assert_ne!(run(16), Activity::Hunting, "an eye facing away doesn't");
     }
 
+    /// A sessile, fully hunting organism facing right (+x), and its index.
+    fn add_hunter(world: &mut World, size: u8, pos: Vec2) -> usize {
+        let mut g = world.ancestor;
+        g.0[gene::SIZE] = size;
+        g.0[gene::PHOTO] = 0x00;
+        g.0[gene::HUNT] = 0xFF;
+        let hunter = add(world, g, pos);
+        world.organisms[hunter].heading = 0.0;
+        hunter
+    }
+
     #[test]
-    fn mouths_eat_in_front_and_the_body_eats_poorly() {
-        // A sessile hunter facing right biting large prey in front of it or against its back.
+    fn only_the_mouth_eats() {
+        // Large prey in front of the hunter or against its back.
         let bite = |behind: bool| {
             let mut world = empty_world();
             let h = world.config.world.height;
-            let mut g = world.ancestor;
-            g.0[gene::SIZE] = 0x60;
-            g.0[gene::PHOTO] = 0x00;
-            g.0[gene::HUNT] = 0xFF;
             let pos = Vec2::new(2000.0, h - 300.0);
-            let hunter = add(&mut world, g, pos);
-            world.organisms[hunter].heading = 0.0;
+            add_hunter(&mut world, 0x60, pos);
             let mut prey = world.ancestor;
             prey.0[gene::SIZE] = 0x58;
             prey.0[gene::HUE] = 0xD0;
             let side = if behind { -1.0 } else { 1.0 };
             let p = add(&mut world, prey, pos + Vec2::new(side * 12.0, 0.0));
-            let m0 = world.organisms[p].mass;
+            let (id, m0) = (world.organisms[p].id, world.organisms[p].mass);
+            for o in &mut world.organisms {
+                o.repro_cooldown = 1e9;
+            }
             world.step();
-            m0 - world.organisms[p].mass
+            world.find(id).map(|o| m0 - o.mass).unwrap_or(m0)
         };
         let (front, back) = (bite(false), bite(true));
-        assert!(front > 0.0 && back > 0.0, "front {front} back {back}");
-        assert!(
-            back < front * 0.5,
-            "the body eats poorly: front {front} back {back}"
-        );
+        assert!(front > 0.0, "front {front}");
+        assert_eq!(back, 0.0, "the body doesn't eat");
+    }
+
+    #[test]
+    fn full_hunters_leave_prey_alone() {
+        let eaten = |energy: f32| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let pos = Vec2::new(2000.0, h - 300.0);
+            let hunter = add_hunter(&mut world, 0x60, pos);
+            let o = &mut world.organisms[hunter];
+            o.energy = energy * o.max_energy();
+            let mut prey = world.ancestor;
+            prey.0[gene::SIZE] = 0x58;
+            prey.0[gene::HUE] = 0xD0;
+            let p = add(&mut world, prey, pos + Vec2::new(12.0, 0.0));
+            let (id, m0) = (world.organisms[p].id, world.organisms[p].mass);
+            for o in &mut world.organisms {
+                o.repro_cooldown = 1e9;
+            }
+            world.step();
+            world.find(id).map(|o| m0 - o.mass).unwrap_or(m0)
+        };
+        assert!(eaten(0.5) > 0.0);
+        assert_eq!(eaten(0.95), 0.0, "full");
+    }
+
+    #[test]
+    fn shells_make_prey_too_bulky_to_swallow() {
+        // Prey at 55% of the hunter's radius: swallowed whole bare, only bitten in a shell.
+        let outcome = |shelled: bool| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let pos = Vec2::new(2000.0, h - 300.0);
+            let hunter = add_hunter(&mut world, 0x80, pos);
+            let r = world.organisms[hunter].radius;
+            let mut prey = world.ancestor;
+            prey.0[gene::HUE] = 0xD0;
+            prey.0[gene::SIZE] = 0x80 - 28; // radius × 2^(-28/32) ≈ 0.55
+            if shelled {
+                prey = with_part(prey, 0, PartKind::Shell, 5, 0xFF, 0);
+            }
+            let pr = crate::traits::Traits::decode(&prey, &world.config).adult_radius;
+            let p = add(&mut world, prey, pos + Vec2::new(r + pr * 0.8, 0.0));
+            let (id, m0) = (world.organisms[p].id, world.organisms[p].mass);
+            for o in &mut world.organisms {
+                o.repro_cooldown = 1e9;
+            }
+            for _ in 0..30 {
+                world.step();
+            }
+            world.find(id).map(|o| o.mass < m0)
+        };
+        assert_eq!(outcome(false), None, "bare prey is swallowed whole");
+        assert_eq!(outcome(true), Some(true), "shelled prey survives, bitten");
+    }
+
+    #[test]
+    fn skilled_hunters_gulp_several_small_prey_weak_ones_one_at_a_time() {
+        // Three small prey at a big hunter's mouth: (eaten in the first tick, eaten in 0.5 s).
+        let gulp = |hunt: u8| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let pos = Vec2::new(2000.0, h - 300.0);
+            let hunter = add_hunter(&mut world, 0xA0, pos);
+            let o = &mut world.organisms[hunter];
+            o.genome.0[gene::HUNT] = hunt;
+            o.traits = crate::traits::Traits::decode(&o.genome, &world.config);
+            o.energy = 0.1 * o.max_energy();
+            let (r, offset) = (o.radius, o.traits.mouth_offset);
+            let mut prey = world.ancestor;
+            prey.0[gene::HUE] = 0xD0;
+            let ids: Vec<u64> = (0..3)
+                .map(|k| {
+                    let at = pos + Vec2::new(offset * r, (k as f32 - 1.0) * 0.2 * r);
+                    let p = add(&mut world, prey, at);
+                    world.organisms[p].id
+                })
+                .collect();
+            for o in &mut world.organisms {
+                o.repro_cooldown = 1e9;
+            }
+            let eaten = |w: &World| ids.iter().filter(|&&id| w.find(id).is_none()).count();
+            let mut first = 0;
+            for k in 0..15 {
+                world.step();
+                if k == 0 {
+                    first = eaten(&world);
+                }
+            }
+            (first, eaten(&world))
+        };
+        let (_, skilled) = gulp(0xFF);
+        assert_eq!(skilled, 3, "a skilled hunter clears them quickly");
+        let (weak_first, _) = gulp(0x50);
+        assert!(weak_first <= 1, "a weak hunter swallows one at a time: {weak_first}");
     }
 
     #[test]
@@ -2785,7 +2932,7 @@ mod tests {
             t.grasps[0]
         );
         let r = t.adult_radius;
-        let reach = Reach::new(Vec2::ZERO, 0.0, r, &t, 0.3);
+        let reach = Reach::new(Vec2::ZERO, 0.0, r, &t);
         let out = r * (1.0 + t.grasps[0].radius * 0.8);
         let (left, right) = (Vec2::new(0.0, out), Vec2::new(0.0, -out));
         assert_eq!(reach.grasping(left, 1.0), 1, "grabbed on its side");
@@ -2890,9 +3037,9 @@ mod tests {
         let back = decode(&with_part(base, 0, PartKind::Jaw, 0, 0xC0, 16));
         assert!(back.jaws == 0.0 && back.bite_count == 1);
         let r = back.adult_radius;
-        let reach = Reach::new(Vec2::ZERO, 0.0, r, &back, 0.3);
+        let reach = Reach::new(Vec2::ZERO, 0.0, r, &back);
         let behind = reach.contact(Vec2::new(-1.6 * r, 0.0), 0.5 * r);
-        assert!(behind.eat == 1.0 && behind.jaws > 0.5 && behind.engulf == 0.0);
+        assert!(behind.eat == 1.0 && behind.jaws > 0.5 && !behind.mouth);
 
         // Jawed mouths bite through part of a shell.
         let bite = |pierce: f32| {

@@ -38,6 +38,9 @@ pub const ATTRIBUTE_MOTION: MeshVertexAttribute =
 /// oxygenic share, toxin, nitrogen fixation, lure
 pub const ATTRIBUTE_CHEM: MeshVertexAttribute =
     MeshVertexAttribute::new("Organism_Chem", 0x5EED_0007, VertexFormat::Unorm8x4);
+/// direction the last bite came from (body-relative angle / 2π), unused ×3
+pub const ATTRIBUTE_WOUND: MeshVertexAttribute =
+    MeshVertexAttribute::new("Organism_Wound", 0x5EED_0008, VertexFormat::Unorm8x4);
 
 /// Flags packed into the state attribute's blue channel.
 const FLAG_SELECTED: u8 = 1;
@@ -86,6 +89,7 @@ impl Material2d for OrganismMaterial {
             ATTRIBUTE_STATE.at_shader_location(6),
             ATTRIBUTE_MOTION.at_shader_location(7),
             ATTRIBUTE_CHEM.at_shader_location(8),
+            ATTRIBUTE_WOUND.at_shader_location(9),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         Ok(())
@@ -448,6 +452,12 @@ fn linear_tint(rgb: [f32; 3]) -> [u8; 4] {
     [idx(rgb[0]), idx(rgb[1]), idx(rgb[2]), 255]
 }
 
+/// The wound attribute: where a bite came from, relative to the body's heading.
+fn wound(hurt_dir: f32, heading: f32) -> [u8; 4] {
+    let turn = (hurt_dir - heading).rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
+    [unorm(turn), 0, 0, 0]
+}
+
 fn unorm(x: f32) -> u8 {
     (x.clamp(0.0, 1.0) * 255.0).round() as u8
 }
@@ -462,6 +472,7 @@ struct Quad {
     state: [u8; 4],
     motion: [u8; 4],
     chem: [u8; 4],
+    wound: [u8; 4],
 }
 
 #[derive(Default)]
@@ -475,6 +486,7 @@ struct QuadBuffers {
     state: Vec<[u8; 4]>,
     motion: Vec<[u8; 4]>,
     chem: Vec<[u8; 4]>,
+    wound: Vec<[u8; 4]>,
 }
 
 impl QuadBuffers {
@@ -497,6 +509,7 @@ impl QuadBuffers {
             self.state.push(q.state);
             self.motion.push(q.motion);
             self.chem.push(q.chem);
+            self.wound.push(q.wound);
         }
     }
 }
@@ -573,6 +586,93 @@ struct PartOwner {
 /// Angle wrapped to (−π, π].
 fn wrap_angle(a: f32) -> f32 {
     (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+/// Seconds a swallowed prey takes to slide into the mouth, and to pass inside.
+const SWALLOW_SLIDE: f32 = 0.25;
+const SWALLOW_ENTER: f32 = 0.5;
+
+/// Where and how to draw a swallowed prey `t` seconds after it was swallowed.
+struct SwallowPose {
+    pos: glam::Vec2,
+    radius: f32,
+    heading: f32,
+    /// Freshness (colour) and fade-out of the body, and fade-out of its parts.
+    fresh: f32,
+    fade: f32,
+    parts_fade: f32,
+}
+
+/// The swallowing animation: the prey slides into the hunter's mouth head first, squeezing to
+/// fit, passes inside, and is digested there as a shrinking, fading food vacuole that moves
+/// with the hunter. Without a hunter (it died or is gone) the prey just fades where it was.
+fn swallow_pose(
+    f: &evo_core::world::Fx,
+    body: &evo_core::world::FxBody,
+    hunter: Option<&evo_core::Organism>,
+    t: f32,
+    alpha: f32,
+) -> Option<SwallowPose> {
+    let duration = f.kind.duration();
+    let fresh = 1.0 - smooth((t - 0.3) / 0.5);
+    let Some(h) = hunter else {
+        let age = t / SWALLOW_ENTER;
+        return (age < 1.0).then_some(SwallowPose {
+            pos: f.pos,
+            radius: f.radius,
+            heading: body.heading,
+            fresh: 1.0 - age * 3.0,
+            fade: age,
+            parts_fade: age,
+        });
+    };
+    let at = h.prev_pos.lerp(h.pos, alpha);
+    let rot = glam::Vec2::from_angle(h.heading);
+    let hr = h.radius;
+    // The mouth's opening, at the front edge of the head.
+    let lip = (h.traits.mouth_offset + 0.6 * h.traits.mouth_radius) * hr;
+    // A resting place inside, off-center by the prey's seed.
+    let inside = at + rot.rotate(glam::Vec2::new(-0.1, 0.5 * (body.seed - 0.5)) * hr);
+    let fit = f.radius.min(h.traits.mouth_radius * hr * 0.7);
+    let small = f.radius.min(0.4 * hr);
+    // Slide until it's half in the opening.
+    let mouth = at + rot.rotate(glam::Vec2::new(lip + 0.3 * fit, 0.0));
+    let into_mouth = (mouth - f.pos).to_angle();
+    let resting = h.heading + std::f32::consts::PI * (body.seed - 0.5);
+    let turn = |from: f32, to: f32, e: f32| from + wrap_angle(to - from) * e;
+    let pose = if t < SWALLOW_SLIDE {
+        let e = smooth(t / SWALLOW_SLIDE);
+        SwallowPose {
+            pos: f.pos.lerp(mouth, e),
+            radius: f.radius + (fit - f.radius) * e,
+            heading: turn(body.heading, into_mouth, e),
+            fresh,
+            fade: 0.0,
+            parts_fade: e,
+        }
+    } else if t < SWALLOW_ENTER {
+        let e = smooth((t - SWALLOW_SLIDE) / (SWALLOW_ENTER - SWALLOW_SLIDE));
+        SwallowPose {
+            pos: mouth.lerp(inside, e),
+            radius: fit + (small - fit) * e,
+            heading: turn(into_mouth, resting, e),
+            fresh,
+            // Seen through the hunter's body as soon as it's in.
+            fade: 0.45 * smooth(e * 2.5),
+            parts_fade: 1.0,
+        }
+    } else {
+        let e = ((t - SWALLOW_ENTER) / (duration - SWALLOW_ENTER)).clamp(0.0, 1.0);
+        SwallowPose {
+            pos: inside,
+            radius: small * (1.0 - 0.6 * smooth(e)),
+            heading: resting,
+            fresh,
+            fade: 0.45 + 0.55 * smooth((e - 0.4) / 0.6),
+            parts_fade: 1.0,
+        }
+    };
+    Some(pose)
 }
 
 /// Push the quads of `instances` that are behind (`front == false`) or in front of the body.
@@ -729,6 +829,7 @@ fn update_organisms(
                 flash(c.hurt_tick, 0.5),
             ],
             chem: [0; 4],
+            wound: wound(c.hurt_dir, c.heading),
         };
         let owner = PartOwner {
             pos: c.pos,
@@ -865,6 +966,7 @@ fn update_organisms(
                 unorm(t.fixation),
                 unorm(t.lure),
             ],
+            wound: wound(o.hurt_dir, o.heading),
         };
         let holds = if with_parts {
             o.grasps
@@ -917,20 +1019,44 @@ fn update_organisms(
         }
     }
 
+    // Swallowed prey follow the hunter that ate them: find those hunters once per frame.
+    let wanted: std::collections::HashSet<u64> = world
+        .fx
+        .iter()
+        .filter_map(|f| f.body.and_then(|b| b.hunter))
+        .collect();
+    let hunters: std::collections::HashMap<u64, &evo_core::Organism> = if wanted.is_empty() {
+        Default::default()
+    } else {
+        world
+            .organisms
+            .iter()
+            .filter(|o| wanted.contains(&o.id))
+            .map(|o| (o.id, o))
+            .collect()
+    };
+
     // Effects (bites, gulps, shockwaves) on top.
     for f in &world.fx {
         use evo_core::world::FxKind;
-        // A swallowed prey flashes into a grey corpse and fades away.
         if let (FxKind::Engulf, Some(body)) = (f.kind, f.body) {
-            let age =
-                (world.tick.saturating_sub(f.tick) as f32 * dt / f.kind.duration()).clamp(0.0, 1.0);
+            let t = world.tick.saturating_sub(f.tick) as f32 * dt;
+            let hunter = body.hunter.and_then(|id| hunters.get(&id));
+            let Some(pose) = swallow_pose(f, &body, hunter.copied(), t, alpha) else {
+                continue;
+            };
             let shape = BodyShape::from_genome(&body.genome);
-            if !visible(f.pos, f.radius * shape.half_length * 1.6) {
+            if !visible(pose.pos, pose.radius * shape.half_length * 1.6) {
                 continue;
             }
-            let ext = (body_extent(&shape) * f.radius).max(glam::Vec2::splat(min_half));
+            let ext = (body_extent(&shape) * pose.radius).max(glam::Vec2::splat(min_half));
             let quad = Quad {
-                shape: [ext.x / f.radius, ext.y / f.radius, f.radius / px, body.seed],
+                shape: [
+                    ext.x / pose.radius,
+                    ext.y / pose.radius,
+                    pose.radius / px,
+                    body.seed,
+                ],
                 tint: linear_tint(f.color),
                 body: body_attr(
                     &shape,
@@ -939,18 +1065,22 @@ fn update_organisms(
                 ),
                 diet: [0; 4],
                 state: [0, 0, FLAG_DEAD, 255],
-                motion: [unorm(age), unorm(1.0 - age * 3.0), 0, 0],
+                motion: [unorm(pose.fade), unorm(pose.fresh), 0, 0],
                 chem: [0; 4],
+                wound: [0; 4],
             };
+            // Parts are drawn only until they're pulled into the mouth.
+            let mut part_quad = quad;
+            part_quad.motion[0] = unorm(pose.parts_fade);
             let owner = PartOwner {
-                pos: f.pos,
-                radius: f.radius,
-                heading: body.heading,
+                pos: pose.pos,
+                radius: pose.radius,
+                heading: pose.heading,
                 seed: body.seed,
-                quad,
+                quad: part_quad,
                 holds: Vec::new(),
             };
-            let instances = if f.radius >= parts_from {
+            let instances = if pose.parts_fade < 0.99 && pose.radius >= parts_from {
                 Some(cache.get(&body.genome))
             } else {
                 None
@@ -958,7 +1088,7 @@ fn update_organisms(
             if let Some(i) = &instances {
                 push_parts(&mut b, i, &owner, false, px);
             }
-            b.push_oriented(f.pos, ext, glam::Vec2::from_angle(body.heading), quad);
+            b.push_oriented(pose.pos, ext, glam::Vec2::from_angle(pose.heading), quad);
             if let Some(i) = &instances {
                 push_parts(&mut b, i, &owner, true, px);
             }
@@ -1011,6 +1141,7 @@ fn update_organisms(
         mesh.insert_attribute(ATTRIBUTE_STATE, VertexAttributeValues::Unorm8x4(b.state));
         mesh.insert_attribute(ATTRIBUTE_MOTION, VertexAttributeValues::Unorm8x4(b.motion));
         mesh.insert_attribute(ATTRIBUTE_CHEM, VertexAttributeValues::Unorm8x4(b.chem));
+        mesh.insert_attribute(ATTRIBUTE_WOUND, VertexAttributeValues::Unorm8x4(b.wound));
         mesh.insert_indices(Indices::U32(indices));
     }
     if let Some(mut m) = materials.get_mut(&handles.organism_material) {

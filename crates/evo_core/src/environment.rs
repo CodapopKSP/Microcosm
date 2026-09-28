@@ -178,6 +178,9 @@ pub struct Vent {
     /// Part of the terrain: never fades or dies.
     #[serde(default)]
     pub fixed: bool,
+    /// Under a shaft open to the water: its plume shoots up it.
+    #[serde(default)]
+    pub chimney: bool,
 }
 
 impl Vent {
@@ -359,6 +362,7 @@ impl Environment {
                 age: 0.0,
                 lifetime: 0.0,
                 fixed: true,
+                chimney: terrain.chimneys.iter().any(|c| c.distance(pos) < 1.0),
             });
         }
         for _ in 0..config.vents.count {
@@ -441,6 +445,7 @@ impl Environment {
                 age: 0.0,
                 lifetime: hours * 3600.0,
                 fixed: false,
+                chimney: false,
             });
         }
         None
@@ -465,7 +470,9 @@ impl Environment {
 
         // Vents: age, emit, die, and open.
         let vc = &config.vents;
-        let mut plume_columns = vec![false; self.minerals.nx];
+        // Upward drift of minerals per column (units/s): plumes above vents, faster up chimneys.
+        let mc = &config.minerals;
+        let mut plume_columns = vec![0.0f32; self.minerals.nx];
         let mut i = 0;
         while i < self.vents.len() {
             let vent = &mut self.vents[i];
@@ -476,8 +483,11 @@ impl Environment {
                 self.vents.swap_remove(i);
                 continue;
             }
+            // Most of the output pours out at the vent; some seeps out over a wide area around
+            // it, so dilute minerals reach oxygenated water.
             let amount = vc.output * vent.strength * dt;
-            emit_disc(&mut self.minerals, vent.pos, vc.radius, amount);
+            emit_disc(&mut self.minerals, vent.pos, vc.radius, amount * (1.0 - vc.halo));
+            emit_disc(&mut self.minerals, vent.pos, vc.halo_radius, amount * vc.halo);
             let cc = &config.chemistry;
             emit_disc(
                 &mut self.co2,
@@ -493,15 +503,22 @@ impl Environment {
             );
             // Vent water carries no oxygen.
             let keep = (-cc.vent_oxygen_sink * vent.strength * dt).exp();
-            for i in disc_cells(&self.oxygen, vent.pos, vc.radius * 2.0) {
+            for i in disc_cells(&self.oxygen, vent.pos, vc.dead_zone) {
                 self.oxygen.data[i] *= keep;
             }
-            let half = config.minerals.plume_width / self.minerals.cell;
-            let cx = vent.pos.x / self.minerals.cell;
-            let x0 = (cx - half).floor().max(0.0) as usize;
-            let x1 = ((cx + half).ceil() as usize).min(self.minerals.nx - 1);
-            for col in plume_columns.iter_mut().take(x1 + 1).skip(x0) {
-                *col = true;
+            let cell = self.minerals.cell;
+            let nx = self.minerals.nx;
+            let mut rise = |half_width: f32, speed: f32| {
+                let (half, cx) = (half_width / cell, vent.pos.x / cell);
+                let x0 = (cx - half).floor().max(0.0) as usize;
+                let x1 = ((cx + half).ceil() as usize).min(nx - 1);
+                for col in plume_columns.iter_mut().take(x1 + 1).skip(x0) {
+                    *col = col.max(speed);
+                }
+            };
+            rise(mc.plume_width, mc.plume_rise);
+            if vent.chimney {
+                rise(mc.chimney_width * 0.5, mc.chimney_rise);
             }
             i += 1;
         }
@@ -516,12 +533,11 @@ impl Environment {
         }
 
         // Minerals: rise in plumes, diffuse, precipitate.
-        let mc = &config.minerals;
-        self.minerals.advect_vertical(
-            mc.plume_rise * dt / self.minerals.cell,
-            true,
-            Some(&plume_columns),
-        );
+        let cell = self.minerals.cell;
+        for speed in &mut plume_columns {
+            *speed *= dt / cell;
+        }
+        self.minerals.rise_columns(&plume_columns);
         self.minerals
             .diffuse(mc.diffusion * dt / (self.minerals.cell * self.minerals.cell));
         self.minerals.decay((-mc.decay * dt).exp());

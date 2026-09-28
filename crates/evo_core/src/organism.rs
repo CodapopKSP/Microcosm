@@ -175,9 +175,12 @@ pub struct Organism {
     /// Tick this organism last ate (for the feeding animation).
     #[serde(default)]
     pub ate_tick: u64,
-    /// Tick this organism was last bitten (for the hurt flash).
+    /// Tick this organism was last bitten, and the direction (world angle) the bite came from
+    /// (for the hurt animation).
     #[serde(default)]
     pub hurt_tick: u64,
+    #[serde(default)]
+    pub hurt_dir: f32,
     pub born: u64,
     /// Where it budded off its parent: offset from the parent's center at birth (zero for
     /// founders). Used for the budding animation.
@@ -250,6 +253,7 @@ impl Organism {
             steer_throttle: 0.0,
             ate_tick: 0,
             hurt_tick: 0,
+            hurt_dir: 0.0,
             born: tick,
             bud_offset: Vec2::ZERO,
             budded_tick: 0,
@@ -337,8 +341,11 @@ pub struct Carcass {
     pub genome: Genome,
     #[serde(default)]
     pub seed: f32,
+    /// Tick it was last eaten from, and the direction (world angle) of the eater.
     #[serde(default)]
     pub hurt_tick: u64,
+    #[serde(default)]
+    pub hurt_dir: f32,
     /// Tick the organism died (for the dying animation).
     #[serde(default)]
     pub died_tick: u64,

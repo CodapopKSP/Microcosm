@@ -19,8 +19,8 @@ A **side-on cross-section of an ocean**. `y` grows upward; the water surface is 
 | Sunlit surface | Most light; warm; phototrophs bloom and shade each other |
 | Twilight / open water | Light fades exponentially with depth; hunters and drifters |
 | Deep / seafloor | Dark and cold; detritus ("marine snow") settles into sediment |
-| Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Most come and go over hours; one is kept shallow. Three are permanent parts of the terrain (below) |
-| Shelf vent system | Under the shelf, a chamber holds a permanent vent, with a small shaft up to the shelf surface (things can fall in) and a tunnel out through the cliff face. A second permanent vent sits lower down the cliff: a path from the sunlit shelf to the deep |
+| Vents | Point sources on the seafloor: hot and mineral-rich, with an oxygen-free core (60 u). 65% of the minerals pour out at the vent and rise in a plume; 35% seep out over 240 u around it, so dilute minerals reach oxygenated water: breathing chemotrophs live on the fringe, fermenters in the rich core. Most vents come and go over hours; one is kept shallow. Three are permanent parts of the terrain (below) |
+| Shelf vent system | Under the shelf, a chamber holds a permanent vent, with a small shaft right above it up to the shelf surface (things can fall in) and a tunnel out through the cliff face. The shaft is a **chimney**: the vent's plume shoots up it (30 u/s instead of 4) and on up to the surface, leaving a mineral-rich patch in the sunlit water above the shelf, a foothold for chemosynthesis where photosynthesizers live. A second permanent vent sits lower down the cliff: a path from the sunlit shelf to the deep |
 | Floating island | A mass of rock in mid-water (center ~1,500 deep) that organisms can swim over and under. It shades the water beneath it. Inside: a chamber with a permanent vent, a shaft up to the top, a winding tunnel straight through, and a passage out of the underside |
 | Shelf | A shallow region where the seafloor itself is sunlit |
 | Rocks & crevices | Block movement and cast shade; narrow gaps shelter small organisms |
@@ -70,7 +70,7 @@ A genome is **60 bytes** in nine lettered chromosomes. **Every byte is one gene*
 | | C1 | Saturation | 20–100% | none |
 | | C2 | Pattern | High 2 bits = style (plain/spots/stripes/rings), rest = scale | none |
 | **D** Diet | D0 | Photosynthesis | Pigment absorptance | 0.3 c |
-| | D1 | Chemosynthesis | Mineral uptake | 0.3 c |
+| | D1 | Chemosynthesis | Mineral uptake | 0.2 c |
 | | D2 | Scavenging | Detritus / carcass uptake | 0.3 c |
 | | D3 | Hunting | Attacking, engulfing and digesting live prey | 0.4 c |
 | **G** Chemistry | G0 | Respiration | Share of needs met by breathing oxygen (the rest is fermented) | — |
@@ -99,10 +99,10 @@ There are no "animal" or "plant" genes. What an organism takes from and gives to
 With `x_i` the four diet genes as fractions, each diet is weakened by the investment in the others:
 
 ```
-c_i = x_i × (1 − 0.6 × Σ_{j≠i} x_j)
+c_i = x_i × (1 − 0.5 × Σ_{j≠i} x_j)
 ```
 
-With the default penalty of 0.4, a specialist (one gene only) gets `c = x`. Taking up a second diet is gradual: a small second gene works linearly and costs the main diet a little. But true generalists lose overall: two full diets give 0.6 each (1.2 total, where two specialists would have 2). Upkeep is charged on **capability**, not on the raw gene, so a weak unused diet gene is cheap. It drifts as cryptic variation until the environment makes it useful — one of the main routes to **exaptation**.
+With the default penalty of 0.5, a specialist (one gene only) gets `c = x`. Taking up a second diet is gradual: a small second gene works linearly and costs the main diet a little. But true generalists lose overall: two full diets give 0.5 each (1.0 total, no better than one specialist), and three thirds give 0.22 each (0.67 total). Upkeep is charged on **capability**, not on the raw gene, so a weak unused diet gene is cheap. It drifts as cryptic variation until the environment makes it useful — one of the main routes to **exaptation**.
 
 ### Example: the ancestor
 
@@ -168,7 +168,7 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 | Lure | Glows; anything drawn to light swims toward it | The anglerfish trick |
 | Spine | Hurts attackers | |
 | Jaw | Bite strength | Works best facing forward |
-| Shell plate | Armor | Heavy: slows and sinks the body |
+| Shell plate | Armor on the side it faces, some all round | Slows and sinks the body a little |
 
 **What parts add up to.** At birth the parts are laid out on the body and summed into plain numbers, so the per-tick simulation never looks at parts again:
 
@@ -178,7 +178,7 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 - **Walking** speed from legs, **grip** from legs, tentacles and holdfasts, **anchoring** from holdfasts. Only organisms with such parts check whether they touch rock.
 - **Senses**: each eye is a view cone (up to six are tracked); antennae give a smell radius. No eyes and no antennae means blind (contact only).
 - **Grasps**: one circle around each tentacle's base, and a **pull** strength from their total size; **light span** and nutrient-uptake surface from fronds; **filtering** from cilia and tentacles; **glow** from lures.
-- **Armor** from shell plates and **spikes** from spines, **per side** (front, left, back, right): a plate or spine mostly guards the side it faces, so a shell on the back protects against chasers but not a head-on attack. **Jaws** at the mouth (a jaw whose bite lands inside the mouth circle) strengthen the mouth; each jaw elsewhere is a **bite site** of its own (jaws side by side bite together). All with diminishing returns (1 − e^(−x)).
+- **Armor** from shell plates and **spikes** from spines, **per side** (front, left, back, right): a plate or spine mostly guards the side it faces (a broad plate covers 30% of its strength on every side, a spine 15%), so a shell on the back protects best against chasers. **Jaws** at the mouth (a jaw whose bite lands inside the mouth circle) strengthen the mouth; each jaw elsewhere is a **bite site** of its own (jaws side by side bite together). All with diminishing returns (1 − e^(−x)).
 - Every part costs **upkeep** and has **mass**: building a body with parts costs more, and heavy parts sink it.
 
 ---
@@ -207,7 +207,7 @@ So aerobes are cheap to run but die in dead zones; fermenters live anywhere oxyg
 
 **Toxins.** Toxic organisms leak toxin that spreads and breaks down within a minute or so. It damages organisms in proportion to its concentration (small bodies suffer more), so it only matters in blooms of producers: red tides. The toxin carries the producers' hue, and organisms of that hue are immune: producers, their kin, and look-alikes. Resistance ignores up to 90%. Eating toxic prey poisons the hunter.
 
-**The water.** Gases, nutrients and toxin diffuse. Rotting detritus uses oxygen and releases CO₂ and minerals; without oxygen it rots more slowly and releases more minerals (sulfides). Vents release oxygen-free water, CO₂ and some nutrients. Deep water slowly relaxes toward its usual make-up (older water: less oxygen, more CO₂ and nutrients), standing in for ocean circulation. The result: oxygen-rich sunlit water, oxygen-poor sediment and vents where fermenters can thrive, and dead zones under heavy snowfall.
+**The water.** Gases, nutrients and toxin diffuse. Rotting detritus uses oxygen and releases CO₂ and minerals; without oxygen it rots more slowly and releases more minerals (sulfides). Vents release oxygen-free water (near the vent), CO₂ and some nutrients. Deep water slowly relaxes toward its usual make-up (older water: less oxygen, more CO₂ and nutrients), standing in for ocean circulation. The result: oxygen-rich sunlit water, oxygen-poor sediment and vents where fermenters can thrive, and dead zones under heavy snowfall.
 
 **The air.** Two global levels, oxygen and CO₂ (1.0 = today). The top layer of water trades gases with the air, and the air changes by what it gains or loses. It is large, so it changes over days, not minutes. CO₂ warms the climate (+3 °C per doubling). A world started with `initial_oxygen = 0.05` begins with anoxic air, and oxygen-producing life has to oxygenate it.
 
@@ -238,16 +238,16 @@ needs     = (basal + movement) × breathing/fermentation cost (§4)
 | Diet | Mechanic | Scales with |
 |------|----------|-------------|
 | Photosynthesis | Share of light absorbed in the organism's light cell(s) (§1), limited by CO₂ or minerals (§4) | Width × frond span (big photosynthesizers need fronds) |
-| Chemosynthesis | Uptake from the mineral field: `2 × c × radius × concentration`, depleting it | Perimeter (favors small) |
+| Chemosynthesis | Uptake from the mineral field: `3 × c × radius × concentration`, depleting it, worth 2 energy per unit | Perimeter (favors small) |
 | Scavenging | Uptake from the detritus field, `12 × c × radius × (1 + filter) × concentration` (intercepting falling marine snow), plus a filter-feeding bonus when swimming; eating large carcasses at the mouth or a jaw (tentacles drag them there) | Width; width × speed when swimming |
 | Hunting | See below | Size, jaws |
 
-**Hunting.** When a non-kin organism touches the hunter's **mouth** (a circle at the front of its head: most of the front half of a round cell, only the nose of a long body) or one of its **jaws**. Food that only touches the rest of the body is eaten at 30% of the rate, so facing your food pays:
+**Hunting.** When a non-kin organism touches the hunter's **mouth** (a circle at the front of its head: most of the front half of a round cell, only the nose of a long body) or one of its **jaws**. The rest of the body doesn't eat, so facing your food matters. A hunter (or scavenger) whose energy is above **90%** of its storage leaves food alone and stops chasing it, so kills aren't wasted:
 
-- **Tentacles** grab prey and carcasses within reach of their bases and drag them toward the mouth at `12 × pull × √radius` units/s, shared by mass: small prey is reeled in, while big prey mostly pulls the hunter to it (an anchored hunter doesn't budge). Things held by tentacles aren't eaten until they reach the mouth, a jaw or the body.
+- **Tentacles** grab prey and carcasses within reach of their bases and drag them toward the mouth at `12 × pull × √radius` units/s, shared by mass: small prey is reeled in, while big prey mostly pulls the hunter to it (an anchored hunter doesn't budge). Each tentacle holds one thing at a time, so a predator with eight tentacles can hold eight prey. Things held by tentacles aren't eaten until they reach the mouth or a jaw.
 
-- **Engulf** (only at the mouth, or at 30% through the body; never at a jaw away from the mouth) if the prey's radius is ≤ 60% of the hunter's: the prey dies instantly, with the chance per second reduced by the prey's armor on the side it's attacked from. The hunter's spikes don't matter, but the **prey's** spikes hurt the hunter.
-- Otherwise **bite**: the hunter tears off `0.3 × c_hunt × (0.2 + 1.8 × jaws) × radius²` of the prey's mass per second, with the strength of the jaws doing the biting (the mouth's or that jaw's), reduced by the prey's armor on the side it's bitten. Jaws also **crack shells**: armor counts for `1 − 0.6 × jaws` of its value. Bitten prey shrink and lose HP, and must regrow. The prey's spikes on that side reflect damage.
+- **Engulf** (only at the mouth, never at a jaw away from it) if the prey's radius is ≤ 65% of the hunter's: the prey dies instantly. A **shell** makes prey count as up to 40% bigger on its armored side, so well-armored prey near the limit can only be bitten. The rate is `3 × c_hunt × (1 + 2 × c_hunt × ln(0.65 / size ratio))` per second, reduced by the prey's armor on the side it's attacked from: prey near the size limit take about ⅓ s, and smaller prey go down faster, but only a skilled hunter gets much of that speed-up. A mouth can swallow up to `4 × c_hunt²` extra small prey in the same tick (none below 50% hunting). Tiny prey are worth less to a big hunter: 60% of their energy at 5% of its radius, rising to full value at 30% (the rest becomes detritus). The hunter's spikes don't matter, but the **prey's** spikes hurt the hunter.
+- Otherwise **bite**: the hunter tears off `0.3 × c_hunt × (0.2 + 1.8 × jaws) × radius²` of the prey's mass per second, with the strength of the jaws doing the biting (the mouth's or that jaw's), reduced by the prey's armor on the side it's bitten. Armor blocks up to 85% of the damage; jaws **crack shells**, so armor counts for `1 − 0.5 × jaws` of its value. Bitten prey shrink and lose HP, and must regrow. The prey's spikes on that side reflect damage.
 - Hunting capability below 5% does nothing (trace genes from drift don't bite).
 - The hunter assimilates **80% × (0.4 + 0.6 c_hunt)** of the prey's body energy (1 per unit mass, plus the prey's reserves), proportionally to damage dealt, and all of its nutrients. Anything it can't store becomes detritus (energy) or is excreted (nutrients).
 - Toxic prey poisons the hunter: damage = 0.8 × prey toxin × mass eaten × (1 − resistance).
@@ -279,7 +279,7 @@ The viewer shows the child swelling out of the parent through a neck that pinche
 |-------|--------|
 | HP reaches 0 (starvation, predation, temperature, spikes, suffocation, poison) | Corpse |
 | Old age (past lifespan: 20% chance per second) | Corpse |
-| Engulfed | No lasting corpse — eaten whole (the viewer shows its body flash into a corpse and fade in half a second) |
+| Engulfed | No lasting corpse — eaten whole. The viewer shows it slide into the hunter's mouth, pass inside and be digested there as a greying, shrinking food vacuole over 3 seconds (purely visual: it's already dead) |
 
 Every corpse becomes a **carcass**: its colours drain away and it becomes a grey, torn version of the organism (parts included) that sinks, can be eaten on contact (bites show), and decays into the **detritus field** (marine snow). Small carcasses decompose within about a minute; large ones last much longer, so a whale fall feeds a seafloor community.
 

@@ -224,10 +224,10 @@ fn saturating(x: f32) -> f32 {
 }
 
 /// How much a plate or spine facing `dir` guards side `k` (0 front, 1 left, 2 back, 3 right):
-/// mostly the side it faces, a little all round.
-fn side_weight(dir: f32, k: usize) -> f32 {
+/// mostly the side it faces, plus `around` everywhere (a broad plate covers more than a spine).
+fn side_weight(dir: f32, k: usize, around: f32) -> f32 {
     let side = k as f32 * std::f32::consts::FRAC_PI_2;
-    (dir - side).cos().max(0.0) + 0.15
+    (dir - side).cos().max(0.0) + around
 }
 
 /// The eight body-relative movement directions (0 = forward, counterclockwise).
@@ -372,7 +372,7 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
             PartKind::Lure => p.lure += s * raised,
             PartKind::Spine => {
                 for (k, v) in p.spines.iter_mut().enumerate() {
-                    *v += side_weight(inst.dir, k) * s;
+                    *v += side_weight(inst.dir, k, 0.15) * s;
                 }
             }
             PartKind::Jaw => {
@@ -381,7 +381,7 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
             }
             PartKind::Shell => {
                 for (k, v) in p.shell.iter_mut().enumerate() {
-                    *v += side_weight(inst.dir, k) * (0.4 + 0.6 * s);
+                    *v += side_weight(inst.dir, k, 0.3) * (0.4 + 0.6 * s);
                 }
             }
         }
@@ -1038,7 +1038,7 @@ mod tests {
         let t = Traits::decode(&g, &config);
         let (behind, _) = t.defense_toward(std::f32::consts::PI);
         let (ahead, _) = t.defense_toward(0.0);
-        assert!(behind > 0.5 && ahead < 0.2, "behind {behind} ahead {ahead}");
+        assert!(behind > 0.5 && ahead < 0.3, "behind {behind} ahead {ahead}");
         // The mouth is at the front, farther out on a long body.
         let (mut long, config) = with_part(PartKind::Fin, 1, 0x80, 8);
         long.0[gene::ELONGATION] = 0xFF;

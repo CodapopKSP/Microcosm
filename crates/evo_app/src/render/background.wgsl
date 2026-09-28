@@ -41,15 +41,33 @@ fn value_noise(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
+fn pcg(v: u32) -> u32 {
+    let state = v * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// Random 0..1 for an integer cell, from integer arithmetic: unlike `hash21`, it stays random
+// however far the cell is from the origin (float hashes of large coordinates repeat on a grid).
+fn cell_hash(c: vec2<f32>, salt: u32) -> f32 {
+    let x = bitcast<u32>(i32(c.x));
+    let y = bitcast<u32>(i32(c.y));
+    return f32(pcg(x ^ pcg(y ^ pcg(salt))) >> 8u) / 16777216.0;
+}
+
 // Specks on a jittered grid of `cell`-sized cells moving with `drift`: 1 inside a speck of
-// radius `size` (never under ~1 px), present in a `density` fraction of cells.
+// radius `size` (never under ~1 px), present in a `density` fraction of cells (none at 0).
 fn specks(wp: vec2<f32>, cell: f32, drift: vec2<f32>, density: f32, size: f32, px: f32, seed: f32) -> f32 {
+    if density <= 0.0 {
+        return 0.0;
+    }
     let sp = (wp + drift) / cell;
     let c = floor(sp);
-    let j = vec2<f32>(hash21(c + seed), hash21(c + seed + 17.3)) * 0.8 + 0.1;
+    let salt = u32(seed * 1000.0);
+    let j = vec2<f32>(cell_hash(c, salt), cell_hash(c, salt + 1u)) * 0.8 + 0.1;
     let r = max(size, 0.8 * px) / cell;
     let d = length(sp - c - j);
-    return (1.0 - smoothstep(r * 0.4, r, d)) * step(hash21(c + seed + 5.1), density);
+    return (1.0 - smoothstep(r * 0.4, r, d)) * select(0.0, 1.0, cell_hash(c, salt + 2u) < density);
 }
 
 fn fbm(p: vec2<f32>) -> f32 {
@@ -91,7 +109,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         var sky = mix(sky_night, day * 0.7, clamp(bg.sun.x * 1.3, 0.0, 1.0));
         // Stars at night (hidden by impact dust).
         let winter = bg.effects.x;
-        let star = step(0.9985, hash21(floor(wp / max(2.0, 1.5 * px)))) * (1.0 - clamp(bg.sun.x * 3.0, 0.0, 1.0));
+        // Fixed in the world (they don't reshuffle on zoom), about a pixel across at any zoom.
+        let star_cell = floor(wp / 60.0);
+        let twinkle = 0.4 + 0.6 * cell_hash(star_cell, 91u);
+        let star = specks(wp, 60.0, vec2<f32>(0.0), 0.12, 0.9 * px, px, 0.9) * twinkle
+            * (1.0 - clamp(bg.sun.x * 3.0, 0.0, 1.0));
         sky += vec3<f32>(star) * (1.0 - winter);
         // Impact winter: a churning brown-grey dust pall.
         let dust = fbm(vec2<f32>(wp.x * 0.0008 + time * 0.02, wp.y * 0.002));
