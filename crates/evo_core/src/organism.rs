@@ -109,6 +109,27 @@ pub struct Chem {
     pub poisoned: f32,
 }
 
+/// A body held by a tentacle: where it is and how big, since when, and the last tick it was held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Grasp {
+    pub pos: Vec2,
+    pub radius: f32,
+    pub since: u64,
+    pub tick: u64,
+}
+
+impl Grasp {
+    /// Note that a body is held this tick.
+    pub fn hold(&mut self, pos: Vec2, radius: f32, tick: u64) {
+        if self.tick + 1 < tick {
+            self.since = tick;
+        }
+        self.pos = pos;
+        self.radius = radius;
+        self.tick = tick;
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Organism {
     pub id: u64,
@@ -168,6 +189,10 @@ pub struct Organism {
     pub budded_tick: u64,
     #[serde(default)]
     pub bud_scale: f32,
+    /// What each tentacle is holding, by grasp (`traits.grasps`), for drawing them wrapped
+    /// around it. Empty until a tentacle first grabs something.
+    #[serde(default)]
+    pub grasps: Vec<Grasp>,
     pub offspring: u32,
     pub kills: u32,
     /// Last-tick diagnostics (energy/s), for the inspector.
@@ -229,6 +254,7 @@ impl Organism {
             bud_offset: Vec2::ZERO,
             budded_tick: 0,
             bud_scale: 1.0,
+            grasps: Vec::new(),
             offspring: 0,
             kills: 0,
             gain_rate: 0.0,

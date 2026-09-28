@@ -77,6 +77,10 @@ pub fn rows() -> Vec<(&'static str, Setter)> {
         ("Hunting mouth", |g, v| {
             g.0[gene::HUNT] = v;
             g.0[gene::PHOTO] = 255 - v;
+            // A pink body with fronds: leaves should stay leaf-coloured as photosynthesis weakens.
+            g.0[gene::HUE] = 0xEA;
+            g.0[gene::SATURATION] = 0xC0;
+            set_part(g, 0, PartKind::Frond, 1, 0x80, 0, 7)
         }),
         ("Scavenging", |g, v| {
             g.0[gene::SCAVENGE] = v;
@@ -134,9 +138,10 @@ pub fn build() -> World {
     world
 }
 
-/// Rows below the gene rows showing the budding and dying animations frozen at nine stages.
+/// Rows below the gene rows showing the budding, dying, swallowing and grasping animations
+/// frozen at nine stages.
 fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
-    use crate::render::{BUD_TIME, DEATH_FADE};
+    use crate::render::{BUD_TIME, DEATH_FADE, GRASP_TIME};
     use evo_core::world::{Fx, FxBody, FxKind};
     let config = world.config.clone();
     let dt = config.time.dt;
@@ -234,11 +239,81 @@ fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
             }),
         });
     }
+
+    // Grasping: a tentacle closing on prey behind (first columns), then holding prey around the
+    // body, one more at a time, each tentacle its own.
+    let mut hunter = base;
+    hunter.0[gene::PHOTO] = 0x20;
+    hunter.0[gene::HUNT] = 0xC0;
+    hunter.0[gene::HUE] = 0xE0;
+    set_part(&mut hunter, 0, PartKind::Tentacle, 2, 0xB0, 0, 16);
+    let traits = evo_core::Traits::decode(&hunter, &config);
+    let mut prey = base;
+    prey.0[gene::SIZE] = 0x28;
+    let prey_mass = evo_core::Traits::decode(&prey, &config).adult_mass;
+    let y = y_of(first_row + 4);
+    for col in 0..COLUMNS {
+        let x = LEFT + col as f32 * SPACING;
+        let closing = (col as f32 / 4.0).min(1.0);
+        let held = if col < 5 { 1 } else { (col - 3).min(3) };
+        let mut o = Organism::new(
+            *id,
+            0,
+            0,
+            0,
+            hunter,
+            0,
+            &config,
+            glam::Vec2::new(x, y),
+            traits.adult_mass,
+            1.0,
+            Rng::new(*id),
+            0,
+        );
+        o.heading = 0.0;
+        o.steer_heading = 0.0;
+        *id += 1;
+        for (k, zone) in traits.grasps[..traits.grasp_count as usize]
+            .iter()
+            .enumerate()
+            .take(held)
+        {
+            let base_at = glam::Vec2::new(zone.x, zone.y) * o.radius;
+            let turn = if col < 5 { 0.5 } else { 0.9 - 0.2 * col as f32 };
+            let dir = glam::Vec2::from_angle(base_at.to_angle() + turn);
+            let at = o.pos + base_at + dir * (zone.radius * o.radius * 0.7);
+            o.grasps.resize(k + 1, evo_core::organism::Grasp::default());
+            o.grasps[k] = evo_core::organism::Grasp {
+                pos: at,
+                radius: prey_mass.sqrt(),
+                since: ago(closing * GRASP_TIME),
+                tick: now,
+            };
+            let mut p = Organism::new(
+                *id,
+                0,
+                0,
+                0,
+                prey,
+                0,
+                &config,
+                at,
+                prey_mass,
+                prey_mass,
+                Rng::new(*id),
+                0,
+            );
+            p.heading = 0.0;
+            world.organisms.push(p);
+            *id += 1;
+        }
+        world.organisms.push(o);
+    }
 }
 
 /// The gallery's view centre depends on the world height, so compute it at runtime.
 pub fn view_for(config: &Config) -> (f32, f32, f32) {
-    let rows = rows().len() as f32 + 4.0;
+    let rows = rows().len() as f32 + 5.0;
     (
         VIEW.0,
         config.world.height - TOP - (rows - 1.0) * SPACING * 0.5,

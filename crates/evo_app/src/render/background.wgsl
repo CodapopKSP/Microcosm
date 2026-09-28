@@ -41,6 +41,17 @@ fn value_noise(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
+// Specks on a jittered grid of `cell`-sized cells moving with `drift`: 1 inside a speck of
+// radius `size` (never under ~1 px), present in a `density` fraction of cells.
+fn specks(wp: vec2<f32>, cell: f32, drift: vec2<f32>, density: f32, size: f32, px: f32, seed: f32) -> f32 {
+    let sp = (wp + drift) / cell;
+    let c = floor(sp);
+    let j = vec2<f32>(hash21(c + seed), hash21(c + seed + 17.3)) * 0.8 + 0.1;
+    let r = max(size, 0.8 * px) / cell;
+    let d = length(sp - c - j);
+    return (1.0 - smoothstep(r * 0.4, r, d)) * step(hash21(c + seed + 5.1), density);
+}
+
 fn fbm(p: vec2<f32>) -> f32 {
     var sum = 0.0;
     var amp = 0.5;
@@ -147,15 +158,33 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let murk = 0.8 + 0.2 * fbm(wp * 0.01 + vec2<f32>(time * 0.01, 0.0));
     water = mix(water, vec3<f32>(0.035, 0.015, 0.03) * murk + water * 0.3, anoxic * 0.7);
     water += vec3<f32>(0.25, 0.02, 0.02) * toxin * (0.7 + 0.3 * fbm(wp * 0.02 - vec2<f32>(0.0, time * 0.05)));
-    // Water supersaturated with oxygen fizzes with tiny rising bubbles.
-    let fizz = smoothstep(1.02, 1.25, oxygen) * (1.0 - smoothstep(1.5, 4.0, px));
-    if fizz > 0.0 {
-        let bp = vec2<f32>(wp.x + sin(wp.y * 0.05 + time) * 3.0, wp.y - time * 18.0) / 9.0;
-        let bc = floor(bp);
-        let bj = vec2<f32>(hash21(bc + 3.1), hash21(bc + 9.7));
-        let bubble = (1.0 - smoothstep(0.08, 0.14, length(bp - bc - bj))) * step(hash21(bc), fizz * 0.35);
-        water += vec3<f32>(0.35, 0.5, 0.5) * bubble;
+    // What's dissolved in the water, visible when zoomed in: each chemical has its own look.
+    let near = 1.0 - smoothstep(1.5, 5.0, px);
+    let o2_rich = smoothstep(0.95, 1.3, oxygen);
+    // Oxygen-rich water is a little clearer, and fizzes with rising bubbles when supersaturated.
+    water += vec3<f32>(0.0, 0.015, 0.025) * o2_rich * select(1.0, 0.0, outside);
+    if near > 0.0 && !outside {
+        let wobble = vec2<f32>(sin(wp.y * 0.05 + time) * 3.0, 0.0);
+        let bubbles = specks(wp + wobble, 9.0, vec2<f32>(0.0, -time * 18.0), o2_rich * 0.4, 1.1, px, 3.1);
+        let rim = specks(wp + wobble, 9.0, vec2<f32>(0.0, -time * 18.0), o2_rich * 0.4, 0.6, px, 3.1);
+        water += vec3<f32>(0.45, 0.6, 0.65) * (bubbles - rim * 0.6) * near;
+        // Minerals: cyan sparks that twinkle.
+        let spark = specks(wp, 14.0, vec2<f32>(sin(time * 0.3) * 4.0, -time * 2.0), minerals * 0.7, 0.9, px, 7.7);
+        let twinkle = 0.5 + 0.5 * sin(time * 5.0 + hash21(floor(wp / 14.0)) * 30.0);
+        water += vec3<f32>(0.3, 1.3, 1.6) * spark * twinkle * near;
+        // Nutrients: pale green motes drifting in the light.
+        let motes = specks(wp, 17.0, vec2<f32>(time * 1.5, -time * 0.8), nutrients * 0.35, 0.8, px, 12.9);
+        water += vec3<f32>(0.25, 0.7, 0.2) * motes * (0.25 + 0.75 * brightness) * near;
+        // Toxin: red specks swirling.
+        let swirl = vec2<f32>(sin(wp.y * 0.02 + time * 0.7), cos(wp.x * 0.02 + time * 0.6)) * 6.0;
+        let poison = specks(wp + swirl, 11.0, vec2<f32>(0.0, 0.0), toxin * 0.9, 1.0, px, 21.3);
+        water += vec3<f32>(1.3, 0.15, 0.08) * poison * near;
+        // Dead zones: dark silt hanging in the water.
+        let silt = specks(wp, 13.0, vec2<f32>(time * 0.5, -time * 0.3), anoxic * 0.45, 1.2, px, 33.3);
+        water = mix(water, vec3<f32>(0.02, 0.01, 0.015), silt * 0.8 * near);
     }
+    // Nutrient-rich sunlit water is faintly greener.
+    water += vec3<f32>(0.0, 0.02, 0.004) * nutrients * brightness * select(1.0, 0.0, outside);
 
     // Vents: hot glow and a shimmering plume.
     let vent_count = u32(bg.sun.w);
@@ -243,7 +272,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             map_col = mix(vec3<f32>(0.45, 0.05, 0.4), vec3<f32>(0.1, 0.35, 0.95), smoothstep(0.0, 0.6, o));
             map_col = mix(map_col, vec3<f32>(0.6, 0.95, 1.0), smoothstep(0.66, 1.0, o));
         } else if map_mode == 2u {
+            let c = chem.a; // CO2, 0..2 scaled to 0..1
+            map_col = mix(vec3<f32>(0.05, 0.1, 0.3), vec3<f32>(0.95, 0.75, 0.2), c);
+        } else if map_mode == 3u {
             map_col = mix(vec3<f32>(0.03, 0.03, 0.05), vec3<f32>(0.3, 1.0, 0.25), nutrients);
+        } else if map_mode == 4u {
+            map_col = mix(vec3<f32>(0.03, 0.03, 0.05), vec3<f32>(0.2, 0.95, 1.1), minerals);
         } else {
             map_col = mix(vec3<f32>(0.03, 0.03, 0.05), vec3<f32>(1.0, 0.15, 0.1), toxin);
         }

@@ -21,18 +21,20 @@ use crate::environment::{EnvEvent, Environment};
 use crate::events::{Events, WorldEvent, barrier_height};
 use crate::genome::{Genome, color_distance, drive};
 use crate::grid::{Entry, SpatialGrid};
-use crate::organism::{Activity, Carcass, Chem, DeathCause, Organism};
+use crate::organism::{Activity, Carcass, Chem, DeathCause, Grasp, Organism};
 use crate::rng::{Rng, mix64};
 use crate::species::{SpeciesEvent, SpeciesRegistry};
 use crate::stats::{Event, EventKind, EventLog, Milestones, StatSample, Stats};
 use crate::terrain::Terrain;
-use crate::traits::MAX_EYES;
+use crate::traits::{MAX_BITES, MAX_EYES, MAX_GRASPS, Traits};
 
 /// Field (minerals, detritus, vents) update interval in ticks.
 const FIELD_INTERVAL: u64 = 3;
 /// Max organisms considered per perception query (bounds cost in dense crowds).
 const PERCEPTION_LIMIT: u32 = 96;
 const NONE: u32 = u32::MAX;
+/// Marks a tentacle's target as a carcass (else an organism).
+const CARCASS: u32 = 1 << 31;
 /// Ticks between steering decisions of motile organisms.
 const STEER_INTERVAL: u64 = 2;
 /// Drives weaker than this are ignored (skips sensing work for genes that drifted near neutral).
@@ -48,6 +50,8 @@ struct Intent {
     push: Vec2,
     attack: u32,
     carcass: u32,
+    /// What each tentacle grabs (organism index, or carcass index | CARCASS; NONE = nothing).
+    grabs: [u32; MAX_GRASPS],
     activity: Activity,
 }
 
@@ -234,65 +238,179 @@ fn pair_mut<T>(v: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     }
 }
 
-/// Where an organism can eat: fully at its mouth (the front of its head) or anywhere its
-/// tentacles reach, and poorly through the rest of its body surface.
+/// Where an organism can eat: fully at its mouth (the front of its head) and at jaws away from
+/// it, and poorly through the rest of its body surface. Tentacles don't eat; they grasp food
+/// within reach of their bases and pull it to the mouth.
 #[derive(Clone, Copy)]
 struct Reach {
     center: Vec2,
     radius: f32,
     mouth: Vec2,
     mouth_radius: f32,
-    /// Tentacle reach from the center (0 = no tentacles).
-    tentacles: f32,
+    /// Bite strength at the mouth (jaws there).
+    jaws: f32,
+    /// Jaws away from the mouth: world center, radius, strength.
+    bites: [(Vec2, f32, f32); MAX_BITES],
+    bite_count: usize,
+    /// Tentacle grasps: world center (the tentacle's base), radius and pull strength.
+    grasps: [(Vec2, f32, f32); MAX_GRASPS],
+    grasp_count: usize,
     /// How well it eats through its body surface, away from the mouth (0..1).
     body: f32,
+    extent: f32,
+}
+
+/// What a body in contact with an organism can be to it.
+#[derive(Clone, Copy, Default)]
+struct Contact {
+    /// How well it can be eaten there: 1 at the mouth or a jaw, `body` elsewhere on the body.
+    eat: f32,
+    /// How well it can be swallowed whole: only at the mouth (or poorly, through the body).
+    engulf: f32,
+    /// Strength of the jaws biting it.
+    jaws: f32,
+    /// At the mouth.
+    mouth: bool,
 }
 
 impl Reach {
-    fn new(
-        pos: Vec2,
-        heading: f32,
-        radius: f32,
-        mouth_offset: f32,
-        mouth_radius: f32,
-        reach: f32,
-        body: f32,
-    ) -> Reach {
+    fn new(pos: Vec2, heading: f32, radius: f32, t: &Traits, body: f32) -> Reach {
+        let rot = Vec2::from_angle(heading);
+        let place = |x: f32, y: f32| pos + rot.rotate(Vec2::new(x, y)) * radius;
+        let mouth = place(t.mouth_offset, 0.0);
+        let mouth_radius = t.mouth_radius * radius;
+        let mut extent = radius.max(mouth.distance(pos) + mouth_radius);
+        let mut bites = [(Vec2::ZERO, 0.0, 0.0); MAX_BITES];
+        let bite_count = t.bite_count as usize;
+        for (b, z) in bites.iter_mut().zip(&t.bites[..bite_count]) {
+            *b = (place(z.x, z.y), z.radius * radius, z.strength);
+            extent = extent.max(b.0.distance(pos) + b.1);
+        }
+        let mut grasps = [(Vec2::ZERO, 0.0, 0.0); MAX_GRASPS];
+        let grasp_count = t.grasp_count as usize;
+        for (g, z) in grasps.iter_mut().zip(&t.grasps[..grasp_count]) {
+            *g = (place(z.x, z.y), z.radius * radius, z.strength);
+            extent = extent.max(g.0.distance(pos) + g.1);
+        }
         Reach {
             center: pos,
             radius,
+            mouth,
+            mouth_radius,
+            jaws: t.jaws,
+            bites,
+            bite_count,
+            grasps,
+            grasp_count,
             body,
-            mouth: pos + Vec2::from_angle(heading) * (mouth_offset * radius),
-            mouth_radius: mouth_radius * radius,
-            tentacles: if reach > 0.0 {
-                radius * (1.0 + reach)
-            } else {
-                0.0
-            },
+            extent,
         }
     }
 
     /// Distance from the center that covers everything reachable.
     fn extent(&self) -> f32 {
-        (self.mouth.distance(self.center) + self.mouth_radius)
-            .max(self.tentacles)
-            .max(self.radius)
+        self.extent
     }
 
-    /// How well a body at `pos` with `radius` can be eaten: 1 at the mouth or within tentacle
-    /// reach, `body` if it only touches the body elsewhere, 0 out of reach.
-    fn touches(&self, pos: Vec2, radius: f32) -> f32 {
-        let m = self.mouth_radius + radius;
-        let t = self.tentacles + radius;
-        let b = self.radius + radius;
-        let d2 = pos.distance_squared(self.center);
-        if pos.distance_squared(self.mouth) < m * m || (self.tentacles > 0.0 && d2 < t * t) {
-            1.0
-        } else if d2 < b * b {
-            self.body
+    /// Where a bite on a body at `pos` shows: at the mouth, or on its near edge.
+    fn bite_point(&self, contact: &Contact, pos: Vec2, radius: f32) -> Vec2 {
+        if contact.mouth {
+            self.mouth + (pos - self.mouth).normalize_or_zero() * self.mouth_radius * 0.5
         } else {
-            0.0
+            pos + (self.center - pos).normalize_or_zero() * radius * 0.6
         }
+    }
+
+    /// How a body at `pos` with `radius` touches this organism.
+    fn contact(&self, pos: Vec2, radius: f32) -> Contact {
+        let within = |c: Vec2, r: f32| pos.distance_squared(c) < (r + radius) * (r + radius);
+        if within(self.mouth, self.mouth_radius) {
+            return Contact {
+                eat: 1.0,
+                engulf: 1.0,
+                jaws: self.jaws,
+                mouth: true,
+            };
+        }
+        let jaws = self.bites[..self.bite_count]
+            .iter()
+            .filter(|&&(c, r, _)| within(c, r))
+            .map(|b| b.2)
+            .fold(0.0, f32::max);
+        if jaws > 0.0 {
+            Contact {
+                eat: 1.0,
+                jaws,
+                ..Default::default()
+            }
+        } else if within(self.center, self.radius) {
+            Contact {
+                eat: self.body,
+                engulf: self.body,
+                ..Default::default()
+            }
+        } else {
+            Contact::default()
+        }
+    }
+
+    /// Which tentacles (bit k = grasp k) can reach a body at `pos` with `radius`.
+    fn grasping(&self, pos: Vec2, radius: f32) -> u8 {
+        let mut mask = 0;
+        for (k, &(c, r, _)) in self.grasps[..self.grasp_count].iter().enumerate() {
+            if pos.distance_squared(c) < (r + radius) * (r + radius) {
+                mask |= 1 << k;
+            }
+        }
+        mask
+    }
+
+    /// Give a body in reach to the first free tentacle that reaches it; returns that tentacle.
+    fn grab(&self, free: &mut u8, pos: Vec2, radius: f32) -> Option<usize> {
+        if *free == 0 {
+            return None;
+        }
+        let m = self.grasping(pos, radius) & *free;
+        (m != 0).then(|| {
+            let k = m.trailing_zeros() as usize;
+            *free &= !(1 << k);
+            k
+        })
+    }
+}
+
+/// Tentacles drag a held body toward the mouth, around the side of the body if it's behind; the
+/// pull is shared by mass (an anchored organism doesn't budge). Returns how far each moves.
+fn tentacle_pull(
+    reach: &Reach,
+    target: Vec2,
+    target_radius: f32,
+    speed: f32,
+    share: f32,
+) -> (Vec2, Vec2) {
+    let axis = (reach.mouth - reach.center).normalize_or_zero();
+    let rel = target - reach.center;
+    let aim = if rel.dot(axis) < 0.0 {
+        let side = if axis.perp_dot(rel) >= 0.0 { 1.0 } else { -1.0 };
+        reach.center + axis.perp() * side * (reach.radius + target_radius)
+    } else {
+        reach.mouth
+    };
+    let to = aim - target;
+    let dist = to.length();
+    if dist < 1e-4 || speed <= 0.0 {
+        return (Vec2::ZERO, Vec2::ZERO);
+    }
+    let step = to / dist * speed.min(dist);
+    (-step * (1.0 - share), step * share)
+}
+
+/// Share of a tentacle pull that moves the held body rather than the holder.
+fn pull_share(holder_mass: f32, target_mass: f32, anchored: bool) -> f32 {
+    if anchored {
+        1.0
+    } else {
+        holder_mass / (holder_mass + target_mass).max(1e-6)
     }
 }
 
@@ -315,6 +433,7 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
         push: Vec2::ZERO,
         attack: NONE,
         carcass: NONE,
+        grabs: [NONE; MAX_GRASPS],
         activity: Activity::Drifting,
     };
     let kin_threshold = cfg.species.kin_threshold;
@@ -327,16 +446,10 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     // Contacts: soft collision push, and a prey candidate at the mouth or within tentacle reach.
     let mass = r * r;
     let hunts = t.hunt > 0.0;
-    let reach = Reach::new(
-        pos,
-        o.heading,
-        r,
-        t.mouth_offset,
-        t.mouth_radius,
-        t.reach,
-        cfg.feeding.body_contact,
-    );
+    let reach = Reach::new(pos, o.heading, r, t, cfg.feeding.body_contact);
+    // Eat the smallest prey in contact; each tentacle grabs one thing within its reach.
     let mut prey: Option<(u32, f32)> = None;
+    let mut free: u8 = ((1u16 << reach.grasp_count) - 1) as u8;
     let mut push = Vec2::ZERO;
     ctx.grid.query(pos, reach.extent().max(r), 0.0, |e| {
         if e.index as usize == i {
@@ -356,12 +469,14 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             let other_mass = e.radius * e.radius;
             push -= dir * (min - dist) * (other_mass / (mass + other_mass));
         }
-        if hunts
-            && !spares(e)
-            && prey.is_none_or(|(_, pr)| e.radius < pr)
-            && reach.touches(e.pos, e.radius) > 0.0
-        {
-            prey = Some((e.index, e.radius));
+        if hunts && !spares(e) {
+            if reach.contact(e.pos, e.radius).eat > 0.0 && prey.is_none_or(|(_, pr)| e.radius < pr)
+            {
+                prey = Some((e.index, e.radius));
+            }
+            if let Some(k) = reach.grab(&mut free, e.pos, e.radius) {
+                intent.grabs[k] = e.index;
+            }
         }
         true
     });
@@ -370,15 +485,17 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
         intent.attack = j;
     }
 
-    // Carcass contact (at the mouth, or within tentacle reach).
+    // Carcass contact (at the mouth or jaws), and free tentacles grab carcasses too.
     let eats_carcasses = t.scavenge > 0.0 || t.hunt > 0.0;
     if eats_carcasses && !ctx.carcass_grid.is_empty() {
         ctx.carcass_grid.query(pos, reach.extent(), 0.0, |e| {
-            if reach.touches(e.pos, e.radius) > 0.0 {
+            if intent.carcass == NONE && reach.contact(e.pos, e.radius).eat > 0.0 {
                 intent.carcass = e.index;
-                return false;
             }
-            true
+            if let Some(k) = reach.grab(&mut free, e.pos, e.radius) {
+                intent.grabs[k] = e.index | CARCASS;
+            }
+            intent.carcass == NONE || free != 0
         });
     }
 
@@ -870,7 +987,11 @@ impl World {
         }
         world.log(
             EventKind::Milestone,
-            "Life begins: the first microbes drift in the sunlit shallows.".into(),
+            if initial == 1 {
+                "Life begins: a single microbe drifts in the sunlit shallows.".into()
+            } else {
+                "Life begins: the first microbes drift in the sunlit shallows.".into()
+            },
             None,
             None,
         );
@@ -1181,7 +1302,12 @@ impl World {
             self.spawn_ancestors(n);
             self.log(
                 EventKind::Recolonization,
-                format!("Life clings on: {n} ancestral microbes recolonize the shallows."),
+                if n == 1 {
+                    "Life is gone. A single new microbe appears in the shallows and starts again."
+                        .to_string()
+                } else {
+                    format!("Life clings on: {n} ancestral microbes recolonize the shallows.")
+                },
                 None,
                 Some(0),
             );
@@ -1440,6 +1566,7 @@ impl World {
         let mut first_kill = None;
         let tick = self.tick;
         let fx = &mut self.fx;
+        let terrain = &self.terrain;
 
         for i in 0..self.organisms.len() {
             let intent = intents[i];
@@ -1472,38 +1599,22 @@ impl World {
                 chemo: f32,
                 scavenge: f32,
                 hunt: f32,
-                jaws: f32,
                 filter: f32,
-                reach: f32,
                 uptake: f32,
                 uptake_area: f32,
                 resistance: f32,
-                mouth_offset: f32,
-                mouth_radius: f32,
             }
             let t = Diet {
                 chemo: o.traits.chemo,
                 scavenge: o.traits.scavenge,
                 hunt: o.traits.hunt,
-                jaws: o.traits.jaws,
                 filter: o.traits.filter,
-                reach: o.traits.reach,
                 uptake: o.traits.uptake,
                 uptake_area: o.traits.uptake_area,
                 resistance: o.traits.resistance,
-                mouth_offset: o.traits.mouth_offset,
-                mouth_radius: o.traits.mouth_radius,
             };
             let r = o.radius;
-            let reach = Reach::new(
-                o.pos,
-                o.heading,
-                r,
-                t.mouth_offset,
-                t.mouth_radius,
-                t.reach,
-                fc.body_contact,
-            );
+            let reach = Reach::new(o.pos, o.heading, r, &o.traits, fc.body_contact);
             let mut gained = 0.0;
             let mut absorbed = 0.0;
             let mut grazed = 0.0;
@@ -1553,11 +1664,12 @@ impl World {
             if intent.carcass != NONE
                 && let Some(c) = self.carcasses.get_mut(intent.carcass as usize)
                 && c.energy > 0.0
-                && let contact = reach.touches(c.pos, c.radius)
-                && contact > 0.0
+                && let contact = reach.contact(c.pos, c.radius)
+                && contact.eat > 0.0
             {
                 let skill = t.scavenge.max(0.7 * t.hunt);
-                let rate = fc.carcass_rate * skill * r * r * (0.3 + 1.7 * t.jaws) * contact;
+                let rate =
+                    fc.carcass_rate * skill * r * r * (0.3 + 1.7 * contact.jaws) * contact.eat;
                 let take = (rate * dt).min(c.energy);
                 let share = take / c.energy;
                 let n = c.nutrients * share;
@@ -1568,10 +1680,9 @@ impl World {
                 detritus.add(o.pos, take * (1.0 - fc.assimilation) / d_area);
                 o.activity = Activity::Scavenging;
                 if tick >= o.ate_tick + FX_THROTTLE && fx.len() < MAX_FX {
-                    let dir = (c.pos - reach.mouth).normalize_or_zero();
                     fx.push(Fx {
                         kind: FxKind::Scavenge,
-                        pos: reach.mouth + dir * reach.mouth_radius * 0.5,
+                        pos: reach.bite_point(&contact, c.pos, c.radius),
                         radius: r.max(c.radius * 0.5),
                         color: c.color,
                         tick,
@@ -1588,18 +1699,20 @@ impl World {
             let j = intent.attack as usize;
             if intent.attack != NONE && j < self.organisms.len() && j != i {
                 let (hunter, prey) = pair_mut(&mut self.organisms, i, j);
-                let contact = reach.touches(prey.pos, prey.radius);
-                if prey.dead.is_none() && contact > 0.0 {
-                    // Plates and spines only guard the side the attack comes from.
+                let contact = reach.contact(prey.pos, prey.radius);
+                if prey.dead.is_none() && contact.eat > 0.0 {
+                    // Plates and spines only guard the side the attack comes from; jaws bite
+                    // through part of a shell.
                     let from = hunter.pos - prey.pos;
                     let (armor, spikes) = prey
                         .traits
                         .defense_toward(from.y.atan2(from.x) - prey.heading);
-                    let protection = 1.0 - fc.armor_protection * armor;
+                    let protection =
+                        1.0 - fc.armor_protection * armor * (1.0 - fc.jaw_pierce * contact.jaws);
                     let mut taken_mass = 0.0;
                     let mut taken_energy = 0.0;
-                    if prey.radius <= fc.engulf_ratio * hunter.radius {
-                        let p = fc.engulf_rate * t.hunt * protection * contact * dt;
+                    if prey.radius <= fc.engulf_ratio * hunter.radius && contact.engulf > 0.0 {
+                        let p = fc.engulf_rate * t.hunt * protection * contact.engulf * dt;
                         if hunter.rng.chance(p) {
                             taken_mass = prey.mass;
                             taken_energy = prey.body_value(config);
@@ -1626,12 +1739,12 @@ impl World {
                     } else {
                         let bite = fc.bite_rate
                             * t.hunt
-                            * (0.2 + 1.8 * t.jaws)
+                            * (0.2 + 1.8 * contact.jaws)
                             * r
                             * r
                             * dt
                             * protection
-                            * contact;
+                            * contact.eat;
                         let dm = bite.min(prey.mass);
                         if dm > 0.0 {
                             let frac = dm / prey.mass;
@@ -1645,10 +1758,9 @@ impl World {
                             prey.hp -= dm * prey.traits.hp_factor;
                             prey.set_mass(prey.mass - dm);
                             if tick >= hunter.ate_tick + FX_THROTTLE && fx.len() < MAX_FX {
-                                let dir = (prey.pos - reach.mouth).normalize_or_zero();
                                 fx.push(Fx {
                                     kind: FxKind::Bite,
-                                    pos: reach.mouth + dir * reach.mouth_radius * 0.5,
+                                    pos: reach.bite_point(&contact, prey.pos, prey.radius),
                                     radius: hunter.radius.max(prey.radius * 0.5),
                                     color: prey.traits.color,
                                     tick,
@@ -1692,6 +1804,55 @@ impl World {
                         }
                     }
                 }
+            }
+
+            // Each tentacle drags what it holds toward the mouth.
+            for (k, &target) in intent.grabs[..reach.grasp_count].iter().enumerate() {
+                if target == NONE {
+                    continue;
+                }
+                let (base, grasp_r, strength) = reach.grasps[k];
+                let speed = fc.tentacle_pull * strength * r.sqrt() * dt;
+                let reaches = |pos: Vec2, radius: f32| {
+                    pos.distance_squared(base) < (grasp_r + radius) * (grasp_r + radius)
+                };
+                let (holder, pos, radius) = if target & CARCASS != 0 {
+                    let Some(c) = self.carcasses.get_mut((target & !CARCASS) as usize) else {
+                        continue;
+                    };
+                    let o = &mut self.organisms[i];
+                    if c.energy <= 0.0 || o.dead.is_some() || !reaches(c.pos, c.radius) {
+                        continue;
+                    }
+                    let share = pull_share(o.mass, c.radius * c.radius, o.anchored);
+                    let (moved, dragged) = tentacle_pull(&reach, c.pos, c.radius, speed, share);
+                    o.pos += moved;
+                    c.pos += dragged;
+                    terrain.collide(&mut o.pos, &mut o.vel, r);
+                    terrain.collide(&mut c.pos, &mut c.vel, c.radius);
+                    (o, c.pos, c.radius)
+                } else {
+                    let j = target as usize;
+                    if j == i || j >= self.organisms.len() {
+                        continue;
+                    }
+                    let (o, prey) = pair_mut(&mut self.organisms, i, j);
+                    if prey.dead.is_some() || o.dead.is_some() || !reaches(prey.pos, prey.radius) {
+                        continue;
+                    }
+                    let share = pull_share(o.mass, prey.mass, o.anchored);
+                    let (moved, dragged) =
+                        tentacle_pull(&reach, prey.pos, prey.radius, speed, share);
+                    o.pos += moved;
+                    prey.pos += dragged;
+                    terrain.collide(&mut o.pos, &mut o.vel, r);
+                    terrain.collide(&mut prey.pos, &mut prey.vel, prey.radius);
+                    (o, prey.pos, prey.radius)
+                };
+                if holder.grasps.len() < reach.grasp_count {
+                    holder.grasps.resize(reach.grasp_count, Grasp::default());
+                }
+                holder.grasps[k].hold(pos, radius, tick);
             }
 
             // Anything the organism can't store is lost: energy as detritus, nutrients excreted.
@@ -2175,6 +2336,8 @@ mod tests {
         c.population.min_population = 10;
         c.population.vent_initial = 0;
         c.population.vent_seed = 0;
+        c.terrain.island = false;
+        c.terrain.shelf_vents = false;
         c
     }
 
@@ -2578,18 +2741,15 @@ mod tests {
     }
 
     #[test]
-    fn mouths_eat_in_front_and_tentacles_reach_around() {
+    fn mouths_eat_in_front_and_the_body_eats_poorly() {
         // A sessile hunter facing right biting large prey in front of it or against its back.
-        let bite = |tentacles: bool, behind: bool| {
+        let bite = |behind: bool| {
             let mut world = empty_world();
             let h = world.config.world.height;
             let mut g = world.ancestor;
             g.0[gene::SIZE] = 0x60;
             g.0[gene::PHOTO] = 0x00;
             g.0[gene::HUNT] = 0xFF;
-            if tentacles {
-                g = with_part(g, 0, PartKind::Tentacle, 2, 0xFF, 16);
-            }
             let pos = Vec2::new(2000.0, h - 300.0);
             let hunter = add(&mut world, g, pos);
             world.organisms[hunter].heading = 0.0;
@@ -2602,16 +2762,162 @@ mod tests {
             world.step();
             m0 - world.organisms[p].mass
         };
-        let (front, back) = (bite(false, false), bite(false, true));
+        let (front, back) = (bite(false), bite(true));
         assert!(front > 0.0 && back > 0.0, "front {front} back {back}");
         assert!(
             back < front * 0.5,
             "the body eats poorly: front {front} back {back}"
         );
-        let reached = bite(true, true);
+    }
+
+    #[test]
+    fn tentacles_grab_near_their_base() {
+        // One tentacle on the left side: it grabs things on the left, not on the right.
+        let world = empty_world();
+        let mut g = world.ancestor;
+        g.0[gene::SIZE] = 0x60;
+        g = with_part(g, 0, PartKind::Tentacle, 0, 0xFF, 8);
+        let t = crate::traits::Traits::decode(&g, &world.config);
+        assert_eq!(t.grasp_count, 1);
         assert!(
-            reached > back * 2.0,
-            "tentacles bring food to the mouth: {reached} vs {back}"
+            t.grasps[0].y > 0.5,
+            "the grasp is around the base: {:?}",
+            t.grasps[0]
+        );
+        let r = t.adult_radius;
+        let reach = Reach::new(Vec2::ZERO, 0.0, r, &t, 0.3);
+        let out = r * (1.0 + t.grasps[0].radius * 0.8);
+        let (left, right) = (Vec2::new(0.0, out), Vec2::new(0.0, -out));
+        assert_eq!(reach.grasping(left, 1.0), 1, "grabbed on its side");
+        assert_eq!(reach.contact(left, 1.0).eat, 0.0, "but not eaten there");
+        assert_eq!(reach.grasping(right, 1.0), 0, "out of reach on the other side");
+    }
+
+    #[test]
+    fn each_tentacle_holds_one_thing() {
+        // A ring of three tentacles with a small prey beside each, and a fourth prey beside the
+        // first: three are held, one per tentacle.
+        let mut world = empty_world();
+        let h = world.config.world.height;
+        let mut g = world.ancestor;
+        g.0[gene::SIZE] = 0x60;
+        g.0[gene::PHOTO] = 0x00;
+        g.0[gene::HUNT] = 0xFF;
+        g = with_part(g, 0, PartKind::Tentacle, 2, 0xFF, 16);
+        let pos = Vec2::new(2000.0, h - 300.0);
+        let hunter = add(&mut world, g, pos);
+        world.organisms[hunter].heading = 0.0;
+        let t = world.organisms[hunter].traits;
+        assert_eq!(t.grasp_count, 3);
+        let r = world.organisms[hunter].radius;
+        let mut prey = world.ancestor;
+        prey.0[gene::SIZE] = 0x10;
+        prey.0[gene::HUE] = 0xD0;
+        for (k, z) in t.grasps[..3].iter().enumerate() {
+            let base = Vec2::new(z.x, z.y) * r;
+            let out = base.normalize() * (z.radius * r * 0.6);
+            add(&mut world, prey, pos + base + out);
+            if k == 0 {
+                add(&mut world, prey, pos + base + out * 1.3);
+            }
+        }
+        for o in &mut world.organisms {
+            o.repro_cooldown = 1e9;
+        }
+        world.step();
+        let o = &world.organisms[hunter];
+        let holding: Vec<&Grasp> = o.grasps.iter().filter(|g| g.tick == world.tick).collect();
+        assert_eq!(holding.len(), 3, "each tentacle holds one: {:?}", o.grasps);
+        for (a, b) in [(0, 1), (0, 2), (1, 2)] {
+            assert!(holding[a].pos.distance(holding[b].pos) > 1.0, "different prey");
+        }
+    }
+
+    #[test]
+    fn tentacles_pull_food_around_to_the_mouth() {
+        // Large prey held just behind a sessile hunter gets dragged around to its mouth.
+        let run = |tentacles: bool| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let mut g = world.ancestor;
+            g.0[gene::SIZE] = 0x60;
+            g.0[gene::PHOTO] = 0x00;
+            g.0[gene::HUNT] = 0xFF;
+            if tentacles {
+                g = with_part(g, 0, PartKind::Tentacle, 2, 0xFF, 16);
+            }
+            let pos = Vec2::new(2000.0, h - 300.0);
+            let hunter = add(&mut world, g, pos);
+            world.organisms[hunter].heading = 0.0;
+            let r = world.organisms[hunter].radius;
+            let mut prey = world.ancestor;
+            prey.0[gene::SIZE] = 0x58;
+            prey.0[gene::HUE] = 0xD0;
+            let pr = crate::traits::Traits::decode(&prey, &world.config).adult_radius;
+            let p = add(&mut world, prey, pos - Vec2::new(r + pr + 0.3 * r, 0.0));
+            let id = world.organisms[p].id;
+            let m0 = world.organisms[p].mass;
+            // Nobody buds during the test.
+            for o in &mut world.organisms {
+                o.repro_cooldown = 1e9;
+            }
+            for _ in 0..90 {
+                world.step();
+            }
+            world.find(id).map(|o| m0 - o.mass).unwrap_or(m0)
+        };
+        let (with, without) = (run(true), run(false));
+        assert!(
+            with > 3.0 * without,
+            "tentacles bring it to be eaten: {with} vs {without}"
+        );
+    }
+
+    #[test]
+    fn jaws_bite_where_they_are_and_crack_shells() {
+        let world = empty_world();
+        let base = {
+            let mut g = world.ancestor;
+            g.0[gene::SIZE] = 0x60;
+            g.0[gene::PHOTO] = 0x00;
+            g.0[gene::HUNT] = 0xFF;
+            g
+        };
+        let decode = |g: &Genome| crate::traits::Traits::decode(g, &world.config);
+        // Jaws at the front strengthen the mouth; a jaw on the back bites there.
+        let front = decode(&with_part(base, 0, PartKind::Jaw, 1, 0xC0, 2));
+        assert!(front.jaws > 0.5 && front.bite_count == 0);
+        let back = decode(&with_part(base, 0, PartKind::Jaw, 0, 0xC0, 16));
+        assert!(back.jaws == 0.0 && back.bite_count == 1);
+        let r = back.adult_radius;
+        let reach = Reach::new(Vec2::ZERO, 0.0, r, &back, 0.3);
+        let behind = reach.contact(Vec2::new(-1.6 * r, 0.0), 0.5 * r);
+        assert!(behind.eat == 1.0 && behind.jaws > 0.5 && behind.engulf == 0.0);
+
+        // Jawed mouths bite through part of a shell.
+        let bite = |pierce: f32| {
+            let mut world = empty_world();
+            world.config.feeding.jaw_pierce = pierce;
+            let h = world.config.world.height;
+            let pos = Vec2::new(2000.0, h - 300.0);
+            let hunter = add(
+                &mut world,
+                with_part(base, 0, PartKind::Jaw, 1, 0xFF, 2),
+                pos,
+            );
+            world.organisms[hunter].heading = 0.0;
+            let mut prey = with_part(world.ancestor, 0, PartKind::Shell, 5, 0xFF, 0);
+            prey.0[gene::SIZE] = 0x58;
+            prey.0[gene::HUE] = 0xD0;
+            let p = add(&mut world, prey, pos + Vec2::new(12.0, 0.0));
+            let m0 = world.organisms[p].mass;
+            world.step();
+            m0 - world.organisms[p].mass
+        };
+        let (cracked, blocked) = (bite(0.6), bite(0.0));
+        assert!(
+            cracked > 1.5 * blocked && blocked > 0.0,
+            "cracked {cracked} blocked {blocked}"
         );
     }
 

@@ -3,6 +3,7 @@
 //! Body parts (P chromosome) are laid out once here and summed into plain numbers
 //! (thrust, grip, eye cones, …), so the per-tick simulation never looks at parts.
 
+use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
@@ -11,6 +12,22 @@ use crate::parts::{self, BodyShape, Instance, PartKind};
 
 /// Most eyes whose view cones the simulation tracks (the largest ones win).
 pub const MAX_EYES: usize = 6;
+/// Most tentacle grasps and jaw bite sites the simulation tracks (the largest ones win).
+pub const MAX_GRASPS: usize = 8;
+pub const MAX_BITES: usize = 4;
+
+/// A body-local circle where a part works: a tentacle's grasp around its base, or where a jaw
+/// away from the mouth bites. In body radii (0,0 = body center, +x = forward).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Zone {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    /// How strong the part is there, 0..1 (jaw bite strength, tentacle pull).
+    pub strength: f32,
+    /// Index of the part instance in the body layout (to draw the tentacle that's holding).
+    pub part: u8,
+}
 
 /// One eye's view cone.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -43,11 +60,14 @@ pub struct Traits {
     pub armor_sides: [f32; 4],
     pub spikes_sides: [f32; 4],
     /// The mouth: its center's distance ahead of the body center, and its radius (body radii).
-    /// Food is eaten only at the mouth, or wherever tentacles reach.
+    /// Food is eaten well only at the mouth or at jaws; tentacles pull it to the mouth.
     pub mouth_offset: f32,
     pub mouth_radius: f32,
-    /// Bite strength (jaws), 0..1.
+    /// Bite strength of the jaws at the mouth, 0..1.
     pub jaws: f32,
+    /// Jaws away from the mouth: each bites (but can't swallow) where it sits.
+    pub bites: [Zone; MAX_BITES],
+    pub bite_count: u8,
     /// −1 (sinks) .. +1 (floats), after the weight of parts.
     pub buoyancy: f32,
     /// Energy storage per unit of mass.
@@ -110,8 +130,10 @@ pub struct Traits {
     /// Longest sense range in body radii (0 = blind).
     pub sense_radii: f32,
 
-    /// How far tentacles reach beyond the body, in body radii.
-    pub reach: f32,
+    /// What each tentacle can grasp: a circle around its base. Each holds one thing at a time
+    /// and pulls it toward the mouth with its own strength.
+    pub grasps: [Zone; MAX_GRASPS],
+    pub grasp_count: u8,
     /// Extra marine-snow sweep from cilia and tentacles (multiplier − 1).
     pub filter: f32,
     /// Width that catches light, as a multiple of the body's (fronds).
@@ -263,11 +285,12 @@ struct PartSums {
     grip: f32,
     holdfast: f32,
     spines: [f32; 4],
-    jaws: f32,
     shell: [f32; 4],
     antennae: f32,
     lure: f32,
-    reach: f32,
+    grasps: Vec<Zone>,
+    /// Jaws: where each sits, where it bites (center and radius, body radii), and its size.
+    jaws_at: Vec<(Vec2, Vec2, f32, f32)>,
     filter: f32,
     fronds: f32,
     mass: f32,
@@ -280,7 +303,7 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
     let small = small_swimmer(radius, pc.small_swimmer_radius);
     let large = large_swimmer(radius, pc.large_swimmer_radius);
     let mut p = PartSums::default();
-    for inst in instances {
+    for (index, inst) in instances.iter().enumerate() {
         let s = inst.size;
         let spec = inst.kind.spec();
         // Even a tiny part weighs and costs something.
@@ -288,7 +311,6 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
         p.mass += spec.mass * bulk;
         p.upkeep += spec.upkeep * bulk;
         p.drag += spec.drag * bulk;
-        let cos = inst.dir.cos();
         let raised = if inst.parent == Some(PartKind::Stalk) {
             pc.stalk_bonus
         } else {
@@ -310,7 +332,14 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
                 p.turning += 0.1 * s;
                 p.grip += 0.1 * s;
                 p.filter += 0.15 * s;
-                p.reach = p.reach.max(inst.length * pc.tentacle_reach * raised);
+                // It bends, so it can grasp anything within most of its length of its base.
+                p.grasps.push(Zone {
+                    x: inst.base.x,
+                    y: inst.base.y,
+                    radius: inst.length * pc.tentacle_reach,
+                    strength: saturating(1.5 * s),
+                    part: index.min(255) as u8,
+                });
             }
             PartKind::Frond => p.fronds += inst.length * raised,
             PartKind::Fin => {
@@ -346,7 +375,10 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
                     *v += side_weight(inst.dir, k) * s;
                 }
             }
-            PartKind::Jaw => p.jaws += s * cos.max(0.15),
+            PartKind::Jaw => {
+                let site = inst.base + Vec2::from_angle(inst.dir) * (0.5 * inst.length);
+                p.jaws_at.push((inst.base, site, 0.5 * inst.length + 0.15, s));
+            }
             PartKind::Shell => {
                 for (k, v) in p.shell.iter_mut().enumerate() {
                     *v += side_weight(inst.dir, k) * (0.4 + 0.6 * s);
@@ -383,7 +415,45 @@ impl Traits {
         let mouth_radius = (0.85 * body.head_width()).max(0.4);
         let mouth_offset = body.nose() - 0.6 * mouth_radius;
         let extra_segments = (body.segments - 1) as f32;
-        let jaws = saturating(1.2 * p.jaws);
+        // Jaws at the mouth strengthen its bite; each jaw elsewhere bites where it sits (a pair
+        // side by side bites together).
+        let mouth_at = Vec2::new(mouth_offset, 0.0);
+        let mut mouth_jaws = 0.0;
+        let mut sites: Vec<(Vec2, f32, f32)> = Vec::new();
+        for &(base, at, radius, size) in &p.jaws_at {
+            if base.distance(mouth_at) < mouth_radius {
+                mouth_jaws += size;
+            } else if let Some(site) = sites
+                .iter_mut()
+                .find(|(c, r, _)| c.distance(at) < 0.5 * (r + radius))
+            {
+                site.2 += size;
+            } else {
+                sites.push((at, radius, size));
+            }
+        }
+        let jaws = saturating(1.2 * mouth_jaws);
+        sites.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        let mut bites = [Zone::default(); MAX_BITES];
+        let bite_count = sites.len().min(MAX_BITES);
+        for (zone, &(at, radius, size)) in bites.iter_mut().zip(&sites) {
+            *zone = Zone {
+                x: at.x,
+                y: at.y,
+                radius,
+                strength: saturating(1.2 * size),
+                part: 0,
+            };
+        }
+        // Tentacles: keep the widest grasps.
+        p.grasps.sort_by(|a, b| {
+            b.radius
+                .partial_cmp(&a.radius)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut grasps = [Zone::default(); MAX_GRASPS];
+        let grasp_count = p.grasps.len().min(MAX_GRASPS);
+        grasps[..grasp_count].copy_from_slice(&p.grasps[..grasp_count]);
         let buoyancy_gene = genome.signed(gene::BUOYANCY);
         let buoyancy = (buoyancy_gene - p.mass * config.physics.part_density).clamp(-1.0, 1.0);
         let reserves = f(gene::RESERVES);
@@ -539,6 +609,8 @@ impl Traits {
             mouth_offset,
             mouth_radius,
             jaws,
+            bites,
+            bite_count: bite_count as u8,
             buoyancy,
             reserve_factor: lerp(gc.reserves_min, gc.reserves_max, reserves),
             lifespan: gc.lifespan_base
@@ -570,7 +642,8 @@ impl Traits {
             eye_count: eye_count as u8,
             smell_radii,
             sense_radii,
-            reach: p.reach,
+            grasps,
+            grasp_count: grasp_count as u8,
             filter: p.filter,
             light_span: 1.0 + pc.frond_span * p.fronds,
             uptake_area: 1.0 + pc.frond_uptake * p.fronds,

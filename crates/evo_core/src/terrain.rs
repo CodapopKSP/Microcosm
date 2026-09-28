@@ -24,6 +24,9 @@ pub struct Terrain {
     pub height: f32,
     /// Incremented whenever the terrain changes (so the renderer can refresh).
     pub version: u64,
+    /// Where permanent vents sit (in the shelf's vent chamber, on the cliff, inside the island).
+    #[serde(default)]
+    pub vent_sites: Vec<Vec2>,
 }
 
 /// A wall rising from the seafloor (from an event).
@@ -204,6 +207,12 @@ impl Terrain {
             }
         };
 
+        // Keep random rocks and caves off the shelf's vent system, so its shaft opens to the
+        // sky.
+        let vent_system_x = (cfg.shelf_start * width + 650.0).min(width * 0.95);
+        let blocks_vent = |lo: f32, hi: f32| {
+            cfg.shelf_vents && hi > vent_system_x - 250.0 && lo < vent_system_x + 250.0
+        };
         for k in 0..cfg.rocks {
             let size = cfg.rock_size * rng.range(0.5, 1.6);
             let cx = rng.range(0.05, 0.95) * width;
@@ -229,12 +238,14 @@ impl Terrain {
                         in_pillar || in_ledge
                     };
                     let reach = size * 2.5;
-                    stamp(
-                        &mut solid,
-                        &shape,
-                        Vec2::new(cx - reach, base - 50.0),
-                        Vec2::new(cx + reach, base + h + size),
-                    );
+                    if !blocks_vent(cx - reach, cx + reach) {
+                        stamp(
+                            &mut solid,
+                            &shape,
+                            Vec2::new(cx - reach, base - 50.0),
+                            Vec2::new(cx + reach, base + h + size),
+                        );
+                    }
                 }
                 // Arch (two legs and a span) — makes a sheltered cave.
                 1 => {
@@ -251,16 +262,21 @@ impl Terrain {
                         legs || top
                     };
                     let reach = span + size;
-                    stamp(
-                        &mut solid,
-                        &shape,
-                        Vec2::new(cx - reach, base - 50.0),
-                        Vec2::new(cx + reach, base + h + size),
-                    );
+                    if !blocks_vent(cx - reach, cx + reach) {
+                        stamp(
+                            &mut solid,
+                            &shape,
+                            Vec2::new(cx - reach, base - 50.0),
+                            Vec2::new(cx + reach, base + h + size),
+                        );
+                    }
                 }
                 // Boulder field with narrow crevices between the stones.
                 _ => {
                     let stones = 3 + rng.below(4);
+                    if blocks_vent(cx - size, cx + stones as f32 * (1.4 * size + 40.0)) {
+                        continue;
+                    }
                     let mut x = cx;
                     for _ in 0..stones {
                         let r = size * rng.range(0.35, 0.7);
@@ -310,6 +326,9 @@ impl Terrain {
             let base = floor_at(cx);
             let nseed = seed.wrapping_add(0xCA7E + k as u64 * 7_919);
             let (mound_w, mound_h) = (size * 1.6, size * 1.1);
+            if blocks_vent(cx - mound_w * 1.2, cx + mound_w * 1.2) {
+                continue;
+            }
             let mound = move |p: Vec2| {
                 let a = (p - Vec2::new(cx, base)).to_angle();
                 let wobble = 1.0 + 0.12 * value_noise(nseed, a * 4.0);
@@ -343,6 +362,103 @@ impl Terrain {
             );
         }
 
+        // Distance from p to the segment a-b.
+        let segment = |p: Vec2, a: Vec2, b: Vec2| {
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+            p.distance(a + ab * t)
+        };
+        let mut vent_sites = Vec::new();
+
+        // The shelf's vent system: a chamber under the shelf with a permanent vent, a small
+        // shaft up to the water, and a tunnel out through the cliff. A second vent sits
+        // further down the cliff: a path from the sunlit shelf to the deep.
+        if cfg.shelf_vents {
+            let cx = (shelf_x + 650.0).min(width * 0.95);
+            let top = floor_at(cx);
+            let chamber = Vec2::new(cx, top - 230.0);
+            let (ch_w, ch_h) = (170.0, 70.0);
+            let tunnel_y = chamber.y - 20.0;
+            let tunnel_end = (shelf_x - 1300.0).max(0.0);
+            let nseed = seed ^ 0x5E17;
+            let hollow = move |p: Vec2| {
+                let q = (p - chamber) / Vec2::new(ch_w, ch_h);
+                let shaft = (p.x - cx - 40.0).abs() < 22.0 && p.y > chamber.y && p.y < top + 60.0;
+                let wiggle = 30.0 * value_noise(nseed, p.x / 180.0);
+                let tunnel = p.x < cx && p.x > tunnel_end && (p.y - tunnel_y - wiggle).abs() < 26.0;
+                q.length() < 1.0 || shaft || tunnel
+            };
+            carve(
+                &mut solid,
+                &hollow,
+                Vec2::new(tunnel_end, chamber.y - ch_h - 60.0),
+                Vec2::new(cx + ch_w + 40.0, top + 80.0),
+            );
+            vent_sites.push(Vec2::new(cx - 30.0, chamber.y - ch_h + 14.0));
+            // Down the cliff: the first spot, left of the shelf, that's 600 below the chamber.
+            let mut x = cx;
+            while x > cell * 4.0 && floor_at(x) > chamber.y - 600.0 {
+                x -= cell;
+            }
+            let site = Vec2::new(x, floor_at(x) + 14.0);
+            let niche = move |p: Vec2| p.distance(site + Vec2::new(0.0, 30.0)) < 60.0;
+            carve(
+                &mut solid,
+                &niche,
+                site - Vec2::splat(100.0),
+                site + Vec2::splat(100.0),
+            );
+            vent_sites.push(site);
+        }
+
+        // A floating island in mid-water: organisms swim above and below it. Inside, a
+        // chamber with a permanent vent, a shaft up to its top, a tunnel straight through,
+        // and another out of its underside.
+        if cfg.island {
+            let ic = Vec2::new(cfg.island_x * width, height - cfg.island_depth);
+            let (iw, ih) = (cfg.island_width * 0.5, cfg.island_height * 0.5);
+            let nseed = seed ^ 0x1514;
+            let blob = move |p: Vec2| {
+                let q = (p - ic) / Vec2::new(iw, ih);
+                let a = q.y.atan2(q.x);
+                let wobble = 1.0
+                    + 0.08 * value_noise(nseed, a * 3.0 + 10.0)
+                    + 0.04 * value_noise(nseed ^ 1, a * 11.0 + 10.0);
+                // A little flatter on top, rounded underneath.
+                let q = Vec2::new(q.x, if q.y > 0.0 { q.y * 1.1 } else { q.y });
+                q.length() < wobble
+            };
+            stamp(
+                &mut solid,
+                &blob,
+                ic - Vec2::new(iw, ih) * 1.4,
+                ic + Vec2::new(iw, ih) * 1.4,
+            );
+            // Narrow, winding passages: one straight through, a shaft from the vent chamber up
+            // to the top, and a passage out of the underside.
+            let chamber = ic + Vec2::new(0.0, -ih * 0.1);
+            let (ch_w, ch_h) = (iw * 0.2, ih * 0.22);
+            let through_y = ic.y + ih * 0.35;
+            let shaft_x = ic.x + iw * 0.08;
+            let under = ic + Vec2::new(-iw * 0.55, -ih * 1.3);
+            let hollow = move |p: Vec2| {
+                let q = (p - chamber) / Vec2::new(ch_w, ch_h);
+                let wind = |seed: u64, t: f32| 55.0 * value_noise(nseed ^ seed, t / 140.0);
+                let through = (p.y - through_y - wind(2, p.x)).abs() < 20.0;
+                let shaft = (p.x - shaft_x - wind(3, p.y)).abs() < 18.0 && p.y > chamber.y;
+                let bend = Vec2::new(wind(4, p.y) * 0.8, 0.0);
+                let down = segment(p + bend, chamber, under) < 18.0;
+                q.length() < 1.0 || through || shaft || down
+            };
+            carve(
+                &mut solid,
+                &hollow,
+                ic - Vec2::new(iw, ih) * 1.5,
+                ic + Vec2::new(iw, ih) * 1.5,
+            );
+            vent_sites.push(Vec2::new(chamber.x - ch_w * 0.3, chamber.y - ch_h + 14.0));
+        }
+
         let mut terrain = Terrain {
             sdf: field,
             base_mask: solid.clone(),
@@ -351,6 +467,7 @@ impl Terrain {
             width,
             height,
             version: 0,
+            vent_sites,
         };
         terrain.recompute_sdf(0, nx);
         terrain
@@ -554,5 +671,32 @@ mod tests {
         assert_eq!(d[12], 0.0);
         assert_eq!(d[0], 8.0);
         assert_eq!(d[13], 1.0);
+    }
+
+    #[test]
+    fn island_floats_and_vents_sit_in_open_water() {
+        let config = Config::default();
+        let t = Terrain::generate(&config);
+        assert_eq!(t.vent_sites.len(), 3, "shelf chamber, cliff, island");
+        for &v in &t.vent_sites {
+            assert!(t.distance(v) > 2.0, "vent at {v:?} is in water");
+        }
+        // The island is rock with water above and below it.
+        let c = &config.terrain;
+        let x = c.island_x * config.world.width - c.island_width * 0.3;
+        let y = config.world.height - c.island_depth;
+        assert!(t.is_solid(Vec2::new(x, y)));
+        assert!(!t.is_solid(Vec2::new(x, y + c.island_height)));
+        assert!(!t.is_solid(Vec2::new(x, y - c.island_height)));
+        // The shelf chamber's shaft opens to the water above.
+        let chamber_vent = t.vent_sites[0];
+        let mut p = chamber_vent + Vec2::new(70.0, 100.0);
+        while p.y < config.world.height - 10.0 && !t.is_solid(p) {
+            p.y += 8.0;
+        }
+        assert!(
+            p.y >= t.floor_at(p.x),
+            "shaft reaches up to the shelf surface"
+        );
     }
 }

@@ -19,7 +19,9 @@ A **side-on cross-section of an ocean**. `y` grows upward; the water surface is 
 | Sunlit surface | Most light; warm; phototrophs bloom and shade each other |
 | Twilight / open water | Light fades exponentially with depth; hunters and drifters |
 | Deep / seafloor | Dark and cold; detritus ("marine snow") settles into sediment |
-| Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Two are kept shallow (on the shelf and upper slope, in dim light), stepping stones between the sunlit water and the deep vents |
+| Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Most come and go over hours; one is kept shallow. Three are permanent parts of the terrain (below) |
+| Shelf vent system | Under the shelf, a chamber holds a permanent vent, with a small shaft up to the shelf surface (things can fall in) and a tunnel out through the cliff face. A second permanent vent sits lower down the cliff: a path from the sunlit shelf to the deep |
+| Floating island | A mass of rock in mid-water (center ~1,500 deep) that organisms can swim over and under. It shades the water beneath it. Inside: a chamber with a permanent vent, a shaft up to the top, a winding tunnel straight through, and a passage out of the underside |
 | Shelf | A shallow region where the seafloor itself is sunlit |
 | Rocks & crevices | Block movement and cast shade; narrow gaps shelter small organisms |
 | Caves | Hollow rock chambers with a narrow entrance, on the shelf and the deep floor. Dark inside; only small bodies fit through the entrance |
@@ -154,7 +156,7 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 |------|-----|-------|
 | Flagellum | Pushes the body away from the side it's on (a trailing flagellum pushes it forward) | Best for small bodies |
 | Cilia band | A little thrust across its axis, turning, filter feeding | Best for small bodies |
-| Tentacle | Reach: grabs prey and carcasses all around the body, not just at the mouth | Also filters and grips |
+| Tentacle | Grabs prey and carcasses within 80% of its length of its base and drags them to the mouth (it doesn't eat itself) | Also filters and grips; a tentacle on a frond or stalk grabs from out there |
 | Frond | Catches light over a wider span, takes up nutrients | Makes large photosynthesizers viable |
 | Fin | Swimming across its axis (fins on the sides row forward) and turning | Best for larger bodies |
 | Tail fluke | Powerful swimming away from where it points | Best for larger bodies; points back to push forward |
@@ -175,8 +177,8 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 - **Turning** needs an organ to turn with: fins, cilia, flagella, flukes and tentacles, or legs while walking on rock. A body without one keeps its orientation forever. Long and segmented bodies turn more slowly.
 - **Walking** speed from legs, **grip** from legs, tentacles and holdfasts, **anchoring** from holdfasts. Only organisms with such parts check whether they touch rock.
 - **Senses**: each eye is a view cone (up to six are tracked); antennae give a smell radius. No eyes and no antennae means blind (contact only).
-- **Reach** from the longest tentacle; **light span** and nutrient-uptake surface from fronds; **filtering** from cilia and tentacles; **glow** from lures.
-- **Armor** from shell plates and **spikes** from spines, **per side** (front, left, back, right): a plate or spine mostly guards the side it faces, so a shell on the back protects against chasers but not a head-on attack. **Jaws** from jaws, strongest facing forward. All with diminishing returns (1 − e^(−x)).
+- **Grasps**: one circle around each tentacle's base, and a **pull** strength from their total size; **light span** and nutrient-uptake surface from fronds; **filtering** from cilia and tentacles; **glow** from lures.
+- **Armor** from shell plates and **spikes** from spines, **per side** (front, left, back, right): a plate or spine mostly guards the side it faces, so a shell on the back protects against chasers but not a head-on attack. **Jaws** at the mouth (a jaw whose bite lands inside the mouth circle) strengthen the mouth; each jaw elsewhere is a **bite site** of its own (jaws side by side bite together). All with diminishing returns (1 − e^(−x)).
 - Every part costs **upkeep** and has **mass**: building a body with parts costs more, and heavy parts sink it.
 
 ---
@@ -237,13 +239,15 @@ needs     = (basal + movement) × breathing/fermentation cost (§4)
 |------|----------|-------------|
 | Photosynthesis | Share of light absorbed in the organism's light cell(s) (§1), limited by CO₂ or minerals (§4) | Width × frond span (big photosynthesizers need fronds) |
 | Chemosynthesis | Uptake from the mineral field: `2 × c × radius × concentration`, depleting it | Perimeter (favors small) |
-| Scavenging | Uptake from the detritus field, `12 × c × radius × (1 + filter) × concentration` (intercepting falling marine snow), plus a filter-feeding bonus when swimming; eating large carcasses at the mouth or within tentacle reach | Width; width × speed when swimming |
+| Scavenging | Uptake from the detritus field, `12 × c × radius × (1 + filter) × concentration` (intercepting falling marine snow), plus a filter-feeding bonus when swimming; eating large carcasses at the mouth or a jaw (tentacles drag them there) | Width; width × speed when swimming |
 | Hunting | See below | Size, jaws |
 
-**Hunting.** When a non-kin organism touches the hunter's **mouth** (a circle at the front of its head: most of the front half of a round cell, only the nose of a long body), or anywhere its tentacles reach. Food that only touches the rest of the body is eaten at 30% of the rate, so facing your food pays:
+**Hunting.** When a non-kin organism touches the hunter's **mouth** (a circle at the front of its head: most of the front half of a round cell, only the nose of a long body) or one of its **jaws**. Food that only touches the rest of the body is eaten at 30% of the rate, so facing your food pays:
 
-- **Engulf** if the prey's radius is ≤ 60% of the hunter's: the prey dies instantly, with the chance per second reduced by the prey's armor on the side it's attacked from. The hunter's spikes don't matter, but the **prey's** spikes hurt the hunter.
-- Otherwise **bite**: the hunter tears off `0.3 × c_hunt × (0.2 + 1.8 × jaws) × radius²` of the prey's mass per second, reduced by the prey's armor on the side it's bitten. Bitten prey shrink and lose HP, and must regrow. The prey's spikes on that side reflect damage.
+- **Tentacles** grab prey and carcasses within reach of their bases and drag them toward the mouth at `12 × pull × √radius` units/s, shared by mass: small prey is reeled in, while big prey mostly pulls the hunter to it (an anchored hunter doesn't budge). Things held by tentacles aren't eaten until they reach the mouth, a jaw or the body.
+
+- **Engulf** (only at the mouth, or at 30% through the body; never at a jaw away from the mouth) if the prey's radius is ≤ 60% of the hunter's: the prey dies instantly, with the chance per second reduced by the prey's armor on the side it's attacked from. The hunter's spikes don't matter, but the **prey's** spikes hurt the hunter.
+- Otherwise **bite**: the hunter tears off `0.3 × c_hunt × (0.2 + 1.8 × jaws) × radius²` of the prey's mass per second, with the strength of the jaws doing the biting (the mouth's or that jaw's), reduced by the prey's armor on the side it's bitten. Jaws also **crack shells**: armor counts for `1 − 0.6 × jaws` of its value. Bitten prey shrink and lose HP, and must regrow. The prey's spikes on that side reflect damage.
 - Hunting capability below 5% does nothing (trace genes from drift don't bite).
 - The hunter assimilates **80% × (0.4 + 0.6 c_hunt)** of the prey's body energy (1 per unit mass, plus the prey's reserves), proportionally to damage dealt, and all of its nutrients. Anything it can't store becomes detritus (energy) or is excreted (nutrients).
 - Toxic prey poisons the hunter: damage = 0.8 × prey toxin × mass eaten × (1 − resistance).

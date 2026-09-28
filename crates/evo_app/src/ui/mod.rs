@@ -18,16 +18,20 @@ pub enum MapMode {
     #[default]
     None = 0,
     Oxygen = 1,
-    Nutrients = 2,
-    Toxin = 3,
+    Co2 = 2,
+    Nutrients = 3,
+    Minerals = 4,
+    Toxin = 5,
 }
 
 impl MapMode {
     pub fn next(self) -> MapMode {
         match self {
             MapMode::None => MapMode::Oxygen,
-            MapMode::Oxygen => MapMode::Nutrients,
-            MapMode::Nutrients => MapMode::Toxin,
+            MapMode::Oxygen => MapMode::Co2,
+            MapMode::Co2 => MapMode::Nutrients,
+            MapMode::Nutrients => MapMode::Minerals,
+            MapMode::Minerals => MapMode::Toxin,
             MapMode::Toxin => MapMode::None,
         }
     }
@@ -36,7 +40,9 @@ impl MapMode {
         match self {
             MapMode::None => "",
             MapMode::Oxygen => "Oxygen map: blue = rich, purple = dead zone",
+            MapMode::Co2 => "CO₂ map: blue = low, gold = high",
             MapMode::Nutrients => "Nutrient map: brighter green = richer",
+            MapMode::Minerals => "Mineral map: brighter cyan = richer (vents, upwellings)",
             MapMode::Toxin => "Toxin map: red = poisoned water",
         }
     }
@@ -94,7 +100,9 @@ fn apply_stream_option(options: Res<crate::ViewerOptions>, mut ui: ResMut<UiStat
     ui.show_charts = options.charts;
     ui.map_mode = match options.map.as_deref() {
         Some("oxygen") => MapMode::Oxygen,
+        Some("co2") => MapMode::Co2,
         Some("nutrients") => MapMode::Nutrients,
+        Some("minerals") => MapMode::Minerals,
         Some("toxin") => MapMode::Toxin,
         _ => MapMode::None,
     };
@@ -298,7 +306,9 @@ fn top_bar(
             );
             if ui
                 .selectable_label(ui_state.map_mode != MapMode::None, "Map")
-                .on_hover_text("Show oxygen, nutrients or toxin in the water (key M cycles)")
+                .on_hover_text(
+                    "Show oxygen, CO₂, nutrients, minerals or toxin in the water (key M cycles)",
+                )
                 .clicked()
             {
                 ui_state.map_mode = ui_state.map_mode.next();

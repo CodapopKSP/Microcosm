@@ -71,7 +71,7 @@ pub struct Args {
     /// Art test: a paused world with rows of organisms, each row sweeping one gene 00→FF.
     #[arg(long)]
     pub gallery: bool,
-    /// Start with a chemistry map shown: oxygen, nutrients or toxin (key M cycles).
+    /// Start with a chemistry map shown: oxygen, co2, nutrients, minerals or toxin (key M cycles).
     #[arg(long)]
     pub map: Option<String>,
 }

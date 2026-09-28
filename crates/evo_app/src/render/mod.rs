@@ -528,6 +528,9 @@ impl LayoutCache {
 pub const BUD_TIME: f32 = 0.8;
 /// Seconds for a dead body's colours to drain to grey.
 pub const DEATH_FADE: f32 = 0.4;
+/// Seconds tentacles take to reach for something they grab, and to let go of it.
+pub const GRASP_TIME: f32 = 0.25;
+const RELEASE_TIME: f32 = 0.35;
 
 fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
@@ -562,6 +565,14 @@ struct PartOwner {
     heading: f32,
     seed: f32,
     quad: Quad,
+    /// What its tentacles hold: the tentacle (part index), the held body's center and radius,
+    /// and how far the tentacle has closed on it (0..1).
+    holds: Vec<(usize, glam::Vec2, f32, f32)>,
+}
+
+/// Angle wrapped to (−π, π].
+fn wrap_angle(a: f32) -> f32 {
+    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
 /// Push the quads of `instances` that are behind (`front == false`) or in front of the body.
@@ -573,7 +584,7 @@ fn push_parts(
     px: f32,
 ) {
     let rot = glam::Vec2::from_angle(owner.heading);
-    for inst in instances {
+    for (index, inst) in instances.iter().enumerate() {
         if inst.kind.in_front() != front {
             continue;
         }
@@ -581,15 +592,45 @@ fn push_parts(
         if length < 1.2 * px {
             continue;
         }
-        let axis = glam::Vec2::from_angle(owner.heading + inst.dir);
         let base = owner.pos + rot.rotate(inst.base * owner.radius);
-        let center = base + axis * (length * 0.5);
-        let half_width = inst.width / inst.length * 0.5;
-        let margin = part_margin(inst.kind) + 2.0 * px / length;
+        let mut angle = owner.heading + inst.dir;
+        // A tentacle holding something swings to touch it, bowing out to keep its length.
+        let mut chord = length;
+        let mut bend = 0.0;
+        let mut grip = 0.0;
+        if inst.kind == PartKind::Tentacle
+            && let Some(&(_, target, target_r, g)) = owner.holds.iter().find(|h| h.0 == index)
+        {
+            let to = target - base;
+            let dist = to.length();
+            if dist > 1e-3 {
+                let turn = wrap_angle(to.to_angle() - angle);
+                let tip = (dist - 0.6 * target_r).clamp(0.25 * length, length);
+                angle += turn * g;
+                chord = length + (tip - length) * g;
+                let side = if turn.abs() > 0.05 {
+                    -turn.signum()
+                } else {
+                    inst.mirror.signum()
+                };
+                let height = (2.0 / std::f32::consts::PI) * (length / chord - 1.0).max(0.0).sqrt();
+                bend = side * height.min(0.75);
+                grip = g;
+            }
+        }
+        let axis = glam::Vec2::from_angle(angle);
+        let center = base + axis * (chord * 0.5);
+        let half_width = inst.width * owner.radius / chord * 0.5;
+        let margin = part_margin(inst.kind) + 2.0 * px / chord;
         let hx = 0.5 + margin.min(0.3);
-        let hy = half_width + margin;
+        let hy = half_width + margin + bend.abs();
         let mut quad = owner.quad;
-        quad.shape = [hx, hy, half_width, length / px];
+        quad.shape = [hx, hy, half_width, chord / px];
+        if inst.kind == PartKind::Tentacle {
+            // In the part's mirrored frame, as the shader draws it.
+            quad.chem[2] = unorm(grip);
+            quad.chem[3] = unorm(0.5 + 0.5 * bend * inst.mirror.signum() / 0.75);
+        }
         let mirror = if inst.mirror < 0.0 { 1u8 } else { 0 };
         let seed = (owner.seed * 255.0) as u8;
         quad.body = [
@@ -599,7 +640,7 @@ fn push_parts(
             seed.wrapping_add(inst.slot as u8 * 37),
         ];
         quad.state[2] |= FLAG_PART;
-        b.push_oriented(center, glam::Vec2::new(hx, hy) * length, axis, quad);
+        b.push_oriented(center, glam::Vec2::new(hx, hy) * chord, axis, quad);
     }
 }
 
@@ -695,6 +736,7 @@ fn update_organisms(
             heading: c.heading,
             seed: c.seed,
             quad,
+            holds: Vec::new(),
         };
         // Carcasses lose their parts as they are eaten.
         let draw_parts = c.radius >= parts_from && c.consumed() < 0.6;
@@ -824,12 +866,28 @@ fn update_organisms(
                 unorm(t.lure),
             ],
         };
+        let holds = if with_parts {
+            o.grasps
+                .iter()
+                .zip(&t.grasps[..t.grasp_count as usize])
+                .filter(|(g, _)| g.tick > 0)
+                .filter_map(|(g, zone)| {
+                    let closed = smooth(since(g.since) / GRASP_TIME);
+                    let open = smooth((since(g.tick) - dt).max(0.0) / RELEASE_TIME);
+                    let amount = closed * (1.0 - open);
+                    (amount > 0.01).then_some((zone.part as usize, g.pos, g.radius, amount))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let owner = PartOwner {
             pos,
             radius,
             heading: o.heading,
             seed,
             quad,
+            holds,
         };
         if let Some((from, to, width, t)) = neck {
             // The neck between parent and bud narrows in the middle and pinches off.
@@ -890,6 +948,7 @@ fn update_organisms(
                 heading: body.heading,
                 seed: body.seed,
                 quad,
+                holds: Vec::new(),
             };
             let instances = if f.radius >= parts_from {
                 Some(cache.get(&body.genome))
@@ -932,6 +991,10 @@ fn update_organisms(
         );
     }
 
+    // An empty mesh upsets Bevy's buffer allocator; keep one invisible zero-size quad.
+    if b.positions.is_empty() {
+        b.push(cam.center, 0.0, Quad::default());
+    }
     let quads = b.positions.len() / 4;
     let mut indices = Vec::with_capacity(quads * 6);
     for q in 0..quads as u32 {
@@ -998,12 +1061,21 @@ fn draw_overlays(
             gizmos.line_2d(center, center + Vec2::from_angle(a) * range, color);
         }
     }
-    // Tentacle reach.
-    if t.reach > 0.0 {
+    // What each tentacle can grasp (around its base), and where jaws away from the mouth bite.
+    let rot = Vec2::from_angle(o.heading);
+    let place = |x: f32, y: f32| center + rot.rotate(Vec2::new(x, y)) * o.radius;
+    for z in &t.grasps[..t.grasp_count as usize] {
         gizmos.circle_2d(
-            Isometry2d::from_translation(center),
-            o.radius * (1.0 + t.reach),
+            Isometry2d::from_translation(place(z.x, z.y)),
+            z.radius * o.radius,
             Color::srgba(1.0, 0.5, 0.6, 0.3),
+        );
+    }
+    for z in &t.bites[..t.bite_count as usize] {
+        gizmos.circle_2d(
+            Isometry2d::from_translation(place(z.x, z.y)),
+            z.radius * o.radius,
+            Color::srgba(1.0, 0.85, 0.4, 0.45),
         );
     }
 }

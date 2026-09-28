@@ -56,7 +56,7 @@ cargo run --release -- --stream
 | Tab | Hide the UI (stream view) |
 | C | Auto camera |
 | L / G / E / T / H | Species list / charts (population, family tree) / event history / event ticker / help |
-| M | Chemistry map: oxygen, nutrients, toxin |
+| M | Chemistry map: oxygen, CO₂, nutrients, minerals, toxin. (Zoomed in, the water also shows them directly: oxygen bubbles, cyan mineral sparks, green nutrient motes, red toxin specks, dark silt in dead zones.) |
 | F5 | Quicksave (`saves/quicksave.bin`). The world also autosaves every 10 minutes and on exit; the previous save is kept as `*.prev.bin` |
 | Ctrl+1–4 | Trigger a plague, upwelling, meteor, or rock wall right now |
 

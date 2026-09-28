@@ -175,10 +175,16 @@ pub struct Vent {
     /// Sim seconds.
     pub age: f32,
     pub lifetime: f32,
+    /// Part of the terrain: never fades or dies.
+    #[serde(default)]
+    pub fixed: bool,
 }
 
 impl Vent {
     fn envelope(&self) -> f32 {
+        if self.fixed {
+            return 1.0;
+        }
         let l = self.lifetime.max(1.0);
         let rise = (self.age / (0.1 * l)).clamp(0.0, 1.0);
         let fall = ((l - self.age) / (0.3 * l)).clamp(0.0, 1.0);
@@ -341,6 +347,20 @@ impl Environment {
         };
         // Start mid-morning, with vents already at various stages of life.
         env.update_clock(0, config);
+        // Permanent vents where the terrain has them.
+        for &pos in &terrain.vent_sites {
+            let id = env.next_vent_id;
+            env.next_vent_id += 1;
+            env.vents.push(Vent {
+                id,
+                pos,
+                strength: 1.0,
+                peak: 1.0,
+                age: 0.0,
+                lifetime: 0.0,
+                fixed: true,
+            });
+        }
         for _ in 0..config.vents.count {
             if let Some(mut vent) = env.new_vent(config, terrain) {
                 vent.age = env.rng.range(0.1, 0.6) * vent.lifetime;
@@ -386,7 +406,7 @@ impl Environment {
         let shallow_now = self
             .vents
             .iter()
-            .filter(|o| height - o.pos.y < v.shallow_max_depth)
+            .filter(|o| !o.fixed && height - o.pos.y < v.shallow_max_depth)
             .count() as u32;
         let deep = (v.deep_min_depth, f32::MAX);
         let (lo, hi) = if shallow_now < v.shallow {
@@ -420,6 +440,7 @@ impl Environment {
                 peak: self.rng.range(0.6, 1.4),
                 age: 0.0,
                 lifetime: hours * 3600.0,
+                fixed: false,
             });
         }
         None
@@ -450,7 +471,7 @@ impl Environment {
             let vent = &mut self.vents[i];
             vent.age += dt;
             vent.strength = vent.peak * vent.envelope();
-            if vent.age >= vent.lifetime {
+            if !vent.fixed && vent.age >= vent.lifetime {
                 events.push(EnvEvent::VentDied(vent.pos));
                 self.vents.swap_remove(i);
                 continue;
@@ -484,7 +505,8 @@ impl Environment {
             }
             i += 1;
         }
-        let missing = vc.count.saturating_sub(self.vents.len() as u32);
+        let random = self.vents.iter().filter(|v| !v.fixed).count() as u32;
+        let missing = vc.count.saturating_sub(random);
         if missing > 0
             && self.rng.chance(missing as f32 * dt / 600.0)
             && let Some(vent) = self.new_vent(config, terrain)

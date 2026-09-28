@@ -370,8 +370,15 @@ fn body_plan(ui: &mut egui::Ui, world: &World, o: &evo_core::Organism) {
                     (t.smell_radii * o.radius).min(cap)
                 ));
             }
-            if t.reach > 0.0 {
-                abilities.push(format!("reaches {:.0} u", t.reach * o.radius));
+            if t.grasp_count > 0 {
+                let reach = t.grasps[..t.grasp_count as usize]
+                    .iter()
+                    .map(|z| z.radius)
+                    .fold(0.0, f32::max);
+                abilities.push(format!(
+                    "tentacles grab within {:.0} u and pull to the mouth",
+                    reach * o.radius
+                ));
             }
             if t.light_span > 1.01 {
                 abilities.push(format!("catches light ×{:.1} wide", t.light_span));
@@ -406,8 +413,26 @@ fn body_plan(ui: &mut egui::Ui, world: &World, o: &evo_core::Organism) {
                     sides(&t.spikes_sides, 1.0)
                 ));
             }
+            let pierce = world.config.feeding.jaw_pierce;
             if t.jaws > 0.01 {
-                abilities.push(format!("bite ×{:.1}", 0.2 + 1.8 * t.jaws));
+                abilities.push(format!(
+                    "jawed mouth: bite ×{:.1}, cracks {:.0}% of shells",
+                    0.2 + 1.8 * t.jaws,
+                    t.jaws * pierce * 100.0
+                ));
+            }
+            if t.bite_count > 0 {
+                let best = t.bites[..t.bite_count as usize]
+                    .iter()
+                    .map(|z| z.strength)
+                    .fold(0.0, f32::max);
+                abilities.push(format!(
+                    "{} jaw{} away from the mouth bite{} where they sit (×{:.1})",
+                    t.bite_count,
+                    if t.bite_count == 1 { "" } else { "s" },
+                    if t.bite_count == 1 { "s" } else { "" },
+                    0.2 + 1.8 * best
+                ));
             }
             if t.lure > 0.01 {
                 abilities.push(format!("glowing lure ({:.0}%)", t.lure * 100.0));

@@ -275,9 +275,15 @@ fn part(in: VertexOutput) -> vec4<f32> {
         alpha = max(band, hairs * 0.9);
     } else if kind == 3u {
         // Tentacle: a swaying, curling arm; ringed when larger, then suckers and a clubbed tip.
+        // Holding something, it arches out to it (the quad already points at it) and its tip
+        // hooks around it.
+        let grip = in.chem.z;
+        let arch = (in.chem.w * 2.0 - 1.0) * 0.75;
         let sway = 0.16 * sin(a * 3.0 - time * 1.6 + phase) * a;
         let curl = (0.18 + 0.12 * sin(time * 0.45 + phase)) * a * a * a;
-        let y = sway + curl;
+        let hook = -arch * 0.6 * smoothstep(0.75, 1.0, a);
+        let held = arch * sin(PI * clamp(a, 0.0, 1.0)) + hook + 0.03 * sin(time * 5.0 + phase) * a;
+        let y = mix(sway + curl, held, grip);
         var hw = w * (1.0 - 0.65 * a);
         hw += w * 0.6 * smoothstep(0.78, 0.92, a) * (1.0 - smoothstep(0.94, 1.0, a)) * smoothstep(0.75, 0.95, s);
         let dist = abs(c - y);
@@ -299,8 +305,21 @@ fn part(in: VertexOutput) -> vec4<f32> {
         hw = max(hw, w * 0.14 * step(a, 0.2));
         let dist = abs(c - y);
         alpha = fill(dist, hw + aa * 0.3, aa) * inside;
-        let pigment = mix(vec3<f32>(0.42, 0.1, 0.38), vec3<f32>(0.1, 0.45, 0.08), in.chem.x);
-        col = mix(base, pigment, 0.55 + 0.35 * in.diet.x) * mix(1.15, 0.8, dist / max(hw, 1e-3));
+        // Leaves take the pigment's own colour (green releases oxygen, purple uses minerals),
+        // vivid with strong photosynthesis and pale and faded with weak; the body colour is
+        // only a faint hint, so complementary body colours don't turn them grey.
+        // Mixed pigments pass through golden-brown rather than purple + green = grey.
+        let purple = vec3<f32>(0.5, 0.12, 0.48);
+        let golden = vec3<f32>(0.58, 0.44, 0.1);
+        let green = vec3<f32>(0.14, 0.58, 0.1);
+        let pigment = select(
+            mix(golden, green, in.chem.x * 2.0 - 1.0),
+            mix(purple, golden, in.chem.x * 2.0),
+            in.chem.x < 0.5,
+        );
+        let faded = mix(pigment, vec3<f32>(0.8, 0.82, 0.72), 0.45);
+        let leaf = mix(faded, pigment, smoothstep(0.0, 0.6, in.diet.x));
+        col = mix(leaf, base, 0.08) * mix(1.15, 0.8, dist / max(hw, 1e-3));
         col = mix(col, col * 0.6, fill(dist, 0.015 + aa * 0.5, aa) * smoothstep(0.2, 0.35, s));
         let v = fract(a * 9.0 - dist / max(w, 1e-3) * 1.2);
         let vein = 1.0 - smoothstep(0.0, 0.08, min(v, 1.0 - v));

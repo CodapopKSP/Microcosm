@@ -123,6 +123,16 @@ pub struct TerrainConfig {
     pub caves: u32,
     /// Typical cave size.
     pub cave_size: f32,
+    /// A vent system under the shelf (chamber, shaft, tunnel to the cliff) and a vent down the
+    /// cliff, both permanent.
+    pub shelf_vents: bool,
+    /// A floating island in mid-water with tunnels and a permanent vent inside.
+    pub island: bool,
+    /// Island center as a fraction of the width, its center's depth, and its size.
+    pub island_x: f32,
+    pub island_depth: f32,
+    pub island_width: f32,
+    pub island_height: f32,
 }
 
 impl Default for TerrainConfig {
@@ -140,6 +150,12 @@ impl Default for TerrainConfig {
             rock_size: 260.0,
             caves: 7,
             cave_size: 320.0,
+            shelf_vents: true,
+            island: true,
+            island_x: 0.55,
+            island_depth: 1500.0,
+            island_width: 2400.0,
+            island_height: 950.0,
         }
     }
 }
@@ -296,7 +312,7 @@ impl Default for DetritusConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct VentsConfig {
-    /// Target number of active vents.
+    /// Target number of active vents (besides the permanent ones the terrain places).
     pub count: u32,
     /// Mineral output of a full-strength vent (energy/s).
     pub output: f32,
@@ -318,13 +334,13 @@ pub struct VentsConfig {
 impl Default for VentsConfig {
     fn default() -> Self {
         Self {
-            count: 5,
+            count: 4,
             output: 30.0,
             radius: 48.0,
             lifetime_min: 2.0,
             lifetime_max: 8.0,
             min_depth: 700.0,
-            shallow: 2,
+            shallow: 1,
             shallow_max_depth: 1800.0,
             deep_min_depth: 3000.0,
         }
@@ -405,7 +421,7 @@ pub struct PartsConfig {
     pub eye_range: f32,
     /// Smell range of full-strength antennae, in body radii (every direction).
     pub smell_range: f32,
-    /// Tentacle reach beyond the body, as a fraction of the tentacle's length.
+    /// A tentacle grasps anything within this fraction of its length of its base (it bends).
     pub tentacle_reach: f32,
     /// Extra light-catching width per unit of frond length (in body radii).
     pub frond_span: f32,
@@ -706,9 +722,14 @@ pub struct FeedingConfig {
     pub kin_hunger: f32,
     /// Hunting capability below this does nothing (trace genes from drift don't bite).
     pub min_hunt: f32,
-    /// How well food touching the body away from the mouth (and out of tentacle reach) is
-    /// eaten, relative to at the mouth.
+    /// How well food touching the body away from the mouth and jaws is eaten, relative to at
+    /// the mouth.
     pub body_contact: f32,
+    /// Speed at which full-strength tentacles drag what they hold toward the mouth
+    /// (× √hunter radius), shared between the two bodies by mass.
+    pub tentacle_pull: f32,
+    /// Fraction of a shell's protection that full-strength jaws bite through.
+    pub jaw_pierce: f32,
     /// Bite: mass removed per second per hunter radius² at full capability and jaws.
     pub bite_rate: f32,
     /// Damage reduction at full armor.
@@ -734,6 +755,8 @@ impl Default for FeedingConfig {
             kin_hunger: 0.5,
             min_hunt: 0.05,
             body_contact: 0.3,
+            tentacle_pull: 12.0,
+            jaw_pierce: 0.6,
             bite_rate: 0.3,
             armor_protection: 0.75,
             spike_damage: 0.6,
