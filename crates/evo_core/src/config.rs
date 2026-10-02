@@ -280,6 +280,11 @@ pub struct MineralsConfig {
     pub plume_rise: f32,
     /// Half-width of a vent plume.
     pub plume_width: f32,
+    /// Upward drift straight above the shelf vent, whose cave is open above (a chimney), units/s:
+    /// its minerals reach the surface.
+    pub chimney_rise: f32,
+    /// Width of that fast-rising column.
+    pub chimney_width: f32,
 }
 
 impl Default for MineralsConfig {
@@ -290,6 +295,8 @@ impl Default for MineralsConfig {
             decay: 0.004,
             plume_rise: 4.0,
             plume_width: 96.0,
+            chimney_rise: 30.0,
+            chimney_width: 48.0,
         }
     }
 }
@@ -329,6 +336,9 @@ pub struct VentsConfig {
     pub output: f32,
     /// Radius over which a vent releases minerals.
     pub radius: f32,
+    /// Share of the output that seeps out over `halo_radius` around the vent's base instead.
+    pub halo: f32,
+    pub halo_radius: f32,
     /// Vent lifetime range in sim hours.
     pub lifetime_min: f32,
     pub lifetime_max: f32,
@@ -348,6 +358,8 @@ impl Default for VentsConfig {
             count: 3,
             output: 30.0,
             radius: 48.0,
+            halo: 0.35,
+            halo_radius: 240.0,
             lifetime_min: 2.0,
             lifetime_max: 8.0,
             min_depth: 700.0,
@@ -390,6 +402,9 @@ pub struct GenesConfig {
     /// Diet generalist penalty: each diet loses this × the investment in the others
     /// (0.6 ⇒ two full diets give 40% each).
     pub generalist_penalty: f32,
+    /// Photosynthesis and scavenging get in each other's way (chloroplasts and feeding
+    /// surfaces compete for the cell's surface): each also loses this × the other's gene.
+    pub photo_scavenge_penalty: f32,
 }
 
 impl Default for GenesConfig {
@@ -414,6 +429,7 @@ impl Default for GenesConfig {
             tolerance_max: 15.0,
             segment_cost: 0.1,
             generalist_penalty: 0.4,
+            photo_scavenge_penalty: 0.2,
         }
     }
 }
@@ -883,6 +899,8 @@ pub struct MutationConfig {
     pub part_delete: f32,
     /// Chance per offspring that a new part grows in an empty slot.
     pub part_new: f32,
+    /// Chance per offspring of a diet shift: 30–60% of one diet gene moves to another at once.
+    pub diet_shift: f32,
 }
 
 impl Default for MutationConfig {
@@ -896,6 +914,7 @@ impl Default for MutationConfig {
             part_duplicate: 0.003,
             part_delete: 0.004,
             part_new: 0.005,
+            diet_shift: 0.005,
         }
     }
 }

@@ -198,6 +198,20 @@ impl Field {
         }
     }
 
+    /// Move content up each column by that column's own fraction of a cell (0 = still).
+    pub fn rise_columns(&mut self, fractions: &[f32]) {
+        let (nx, ny) = (self.nx, self.ny);
+        for (x, &fraction) in fractions.iter().enumerate().take(nx) {
+            let fraction = fraction.clamp(0.0, 1.0);
+            if fraction <= 0.0 {
+                continue;
+            }
+            for y in (0..ny - 1).rev() {
+                self.shift(x + y * nx, x + (y + 1) * nx, fraction);
+            }
+        }
+    }
+
     #[inline]
     fn shift(&mut self, from: usize, to: usize, fraction: f32) {
         if self.solid[from] || self.solid[to] {

@@ -19,7 +19,7 @@ A **side-on cross-section of an ocean**. `y` grows upward; the water surface is 
 | Sunlit surface | Most light; warm; phototrophs bloom and shade each other |
 | Twilight / open water | Light fades exponentially with depth; hunters and drifters |
 | Deep / seafloor | Dark and cold; detritus ("marine snow") settles into sediment |
-| Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Two are permanent parts of the terrain (below); three more open and die on the deep floor over hours |
+| Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Two are permanent parts of the terrain (below); three more open and die on the deep floor over hours. 35% of each vent's minerals seep out over 240 u around its base; the rest rise in a plume. The shelf vent's plume shoots straight up its open roof (30 u/s instead of 4) and reaches the surface, leaving mineral-rich, oxygenated water right where photosynthesizers live |
 | Shelf | A shallow region where the seafloor itself is sunlit |
 | Mountain and basin | Past the shelf a rugged mountain (ridges, shoulders and crags) rises above sea level, and beyond it lies a basin of water (about 1,100 deep) that it cuts off from the ocean. Nothing lives there at the start: ancestors, recolonization, random vents and events stay in the ocean. Reaching it is for later (see `docs/IDEAS.md`) |
 | Permanent vents | One inside a cave on the shelf near the cliff's edge (the cave nearest a fixed spot; made if there isn't one), opening upward in a wide V to the water above, with a short passage joining the little cave to its left. One on a small ledge partway down the cliff (about 2,250 deep), with the cliff bulging out below the ledge rather than falling in one even slope. Winding tunnels branch up from the cliff vent through the rock into both caves |
@@ -99,10 +99,10 @@ There are no "animal" or "plant" genes. What an organism takes from and gives to
 With `x_i` the four diet genes as fractions, each diet is weakened by the investment in the others:
 
 ```
-c_i = x_i × (1 − 0.6 × Σ_{j≠i} x_j)
+c_i = x_i × (1 − 0.4 × Σ_{j≠i} x_j)
 ```
 
-With the default penalty of 0.4, a specialist (one gene only) gets `c = x`. Taking up a second diet is gradual: a small second gene works linearly and costs the main diet a little. But true generalists lose overall: two full diets give 0.6 each (1.2 total, where two specialists would have 2). Upkeep is charged on **capability**, not on the raw gene, so a weak unused diet gene is cheap. It drifts as cryptic variation until the environment makes it useful — one of the main routes to **exaptation**.
+With the default penalty of 0.4, a specialist (one gene only) gets `c = x`. Taking up a second diet is gradual: a small second gene works linearly and costs the main diet a little. But true generalists lose overall: two full diets give 0.6 each (1.2 total, where two specialists would have 2). **Photosynthesis and scavenging also get in each other's way** (chloroplasts and feeding surfaces compete for the cell's surface): each loses a further 0.2 × the other's gene, so the easy, passive 50/50 mix of the two (0.8 total) drops to about 0.72. Mixes with hunting or chemosynthesis aren't affected. Upkeep is charged on **capability**, not on the raw gene, so a weak unused diet gene is cheap. It drifts as cryptic variation until the environment makes it useful — one of the main routes to **exaptation**.
 
 ### Example: the ancestor
 
@@ -133,6 +133,7 @@ Applied independently to each gene of each offspring:
 - Values clamp at `00` and `FF`.
 - A part's **type** byte doesn't step: it shifts to a neighboring kind in the catalog (fin ↔ leg, spine ↔ jaw, eye ↔ antenna, …) or gains or loses symmetry (single → pair → ring).
 - Whole parts: **duplication** (0.3% per offspring: a part is copied into an empty slot, often to a new place), **deletion** (0.4%), and **new parts** (0.5%: a random kind grows in an empty slot from its leftover bytes; a slot that has never held a part starts at a random place and angle, since its all-zero bytes would put every new part at the very front).
+- **Diet shifts** (0.5% per offspring): 30–60% of one diet gene's investment jumps to another diet in one step. Mixed diets are worse than both of their neighbours, so walking from one way of living to another (photosynthesis plus scavenging to photosynthesis plus hunting) means crossing a dip; a shift jumps it.
 
 Low mutation rates keep lineages coherent, so species persist and drift is visible. Deleted parts leave their size and placement bytes behind as cryptic variation that a later part can reuse.
 

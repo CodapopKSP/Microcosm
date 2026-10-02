@@ -489,6 +489,7 @@ impl Genome {
                 (old as i32 + delta).clamp(0, 255) as u8
             };
         }
+        self.mutate_diet_shift(rng, cfg);
         self.mutate_structure(rng, cfg);
         let mut mask = 0u64;
         for (i, (now, was)) in self.0.iter().zip(before).enumerate() {
@@ -517,6 +518,27 @@ impl Genome {
             let new_sym = (sym as i32 + if rng.chance(0.5) { 1 } else { -1 }).clamp(0, 5) as u8;
             self.0[i] = new_sym << 4 | kind;
         }
+    }
+
+    /// Rarely, a big jump in diet: 30–60% of one diet gene's investment moves to another in a
+    /// single step, so a lineage can cross the dip between two ways of living (for example from
+    /// photosynthesis plus scavenging to photosynthesis plus hunting) instead of having to walk
+    /// through the worse mixes in between.
+    fn mutate_diet_shift(&mut self, rng: &mut Rng, cfg: &MutationConfig) {
+        if !rng.chance(cfg.diet_shift) {
+            return;
+        }
+        const DIETS: [usize; 4] = [gene::PHOTO, gene::CHEMO, gene::SCAVENGE, gene::HUNT];
+        let invested: Vec<usize> = DIETS.into_iter().filter(|&g| self.0[g] >= 0x20).collect();
+        if invested.is_empty() {
+            return;
+        }
+        let from = invested[rng.below(invested.len() as u32) as usize];
+        let others: Vec<usize> = DIETS.into_iter().filter(|&g| g != from).collect();
+        let to = others[rng.below(others.len() as u32) as usize];
+        let amount = (self.0[from] as f32 * rng.range(0.3, 0.6)) as u8;
+        self.0[from] -= amount;
+        self.0[to] = self.0[to].saturating_add(amount);
     }
 
     /// Whole-part duplication, deletion, and new parts.
@@ -714,6 +736,37 @@ mod tests {
             shifted.mutate_part_kind(at, &mut rng);
             assert_ne!(shifted.0[at] & 0x0F, 0);
         }
+    }
+
+    #[test]
+    fn diet_shifts_move_investment_between_diets() {
+        let mut cfg = MutationConfig {
+            rate: 0.0,
+            part_duplicate: 0.0,
+            part_delete: 0.0,
+            part_new: 0.0,
+            diet_shift: 1.0,
+            ..MutationConfig::default()
+        };
+        let mut rng = Rng::new(5);
+        let ancestor = Genome::parse(ANCESTOR).unwrap();
+        let diets = [gene::PHOTO, gene::CHEMO, gene::SCAVENGE, gene::HUNT];
+        let total = |g: &Genome| diets.iter().map(|&d| g.0[d] as u32).sum::<u32>();
+        let mut targets: std::collections::HashSet<usize> = Default::default();
+        for _ in 0..200 {
+            let mut g = ancestor;
+            g.mutate(&mut rng, &cfg);
+            assert_eq!(total(&g), total(&ancestor), "investment is moved, not made");
+            let moved = ancestor.0[gene::PHOTO] - g.0[gene::PHOTO];
+            let share = moved as f32 / ancestor.0[gene::PHOTO] as f32;
+            assert!((0.29..0.61).contains(&share), "moved {share}");
+            targets.extend(diets.iter().skip(1).copied().filter(|&d| g.0[d] > 0));
+        }
+        assert_eq!(targets.len(), 3, "it can go to any other diet");
+        cfg.diet_shift = 0.0;
+        let mut g = ancestor;
+        g.mutate(&mut rng, &cfg);
+        assert_eq!(g, ancestor);
     }
 
     #[test]

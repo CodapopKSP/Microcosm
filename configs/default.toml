@@ -63,6 +63,8 @@ diffusion = 100.0
 decay = 0.004
 plume_rise = 4.0         # minerals rise in vent plumes
 plume_width = 96.0
+chimney_rise = 30.0      # much faster straight up over the shelf vent (open above), to the surface
+chimney_width = 48.0
 
 [detritus]
 cell = 32.0
@@ -75,6 +77,8 @@ diffusion = 100.0
 count = 3                # random vents, besides the permanent ones (which count as shallow)
 output = 30.0            # mineral energy/s at full strength
 radius = 48.0
+halo = 0.35              # share of a vent's minerals seeping out over a wide area around its base
+halo_radius = 240.0
 lifetime_min = 2.0       # hours
 lifetime_max = 8.0
 min_depth = 700.0        # vents only open at least this deep
@@ -103,6 +107,7 @@ tolerance_min = 1.0
 tolerance_max = 15.0
 segment_cost = 0.1          # extra body-building cost per additional segment
 generalist_penalty = 0.4   # each diet loses this x the investment in the others
+photo_scavenge_penalty = 0.2  # photosynthesis and scavenging also lose this x each other's gene
 
 # Body parts (P chromosome). Per-kind numbers live in parts.rs; these are the shared knobs.
 [parts]
@@ -253,6 +258,7 @@ color_rate_multiplier = 3.0  # color genes mutate faster, so lineages visibly di
 part_duplicate = 0.003   # chance per offspring that a part is copied into an empty slot
 part_delete = 0.004      # chance per offspring that a part is lost
 part_new = 0.005         # chance per offspring that a new part grows in an empty slot
+diet_shift = 0.005       # chance per offspring that 30-60% of one diet gene jumps to another
 
 [species]
 threshold = 0.035         # genetic distance from the founder that starts a new species

@@ -431,6 +431,12 @@ impl Traits {
             ],
             gc.generalist_penalty,
         );
+        // Photosynthesis and scavenging also get in each other's way.
+        let k = gc.photo_scavenge_penalty;
+        let (photo, scavenge) = (
+            photo * (1.0 - k * f(gene::SCAVENGE)).max(0.0),
+            scavenge * (1.0 - k * f(gene::PHOTO)).max(0.0),
+        );
         // Trace hunting genes from drift don't bite.
         let hunt = if hunt_raw < config.feeding.min_hunt {
             0.0
@@ -904,6 +910,24 @@ mod tests {
         // A small second diet costs the main diet little and works linearly.
         let trace = diet_capabilities([1.0, 0.0, 0.0, 0.05], 0.6);
         assert!(trace[0] > 0.96 && trace[3] > 0.015);
+    }
+
+    #[test]
+    fn photosynthesis_and_scavenging_get_in_each_others_way() {
+        let (mut g, mut config) = ancestor();
+        g.0[gene::PHOTO] = 0x80;
+        g.0[gene::SCAVENGE] = 0x80;
+        let with = Traits::decode(&g, &config);
+        config.genes.photo_scavenge_penalty = 0.0;
+        let without = Traits::decode(&g, &config);
+        assert!(with.photo < without.photo * 0.95 && with.scavenge < without.scavenge * 0.95);
+        // Photosynthesis with hunting isn't affected.
+        g.0[gene::SCAVENGE] = 0;
+        g.0[gene::HUNT] = 0x80;
+        let a = Traits::decode(&g, &config);
+        config.genes.photo_scavenge_penalty = 0.2;
+        let b = Traits::decode(&g, &config);
+        assert_eq!(a.photo, b.photo);
     }
 
     #[test]

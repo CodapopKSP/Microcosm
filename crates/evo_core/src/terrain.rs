@@ -24,9 +24,12 @@ pub struct Terrain {
     pub height: f32,
     /// Incremented whenever the terrain changes (so the renderer can refresh).
     pub version: u64,
-    /// Where permanent vents sit (near the surface on the mountain's flank, and down the cliff).
+    /// Where permanent vents sit (in the shelf cave, and on the cliff ledge).
     #[serde(default)]
     pub vent_sites: Vec<Vec2>,
+    /// Vent sites with open water straight above: their plume shoots up to the surface.
+    #[serde(default)]
+    pub chimneys: Vec<Vec2>,
 }
 
 /// Where a generated cave is: its x, the top of its mound, and its chamber (center and radii).
@@ -443,6 +446,7 @@ impl Terrain {
         // tunnels branch up from the cliff vent into that cave and the little cave nearest the
         // cliff.
         let mut vent_sites = Vec::new();
+        let mut chimneys = Vec::new();
         if cfg.shelf_vents {
             let want = cfg.vent_cave_x * ocean;
             let nearest = caves
@@ -550,6 +554,7 @@ impl Terrain {
             let hi = Vec2::new(right, vent_cave.chamber.y + 100.0);
             carve(&mut solid, &passages, lo, hi);
             vent_sites.push(vent);
+            chimneys.push(vent);
             vent_sites.push(cliff_vent);
         }
 
@@ -562,6 +567,7 @@ impl Terrain {
             height,
             version: 0,
             vent_sites,
+            chimneys,
         };
         terrain.recompute_sdf(0, nx);
         terrain

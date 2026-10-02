@@ -2592,14 +2592,23 @@ mod tests {
             t.crawl_coeff > 0.0 && t.speed_coeff > 0.0,
             "legs walk and row"
         );
+        for o in &mut world.organisms {
+            o.repro_cooldown = 1e9;
+        }
+        // The walker wanders, and may end up pushing against a rock, so look at how far it
+        // gets from where it started at any point, not just at the end.
+        let start = world.organisms[walker].pos;
+        let mut farthest = 0.0f32;
         for _ in 0..(40.0 / world.config.time.dt) as usize {
             world.step();
+            farthest = farthest.max(world.organisms[walker].pos.distance(start));
         }
         let o = &world.organisms[anchored];
         assert!(o.anchored, "should have settled and anchored");
         let pos = o.pos;
         for _ in 0..(10.0 / world.config.time.dt) as usize {
             world.step();
+            farthest = farthest.max(world.organisms[walker].pos.distance(start));
         }
         assert!(
             world.organisms[anchored].pos.distance(pos) < 1.0,
@@ -2607,11 +2616,7 @@ mod tests {
         );
         let wk = &world.organisms[walker];
         assert!(wk.touching, "walker should be on the floor");
-        assert!(
-            wk.vel.length() > 1.0,
-            "walker moves along the rock: {}",
-            wk.vel.length()
-        );
+        assert!(farthest > 30.0, "walker moves along the rock: {farthest}");
     }
 
     #[test]

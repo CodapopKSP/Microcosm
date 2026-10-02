@@ -413,27 +413,70 @@ simulation, which keeps using the radius and the body shape it has today. Candid
 
 ---
 
-## 9. Populating the cut-off basin (flight)
+## 9. Populating the cut-off basin: sea spray and flight
 
-**The setup.** Past the ocean's right edge a mountain rises above sea level, and beyond it lies
-a basin of water that the mountain cuts off. It starts empty: ancestors, recolonization,
-random vents and events all stay in the ocean. It's a blank slate waiting for a way in.
+**The setup.** Past the ocean's right edge a mountain about 2,000 wide rises about 380 above
+sea level, and beyond it lies a basin of water that the mountain cuts off. It starts empty:
+ancestors, recolonization, random vents and events all stay in the ocean. It's a blank slate
+waiting for a way in.
 
-**The idea: flight, or at least leaping.** Something has to cross the mountain:
+**The scale problem.** Organisms are radius 1–60 and swim at most around 40 u/s. Leaping out
+of the water at that speed, with a sensible gravity (about 50 u/s²), reaches only about 16
+above the surface, and even a good glider (5 across for every 1 down) then covers only about
+80. Leaping and gliding alone will never cross this mountain; something has to give (see
+"Flight" below).
 
-- **Gliding or flying** organisms: a part (or a fin taken further) that lets a body leave the
-  water near the surface and travel through the air for a while before it has to land, losing
-  energy or drying out the longer it's out. Most attempts would land on the mountain and die;
-  a lucky few would make it over. Founder effects in the basin would follow naturally: one
-  lineage, isolated, evolving its own way (an island in reverse).
-- **Simpler first steps:** leaping out of the water at the surface (a short arc above the
-  waves), and organisms stranded by splashing. Even rare crossings would be enough.
-- **Hitchhiking:** small organisms carried by a flyer (a tentacle grip, or living inside one;
-  see §3) would cross with it.
+**Two routes, in order:**
 
-**Watch out for:** the air needs rules (how far, at what cost, what happens on landing on
-rock), and the viewer needs to draw organisms above the surface. Once something can cross,
-the basin's own conditions (no permanent vents, a fresh start) decide what thrives there.
+1. **Sea spray (microbes, early and rare).** Tiny organisms at the surface very rarely get blown
+   across in spray and dropped into the basin, the way real microbes reach isolated lakes.
+   - A small chance per tick for organisms below a size threshold, near the surface, to be
+     carried over and land somewhere in the basin's sunlit water.
+   - Simple to build, and it starts the basin's own story early: an occasional founder,
+     then a lineage evolving in isolation (island biogeography, founder effects).
+   - Keep it rare enough that the basin's life stays clearly separate from the ocean's.
+
+2. **Flight (larger organisms, later and dramatic).** Flying fish evolved gliding to escape
+   predators, not to travel; crossing the mountain would be a rare side effect of an escape
+   behaviour, which is exactly the kind of exaptation the sim is about.
+   - **Leaving the water:** today organisms are clamped at the surface. Instead, anything
+     swimming upward fast enough at the surface breaches and becomes airborne. Fleeing near
+     the surface makes that happen naturally.
+   - **Fins as wings:** fins give lift in the air. Lift ramps up smoothly from about 80% fin
+     size to full at 100% (size gene about E6 for 90%), rather than switching on at a hard
+     threshold, so selection can push fins bigger step by step. Lift comes from each fin's
+     size and angle across the body.
+   - **In the air:** gravity, air drag and lift; energy drains fast, and the organism dries
+     out after a while. Landing on the mountain kills it, or it slides back into the water;
+     landing in water ends the flight.
+   - **Getting over the mountain** needs one of:
+     - **Updrafts (recommended):** wind off the sea rises up the mountain's seaward slope,
+       like a gull riding a cliff, so a glider caught in it climbs and a lucky one rides it
+       over the ridge. Crossings are possible but rare, and the mountain keeps its look.
+     - **Powered flight:** fins at the very top of the size range can also flap in the air,
+       giving sustained flight at a high energy cost, so only well-fed organisms with big
+       reserves get far. A natural extension once gliding exists.
+     - **A smaller barrier:** a lower, narrower ridge or a low pass (60–100 high instead of
+       380). Simplest, but it changes the map.
+   - **Hitchhiking:** small organisms held by a flyer's tentacle, or living inside it (§3),
+     cross with it.
+
+**What flight needs in the sim:**
+
+- **Collision with the mountain above water:** the terrain already stores the mountain's
+  height above the surface (the seafloor heightmap goes above it), so a simple height check
+  works without extending the terrain grid upward.
+- **Things that stop at the surface:** the spatial grid, chemistry fields and light all end at
+  the water surface, so organisms in the air need clamped lookups or to skip those systems
+  while airborne (no feeding, breathing air).
+- **The viewer** can already draw organisms over the sky; airborne ones should spread their
+  fins and maybe leave a splash when they leave and re-enter the water.
+
+**Watch out for:** flight turning into an escape so good that predators can't hunt near the
+surface; organisms in the air piling up at the ridge; and the basin filling from one lucky
+crossing before others arrive (that's fine, it's what islands do, but it's worth watching).
+Once something gets across, the basin's own conditions (no permanent vents, a fresh start)
+decide what thrives there.
 
 ---
 
