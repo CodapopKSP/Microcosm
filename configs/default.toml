@@ -5,7 +5,7 @@
 # Units: distances in world units, time in sim seconds, energy in energy units.
 
 [world]
-width = 16000.0
+width = 20400.0          # 16000 of ocean, then the mountain and the cut-off basin
 height = 6000.0          # the water surface is at the top
 seed = 1                 # same seed + config => same run
 
@@ -22,6 +22,13 @@ rocks = 16               # pillars, ledges, arches, boulder fields
 rock_size = 260.0
 caves = 7                # hollow rock chambers with a narrow entrance (dark inside)
 cave_size = 320.0
+mountain_width = 2000.0  # past the ocean's right edge a mountain rises above sea level...
+mountain_height = 380.0  # ...this far, cutting off a basin of water beyond it
+basin_width = 2400.0
+basin_depth = 1100.0
+shelf_vents = true       # a permanent vent in a cave on the shelf (roof open), one down the cliff, and tunnels between
+vent_cave_x = 0.843      # the shelf vent goes in the cave nearest this point (a fraction of the ocean's width)
+cliff_vent_depth = 2250.0  # on a small ledge, with the cliff bulging out below it
 
 [time]
 dt = 0.0333333333        # sim seconds per tick; 1x speed = 1/dt ticks per second
@@ -65,7 +72,7 @@ to_minerals = 0.5        # decomposed detritus released as minerals
 diffusion = 100.0
 
 [vents]
-count = 5
+count = 3                # random vents, besides the permanent ones (which count as shallow)
 output = 30.0            # mineral energy/s at full strength
 radius = 48.0
 lifetime_min = 2.0       # hours
@@ -104,7 +111,7 @@ large_swimmer_radius = 6.0   # fins and flukes become efficient around this radi
 crawl_speed = 12.0           # walking speed on rock at full leg strength (x sqrt(radius))
 eye_range = 40.0             # sight range of a full-size eye, in body radii
 smell_range = 16.0           # smell range of full antennae, in body radii, all directions
-tentacle_reach = 0.8         # reach beyond the body, as a fraction of tentacle length
+tentacle_reach = 1.0         # a tentacle grasps within this fraction of its length of its base
 frond_span = 0.45            # extra light-catching width per unit of frond length
 frond_uptake = 0.3           # extra nutrient-uptake surface per unit of frond length
 stalk_bonus = 1.3            # parts on a stalk's tip work this much better
@@ -205,6 +212,7 @@ engulf_rate = 3.0
 kin_hunger = 0.5         # hunters spare look-alikes unless this hungry (0 fed .. 1 starving)
 min_hunt = 0.05          # hunting capability below this does nothing (trace genes don't bite)
 body_contact = 0.3       # eating through the body away from the mouth works this well
+tentacle_pull = 12.0     # speed tentacles drag what they hold to the mouth (x sqrt(radius))
 bite_rate = 0.3
 armor_protection = 0.75
 spike_damage = 0.6

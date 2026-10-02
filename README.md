@@ -16,6 +16,7 @@ Click any organism to see what each gene does.
 - [docs/VISION.md](docs/VISION.md): goals and principles
 - [docs/DESIGN.md](docs/DESIGN.md): the rules (world, genome, ecology, behavior, species)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): code layout, tick pipeline, performance
+- [docs/IDEAS.md](docs/IDEAS.md): future ideas, parked until the current systems are balanced
 
 ## Requirements
 
@@ -62,7 +63,7 @@ cargo run --release -- --stream
 
 ### Art gallery
 
-`cargo run --release -- --gallery` opens a paused world with rows of organisms, each row sweeping one gene from `00` to `FF`: the size of each of the fifteen body parts, elongation, segments, mouths, and the chemistry genes that show on the body. The last four rows freeze the budding (small bud, fission), dying and swallowed animations at nine stages each. Use it to check how things look.
+`cargo run --release -- --gallery` opens a paused world with rows of organisms, each row sweeping one gene from `00` to `FF`: the size of each of the fifteen body parts, elongation, segments, mouths, and the chemistry genes that show on the body. The last rows freeze the budding (small bud, fission), dying, swallowed and bitten animations at nine stages each. Use it to check how things look.
 
 ### Headless
 

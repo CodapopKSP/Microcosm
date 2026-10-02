@@ -109,6 +109,27 @@ pub struct Chem {
     pub poisoned: f32,
 }
 
+/// A body held by a tentacle: where it is and how big, since when, and the last tick it was held.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Grasp {
+    pub pos: Vec2,
+    pub radius: f32,
+    pub since: u64,
+    pub tick: u64,
+}
+
+impl Grasp {
+    /// Note that a body is held this tick.
+    pub fn hold(&mut self, pos: Vec2, radius: f32, tick: u64) {
+        if self.tick + 1 < tick {
+            self.since = tick;
+        }
+        self.pos = pos;
+        self.radius = radius;
+        self.tick = tick;
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Organism {
     pub id: u64,
@@ -154,9 +175,12 @@ pub struct Organism {
     /// Tick this organism last ate (for the feeding animation).
     #[serde(default)]
     pub ate_tick: u64,
-    /// Tick this organism was last bitten (for the hurt flash).
+    /// Tick this organism was last bitten, and the direction (world angle) the bite came from
+    /// (for the hurt animation).
     #[serde(default)]
     pub hurt_tick: u64,
+    #[serde(default)]
+    pub hurt_dir: f32,
     pub born: u64,
     /// Where it budded off its parent: offset from the parent's center at birth (zero for
     /// founders). Used for the budding animation.
@@ -168,6 +192,10 @@ pub struct Organism {
     pub budded_tick: u64,
     #[serde(default)]
     pub bud_scale: f32,
+    /// What each tentacle is holding, by grasp (`traits.grasps`), for drawing them wrapped
+    /// around it. Empty until a tentacle first grabs something.
+    #[serde(default)]
+    pub grasps: Vec<Grasp>,
     pub offspring: u32,
     pub kills: u32,
     /// Last-tick diagnostics (energy/s), for the inspector.
@@ -225,10 +253,12 @@ impl Organism {
             steer_throttle: 0.0,
             ate_tick: 0,
             hurt_tick: 0,
+            hurt_dir: 0.0,
             born: tick,
             bud_offset: Vec2::ZERO,
             budded_tick: 0,
             bud_scale: 1.0,
+            grasps: Vec::new(),
             offspring: 0,
             kills: 0,
             gain_rate: 0.0,
@@ -311,8 +341,11 @@ pub struct Carcass {
     pub genome: Genome,
     #[serde(default)]
     pub seed: f32,
+    /// Tick it was last eaten from, and the direction (world angle) of the eater.
     #[serde(default)]
     pub hurt_tick: u64,
+    #[serde(default)]
+    pub hurt_dir: f32,
     /// Tick the organism died (for the dying animation).
     #[serde(default)]
     pub died_tick: u64,

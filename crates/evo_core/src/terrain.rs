@@ -24,6 +24,19 @@ pub struct Terrain {
     pub height: f32,
     /// Incremented whenever the terrain changes (so the renderer can refresh).
     pub version: u64,
+    /// Where permanent vents sit (near the surface on the mountain's flank, and down the cliff).
+    #[serde(default)]
+    pub vent_sites: Vec<Vec2>,
+}
+
+/// Where a generated cave is: its x, the top of its mound, and its chamber (center and radii).
+#[derive(Clone, Copy, Debug)]
+struct Cave {
+    x: f32,
+    top: f32,
+    chamber: Vec2,
+    ch_w: f32,
+    ch_h: f32,
 }
 
 /// A wall rising from the seafloor (from an event).
@@ -70,8 +83,39 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Bare seafloor height at `x`.
+/// The mountain past the ocean's right edge: its peak's x and half-width.
+pub fn mountain(cfg: &TerrainConfig, ocean_width: f32) -> (f32, f32) {
+    let half = cfg.mountain_width * 0.5;
+    (ocean_width + half, half)
+}
+
+/// Height of the mountain's surface at `x` (above `height`, the sea surface, near the peak),
+/// falling to the shelf on the left and the basin floor on the right, with ridges, shoulders
+/// and crags so it doesn't look like a smooth curve.
+fn mountain_height_at(cfg: &TerrainConfig, seed: u64, ocean_width: f32, height: f32, x: f32) -> f32 {
+    let (peak_x, half) = mountain(cfg, ocean_width);
+    let top = height + cfg.mountain_height;
+    let foot = height - if x < peak_x { cfg.shelf_depth } else { cfg.basin_depth };
+    // A slightly off-center, uneven peak: the shape bends with a slow noise.
+    let skew = 0.18 * value_noise(seed ^ 0x3B11, 1.7);
+    let t = ((x - peak_x) / half.max(1.0) - skew).abs().clamp(0.0, 1.0);
+    let smooth = top - (top - foot) * t * t * (3.0 - 2.0 * t);
+    // Shoulders and ridges (big, slow), then crags (small, fast), strongest mid-slope.
+    let shoulders = 0.22 * fbm(seed ^ 0x3B12, x / 520.0, 3);
+    let crags = 0.06 * fbm(seed ^ 0x3B13, x / 70.0, 3);
+    let slope = (4.0 * t * (1.0 - t)).max(0.25);
+    smooth + (top - foot) * (shoulders + crags) * slope
+}
+
+/// Bare seafloor height at `x` (the ocean's layout is relative to `width`, the ocean's width;
+/// the mountain and basin lie beyond it). Can rise above `height` (dry land).
 fn floor_height(cfg: &TerrainConfig, seed: u64, width: f32, height: f32, x: f32) -> f32 {
+    let (peak_x, half) = mountain(cfg, width);
+    if x > peak_x {
+        // The basin beyond the mountain: a gently uneven floor, cut off from the ocean.
+        let basin = height - cfg.basin_depth + 80.0 * fbm(seed ^ 0xBA51, x / 400.0, 3);
+        return basin.max(mountain_height_at(cfg, seed, width, height, x));
+    }
     let mut h = cfg.floor_height
         + cfg.floor_roughness * fbm(seed, x / 1800.0, 4)
         + cfg.floor_roughness * 0.2 * fbm(seed ^ 0xABCD, x / 240.0, 2);
@@ -90,7 +134,12 @@ fn floor_height(cfg: &TerrainConfig, seed: u64, width: f32, height: f32, x: f32)
         let bump = (1.0 - t * t).powi(2);
         h -= cfg.trench_depth * bump;
     }
-    h.clamp(64.0, height - 200.0)
+    let h = h.clamp(64.0, height - 200.0);
+    if x > peak_x - half {
+        h.max(mountain_height_at(cfg, seed, width, height, x))
+    } else {
+        h
+    }
 }
 
 /// Distance transform helper (Felzenszwalb & Huttenlocher), squared distances in cells.
@@ -167,13 +216,47 @@ impl Terrain {
     pub fn generate(config: &Config) -> Terrain {
         let cfg = &config.terrain;
         let (width, height) = (config.world.width, config.world.height);
+        // The ocean's layout is relative to its own width; the mountain and basin lie beyond.
+        let ocean = config.ocean_width();
         let seed = mix64(config.world.seed ^ 0x7E44_A1B0);
         let field = Field::new(width, height, cfg.cell, 0.0);
         let (nx, ny, cell) = (field.nx, field.ny, field.cell);
 
-        let floor: Vec<f32> = (0..nx)
-            .map(|x| floor_height(cfg, seed, width, height, (x as f32 + 0.5) * cell))
+        let mut floor: Vec<f32> = (0..nx)
+            .map(|x| floor_height(cfg, seed, ocean, height, (x as f32 + 0.5) * cell))
             .collect();
+
+        // The cliff vent's ledge: a small flat step partway down the cliff, with the cliff below
+        // it bulging out before it curves down to the deep floor (not one even slope).
+        let mut ledge = None;
+        if cfg.shelf_vents {
+            let ledge_y = height - cfg.cliff_vent_depth;
+            // Where the cliff passes that depth, walking left from the shelf.
+            let mut i = ((cfg.shelf_start * ocean / cell) as usize).min(nx - 1);
+            while i > 4 && floor[i] > ledge_y {
+                i -= 1;
+            }
+            let face = (i as f32 + 0.5) * cell;
+            let (ledge_w, bulge_w) = (300.0, 650.0);
+            let lseed = seed ^ 0x1ED6;
+            for (x, f) in floor.iter_mut().enumerate() {
+                let px = (x as f32 + 0.5) * cell;
+                let from_edge = face - ledge_w - px; // > 0 below the ledge's outer edge
+                if px > face || from_edge > bulge_w {
+                    continue;
+                }
+                let bump = 12.0 * value_noise(lseed, px / 60.0);
+                let shape = if from_edge <= 0.0 {
+                    ledge_y + bump
+                } else {
+                    // Rounded: it falls away slowly at first, then steeply.
+                    let t = from_edge / bulge_w;
+                    ledge_y - (ledge_y - *f).max(0.0) * t * t * (1.6 - 0.6 * t) + bump
+                };
+                *f = f.max(shape);
+            }
+            ledge = Some(Vec2::new(face - ledge_w * 0.5, ledge_y));
+        }
 
         let mut solid = vec![false; nx * ny];
         let wall = 3usize;
@@ -206,7 +289,7 @@ impl Terrain {
 
         for k in 0..cfg.rocks {
             let size = cfg.rock_size * rng.range(0.5, 1.6);
-            let cx = rng.range(0.05, 0.95) * width;
+            let cx = rng.range(0.05, 0.95) * ocean;
             let base = floor_at(cx);
             let nseed = seed.wrapping_add(k as u64 * 104_729);
             match k % 4 {
@@ -299,16 +382,9 @@ impl Terrain {
                 }
             }
         };
-        let shelf_x = cfg.shelf_start * width;
-        for k in 0..cfg.caves {
-            let size = cfg.cave_size * rng.range(0.7, 1.3);
-            let cx = if k % 2 == 0 {
-                rng.range(shelf_x + 400.0, width * 0.97 - size)
-            } else {
-                rng.range(0.06, 0.9) * width
-            };
+        // Build one cave at `cx` and return where its mound and chamber are.
+        let build_cave = |solid: &mut Vec<bool>, cx: f32, size: f32, side: f32, nseed: u64| {
             let base = floor_at(cx);
-            let nseed = seed.wrapping_add(0xCA7E + k as u64 * 7_919);
             let (mound_w, mound_h) = (size * 1.6, size * 1.1);
             let mound = move |p: Vec2| {
                 let a = (p - Vec2::new(cx, base)).to_angle();
@@ -317,30 +393,164 @@ impl Terrain {
                 q.length() < wobble && p.y > base - 60.0
             };
             stamp(
-                &mut solid,
+                solid,
                 &mound,
                 Vec2::new(cx - mound_w * 1.2, base - 60.0),
                 Vec2::new(cx + mound_w * 1.2, base + mound_h * 1.2),
             );
-            let chamber_c = Vec2::new(cx, base + mound_h * 0.4);
+            let chamber = Vec2::new(cx, base + mound_h * 0.4);
             let (ch_w, ch_h) = (size * 0.9, size * 0.35);
-            let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
-            let tunnel_y = chamber_c.y - ch_h * 0.3;
+            let tunnel_y = chamber.y - ch_h * 0.3;
             let tunnel_half = (size * 0.08).max(cell * 1.5);
             let hollow = move |p: Vec2| {
                 let wobble = 1.0 + 0.15 * value_noise(nseed ^ 0x55, p.x / 60.0);
-                let q = (p - chamber_c) / Vec2::new(ch_w, ch_h * wobble);
+                let q = (p - chamber) / Vec2::new(ch_w, ch_h * wobble);
                 let tunnel = (p.x - cx) * side > 0.0
                     && (p.y - tunnel_y).abs()
                         < tunnel_half * (1.0 + 0.3 * value_noise(nseed ^ 0x77, p.x / 40.0));
                 q.length() < 1.0 || tunnel
             };
             carve(
-                &mut solid,
+                solid,
                 &hollow,
-                Vec2::new(cx - mound_w * 1.3, chamber_c.y - ch_h * 1.3),
-                Vec2::new(cx + mound_w * 1.3, chamber_c.y + ch_h * 1.3),
+                Vec2::new(cx - mound_w * 1.3, chamber.y - ch_h * 1.3),
+                Vec2::new(cx + mound_w * 1.3, chamber.y + ch_h * 1.3),
             );
+            Cave {
+                x: cx,
+                top: base + mound_h * 1.15,
+                chamber,
+                ch_w,
+                ch_h,
+            }
+        };
+        let shelf_x = cfg.shelf_start * ocean;
+        let mut caves = Vec::new();
+        for k in 0..cfg.caves {
+            let size = cfg.cave_size * rng.range(0.7, 1.3);
+            let cx = if k % 2 == 0 {
+                rng.range(shelf_x + 400.0, ocean * 0.97 - size)
+            } else {
+                rng.range(0.06, 0.9) * ocean
+            };
+            let nseed = seed.wrapping_add(0xCA7E + k as u64 * 7_919);
+            let side = if rng.chance(0.5) { 1.0 } else { -1.0 };
+            caves.push(build_cave(&mut solid, cx, size, side, nseed));
+        }
+
+        // Permanent vents: one inside a cave on the shelf near the cliff's edge, with the cave's
+        // roof opened so the vent sees open water, and one partway down the cliff. Winding
+        // tunnels branch up from the cliff vent into that cave and the little cave nearest the
+        // cliff.
+        let mut vent_sites = Vec::new();
+        if cfg.shelf_vents {
+            let want = cfg.vent_cave_x * ocean;
+            let nearest = caves
+                .iter()
+                .filter(|c| c.x > shelf_x)
+                .min_by(|a, b| (a.x - want).abs().total_cmp(&(b.x - want).abs()))
+                .copied();
+            let vent_cave = match nearest {
+                Some(c) if (c.x - want).abs() < 1000.0 => c,
+                // No cave there in this world: make one.
+                _ => build_cave(&mut solid, want, cfg.cave_size, 1.0, seed ^ 0xCAFE),
+            };
+            // The vent on the cave's floor, under a wide opening in the roof.
+            let vent = Vec2::new(vent_cave.chamber.x, vent_cave.chamber.y - vent_cave.ch_h * 0.55);
+            let rseed = seed ^ 0x2007;
+            // A pocket of water around the vent (a later cave's mound may have filled part of
+            // the chamber), and a funnel widening up through the roof to the water above.
+            // It goes on up well past the cave's top, so no slivers of rock are left hanging
+            // over it, but stops widening so it doesn't cut into neighboring caves.
+            let funnel_top = vent_cave.top + 400.0;
+            let max_half = 260.0;
+            let roof = move |p: Vec2| {
+                let wobble = 1.0 + 0.25 * value_noise(rseed, p.y / 50.0 + p.x / 200.0);
+                let rise = (p.y - vent.y).max(0.0);
+                let half = (55.0 + 0.75 * rise).min(max_half);
+                p.distance(vent) < 60.0 || (p.x - vent.x).abs() < half * wobble && p.y > vent.y
+            };
+            let spread = max_half * 1.25;
+            carve(
+                &mut solid,
+                &roof,
+                Vec2::new(vent.x - spread, vent.y - 70.0),
+                Vec2::new(vent.x + spread, funnel_top),
+            );
+            // The little cave nearest the cliff, if there's another one on the shelf.
+            let little = caves
+                .iter()
+                .filter(|c| c.x > shelf_x - 300.0 && c.x < vent_cave.x - 200.0)
+                .min_by(|a, b| a.x.total_cmp(&b.x))
+                .copied();
+            // A short passage joining the vent cave to the little cave on its left.
+            if let Some(l) = little {
+                let (a, b) = (
+                    l.chamber + Vec2::new(l.ch_w * 0.7, 0.0),
+                    vent_cave.chamber - Vec2::new(vent_cave.ch_w * 0.7, 0.0),
+                );
+                let cseed = seed ^ 0xC0EC;
+                let link = move |p: Vec2| {
+                    let ab = b - a;
+                    let t = ((p - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                    let along = a + ab * t;
+                    let on = along + Vec2::Y * 25.0 * value_noise(cseed, along.x / 90.0);
+                    p.distance(on) < 20.0
+                };
+                carve(
+                    &mut solid,
+                    &link,
+                    a.min(b) - Vec2::splat(80.0),
+                    a.max(b) + Vec2::splat(80.0),
+                );
+            }
+            // The cliff vent sits on its ledge.
+            let ledge = ledge.unwrap_or(Vec2::new(shelf_x, height - cfg.cliff_vent_depth));
+            let cliff_vent = Vec2::new(ledge.x, floor_at(ledge.x) + 12.0);
+            let niche = cliff_vent + Vec2::new(0.0, 30.0);
+            // Tunnels stay in the rock: up from the cliff to below the shelf floor, along under
+            // a cave, then up into its chamber. Two into each cave.
+            let mut ends = Vec::new();
+            for cave in little.iter().chain(std::iter::once(&vent_cave)) {
+                for f in [-0.45, 0.35] {
+                    ends.push((cave.chamber + Vec2::new(f * cave.ch_w, -0.6 * cave.ch_h), cave.x));
+                }
+            }
+            let tunnels: Vec<[Vec2; 4]> = ends
+                .iter()
+                .enumerate()
+                .map(|(k, &(end, cave_x))| {
+                    let k = k as f32;
+                    let below = floor_at(cave_x).min(floor_at(end.x)) - 220.0 - 25.0 * k;
+                    let start = niche + Vec2::new(30.0, 25.0 + 45.0 * k);
+                    let a = Vec2::new(end.x - 160.0 + 30.0 * k, below);
+                    let b = Vec2::new(end.x + 40.0 * (k % 2.0 - 0.5), below + 40.0);
+                    [start, a, b, end]
+                })
+                .collect();
+            let tseed = seed ^ 0x7077;
+            let passages = move |p: Vec2| {
+                if p.distance(niche) < 60.0 {
+                    return true;
+                }
+                tunnels.iter().enumerate().any(|(k, path)| {
+                    path.windows(2).any(|w| {
+                        let (a, b) = (w[0], w[1]);
+                        let ab = b - a;
+                        let t = ((p - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+                        let along = a + ab * t;
+                        let wiggle = 30.0 * value_noise(tseed ^ k as u64, (along.x + along.y) / 120.0);
+                        let on = along + ab.perp().normalize_or_zero() * wiggle;
+                        p.distance(on) < 16.0 + 4.0 * value_noise(tseed ^ 0x99, along.x / 50.0)
+                    })
+                })
+            };
+            let right = vent_cave.chamber.x + vent_cave.ch_w + 100.0;
+            let lo = Vec2::new(cliff_vent.x - 100.0, cliff_vent.y - 100.0);
+            let hi = Vec2::new(right, vent_cave.chamber.y + 100.0);
+            carve(&mut solid, &passages, lo, hi);
+            vent_sites.push(vent);
+            vent_sites.push(cliff_vent);
         }
 
         let mut terrain = Terrain {
@@ -351,6 +561,7 @@ impl Terrain {
             width,
             height,
             version: 0,
+            vent_sites,
         };
         terrain.recompute_sdf(0, nx);
         terrain
@@ -522,13 +733,50 @@ mod tests {
         assert!(t.distance(Vec2::new(w * 0.5, 10.0)) < 0.0, "bottom is rock");
         assert!(t.distance(Vec2::new(5.0, h * 0.5)) < 0.0, "left wall");
         // Shelf is shallower than the open ocean floor; trench is deeper.
-        let shelf = t.floor_at(w * 0.95);
-        let trench = t.floor_at(w * config.terrain.trench_center);
-        let open = t.floor_at(w * 0.55);
+        let ocean = config.ocean_width();
+        let shelf = t.floor_at(ocean * 0.95);
+        let trench = t.floor_at(ocean * config.terrain.trench_center);
+        let open = t.floor_at(ocean * 0.55);
         assert!(
             shelf > open && open > trench,
             "shelf {shelf} open {open} trench {trench}"
         );
+    }
+
+    #[test]
+    fn a_mountain_cuts_off_a_basin_and_vents_sit_in_open_water() {
+        for seed in [1, 2, 3, 7, 42] {
+            let mut config = Config::default();
+            config.world.seed = seed;
+            let t = Terrain::generate(&config);
+            let (w, h) = (config.world.width, config.world.height);
+            let (peak_x, _) = mountain(&config.terrain, config.ocean_width());
+            // The mountain reaches the surface; water lies on both sides of it.
+            assert!(t.is_solid(Vec2::new(peak_x, h - 4.0)), "peak is above water");
+            assert!(!t.is_solid(Vec2::new(peak_x - 1500.0, h - 100.0)), "ocean side");
+            assert!(!t.is_solid(Vec2::new(w - 600.0, h - 100.0)), "basin side");
+            assert!(t.floor_at(w - 600.0) < h - 800.0, "the basin is deep");
+            // Two permanent vents in water: one near the surface, one down the cliff.
+            assert_eq!(t.vent_sites.len(), 2);
+            for &v in &t.vent_sites {
+                assert!(t.distance(v) > 2.0, "vent at {v:?} is in water (seed {seed})");
+            }
+            let (shelf, cliff) = (t.vent_sites[0], t.vent_sites[1]);
+            let depth = h - shelf.y;
+            assert!((300.0..1300.0).contains(&depth), "shelf vent at depth {depth}");
+            assert!(h - cliff.y > 1400.0, "cliff vent at depth {}", h - cliff.y);
+            let ocean = config.ocean_width();
+            assert!(
+                (shelf.x - config.terrain.vent_cave_x * ocean).abs() < 1000.0,
+                "the shelf vent is in the cave near the cliff's edge"
+            );
+            // Open water straight up from the vent, out through the cave's roof.
+            let mut p = shelf + Vec2::new(0.0, 30.0);
+            while p.y < h - 400.0 && p.y < shelf.y + 600.0 {
+                assert!(!t.is_solid(p), "covered at {p:?} (seed {seed})");
+                p.y += 8.0;
+            }
+        }
     }
 
     #[test]

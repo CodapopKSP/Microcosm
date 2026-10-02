@@ -12,15 +12,17 @@ Guiding principles (see [VISION.md](VISION.md)):
 
 ## 1. The world
 
-A **side-on cross-section of an ocean**. `y` grows upward; the water surface is at the top of the world, the seafloor is procedurally generated terrain at the bottom. Default size 16,000 × 6,000 units, explored with pan/zoom.
+A **side-on cross-section of an ocean**. `y` grows upward; the water surface is at the top of the world, the seafloor is procedurally generated terrain at the bottom. Default size 20,400 × 6,000 units: 16,000 of open ocean, then a mountain and a cut-off basin (below). Explored with pan/zoom.
 
 | Region | What makes it distinct |
 |--------|------------------------|
 | Sunlit surface | Most light; warm; phototrophs bloom and shade each other |
 | Twilight / open water | Light fades exponentially with depth; hunters and drifters |
 | Deep / seafloor | Dark and cold; detritus ("marine snow") settles into sediment |
-| Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Two are kept shallow (on the shelf and upper slope, in dim light), stepping stones between the sunlit water and the deep vents |
+| Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Two are permanent parts of the terrain (below); three more open and die on the deep floor over hours |
 | Shelf | A shallow region where the seafloor itself is sunlit |
+| Mountain and basin | Past the shelf a rugged mountain (ridges, shoulders and crags) rises above sea level, and beyond it lies a basin of water (about 1,100 deep) that it cuts off from the ocean. Nothing lives there at the start: ancestors, recolonization, random vents and events stay in the ocean. Reaching it is for later (see `docs/IDEAS.md`) |
+| Permanent vents | One inside a cave on the shelf near the cliff's edge (the cave nearest a fixed spot; made if there isn't one), opening upward in a wide V to the water above, with a short passage joining the little cave to its left. One on a small ledge partway down the cliff (about 2,250 deep), with the cliff bulging out below the ledge rather than falling in one even slope. Winding tunnels branch up from the cliff vent through the rock into both caves |
 | Rocks & crevices | Block movement and cast shade; narrow gaps shelter small organisms |
 | Caves | Hollow rock chambers with a narrow entrance, on the shelf and the deep floor. Dark inside; only small bodies fit through the entrance |
 | Currents | Slow gyres everywhere and faster eddies in the upper ~450 units stir plankton through the sunlit water |
@@ -130,7 +132,7 @@ Applied independently to each gene of each offspring:
 - 5% of mutations **re-roll** the gene to a random value. The rest step by ±2 (50%), ±4 (25%), ±8 (12.5%) or ±16 (12.5%).
 - Values clamp at `00` and `FF`.
 - A part's **type** byte doesn't step: it shifts to a neighboring kind in the catalog (fin ↔ leg, spine ↔ jaw, eye ↔ antenna, …) or gains or loses symmetry (single → pair → ring).
-- Whole parts: **duplication** (0.3% per offspring: a part is copied into an empty slot, often to a new place), **deletion** (0.4%), and **new parts** (0.5%: a random kind grows in an empty slot from its leftover bytes).
+- Whole parts: **duplication** (0.3% per offspring: a part is copied into an empty slot, often to a new place), **deletion** (0.4%), and **new parts** (0.5%: a random kind grows in an empty slot from its leftover bytes; a slot that has never held a part starts at a random place and angle, since its all-zero bytes would put every new part at the very front).
 
 Low mutation rates keep lineages coherent, so species persist and drift is visible. Deleted parts leave their size and placement bytes behind as cryptic variation that a later part can reuse.
 
@@ -154,7 +156,7 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 |------|-----|-------|
 | Flagellum | Pushes the body away from the side it's on (a trailing flagellum pushes it forward) | Best for small bodies |
 | Cilia band | A little thrust across its axis, turning, filter feeding | Best for small bodies |
-| Tentacle | Reach: grabs prey and carcasses all around the body, not just at the mouth | Also filters and grips |
+| Tentacle | Grabs one thing (prey or a carcass) within its own length of its base and drags it to the mouth; it doesn't eat itself | Also filters and grips; a tentacle on a frond or stalk grabs from out there |
 | Frond | Catches light over a wider span, takes up nutrients | Makes large photosynthesizers viable |
 | Fin | Swimming across its axis (fins on the sides row forward) and turning | Best for larger bodies |
 | Tail fluke | Powerful swimming away from where it points | Best for larger bodies; points back to push forward |
@@ -175,7 +177,7 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 - **Turning** needs an organ to turn with: fins, cilia, flagella, flukes and tentacles, or legs while walking on rock. A body without one keeps its orientation forever. Long and segmented bodies turn more slowly.
 - **Walking** speed from legs, **grip** from legs, tentacles and holdfasts, **anchoring** from holdfasts. Only organisms with such parts check whether they touch rock.
 - **Senses**: each eye is a view cone (up to six are tracked); antennae give a smell radius. No eyes and no antennae means blind (contact only).
-- **Reach** from the longest tentacle; **light span** and nutrient-uptake surface from fronds; **filtering** from cilia and tentacles; **glow** from lures.
+- **Grasps**: one circle around each tentacle's base (up to 8), each with its own pull strength; **light span** and nutrient-uptake surface from fronds; **filtering** from cilia and tentacles; **glow** from lures.
 - **Armor** from shell plates and **spikes** from spines, **per side** (front, left, back, right): a plate or spine mostly guards the side it faces, so a shell on the back protects against chasers but not a head-on attack. **Jaws** from jaws, strongest facing forward. All with diminishing returns (1 − e^(−x)).
 - Every part costs **upkeep** and has **mass**: building a body with parts costs more, and heavy parts sink it.
 
@@ -237,10 +239,12 @@ needs     = (basal + movement) × breathing/fermentation cost (§4)
 |------|----------|-------------|
 | Photosynthesis | Share of light absorbed in the organism's light cell(s) (§1), limited by CO₂ or minerals (§4) | Width × frond span (big photosynthesizers need fronds) |
 | Chemosynthesis | Uptake from the mineral field: `2 × c × radius × concentration`, depleting it | Perimeter (favors small) |
-| Scavenging | Uptake from the detritus field, `12 × c × radius × (1 + filter) × concentration` (intercepting falling marine snow), plus a filter-feeding bonus when swimming; eating large carcasses at the mouth or within tentacle reach | Width; width × speed when swimming |
+| Scavenging | Uptake from the detritus field, `12 × c × radius × (1 + filter) × concentration` (intercepting falling marine snow), plus a filter-feeding bonus when swimming; eating large carcasses at the mouth or body (tentacles drag them there) | Width; width × speed when swimming |
 | Hunting | See below | Size, jaws |
 
-**Hunting.** When a non-kin organism touches the hunter's **mouth** (a circle at the front of its head: most of the front half of a round cell, only the nose of a long body), or anywhere its tentacles reach. Food that only touches the rest of the body is eaten at 30% of the rate, so facing your food pays:
+**Hunting.** When a non-kin organism touches the hunter's **mouth** (a circle at the front of its head: most of the front half of a round cell, only the nose of a long body). Food that only touches the rest of the body is eaten at 30% of the rate, so facing your food pays:
+
+- **Tentacles** each grab one prey or carcass within reach of their base (their own length) and drag it toward the mouth at `12 × pull × √radius` units/s (pull grows with the tentacle's size), shared by mass: small prey is reeled in, while big prey mostly pulls the hunter to it (an anchored hunter doesn't budge). A predator with eight tentacles can hold eight prey. Nothing is eaten until it reaches the mouth or body.
 
 - **Engulf** if the prey's radius is ≤ 60% of the hunter's: the prey dies instantly, with the chance per second reduced by the prey's armor on the side it's attacked from. The hunter's spikes don't matter, but the **prey's** spikes hurt the hunter.
 - Otherwise **bite**: the hunter tears off `0.3 × c_hunt × (0.2 + 1.8 × jaws) × radius²` of the prey's mass per second, reduced by the prey's armor on the side it's bitten. Bitten prey shrink and lose HP, and must regrow. The prey's spikes on that side reflect damage.
@@ -275,7 +279,7 @@ The viewer shows the child swelling out of the parent through a neck that pinche
 |-------|--------|
 | HP reaches 0 (starvation, predation, temperature, spikes, suffocation, poison) | Corpse |
 | Old age (past lifespan: 20% chance per second) | Corpse |
-| Engulfed | No lasting corpse — eaten whole (the viewer shows its body flash into a corpse and fade in half a second) |
+| Engulfed | No lasting corpse — eaten whole. The viewer shows it slide into the hunter's mouth, pass inside and be digested there as a greying, shrinking food vacuole over 3 seconds (purely visual: it's already dead) |
 
 Every corpse becomes a **carcass**: its colours drain away and it becomes a grey, torn version of the organism (parts included) that sinks, can be eaten on contact (bites show), and decays into the **detritus field** (marine snow). Small carcasses decompose within about a minute; large ones last much longer, so a whale fall feeds a seafloor community.
 

@@ -370,8 +370,15 @@ fn body_plan(ui: &mut egui::Ui, world: &World, o: &evo_core::Organism) {
                     (t.smell_radii * o.radius).min(cap)
                 ));
             }
-            if t.reach > 0.0 {
-                abilities.push(format!("reaches {:.0} u", t.reach * o.radius));
+            if t.grasp_count > 0 {
+                let reach = t.grasps[..t.grasp_count as usize]
+                    .iter()
+                    .map(|z| z.radius)
+                    .fold(0.0, f32::max);
+                abilities.push(format!(
+                    "tentacles grab within {:.0} u and pull to the mouth",
+                    reach * o.radius
+                ));
             }
             if t.light_span > 1.01 {
                 abilities.push(format!("catches light ×{:.1} wide", t.light_span));

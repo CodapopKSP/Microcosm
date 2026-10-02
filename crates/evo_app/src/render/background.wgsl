@@ -12,7 +12,16 @@ struct Background {
     effects: vec4<f32>, // impact-winter darkness, event count, map mode
     air: vec4<f32>, // air oxygen, air CO2 (1 = today)
     events: array<vec4<f32>, 8>, // x, width, kind (1 upwelling, 2 wall), param
+    land: vec4<f32>,      // mountain outline: first sample x, spacing, sample count, on
+    land_profile: array<vec4<f32>, 32>, // its height at each sample (4 per entry)
 };
+
+fn land_sample(k: i32) -> f32 {
+    let i = clamp(k, 0, i32(bg.land.z) - 1);
+    let v = bg.land_profile[i / 4];
+    let j = i % 4;
+    return select(select(select(v.x, v.y, j == 1), v.z, j == 2), v.w, j == 3);
+}
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> bg: Background;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var terrain_tex: texture_2d<f32>;
@@ -39,6 +48,35 @@ fn value_noise(p: vec2<f32>) -> f32 {
     let c = hash21(i + vec2<f32>(0.0, 1.0));
     let d = hash21(i + vec2<f32>(1.0, 1.0));
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+fn pcg(v: u32) -> u32 {
+    let state = v * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// Random 0..1 for an integer cell, from integer arithmetic: unlike `hash21`, it stays random
+// however far the cell is from the origin (float hashes of large coordinates repeat on a grid).
+fn cell_hash(c: vec2<f32>, salt: u32) -> f32 {
+    let x = bitcast<u32>(i32(c.x));
+    let y = bitcast<u32>(i32(c.y));
+    return f32(pcg(x ^ pcg(y ^ pcg(salt))) >> 8u) / 16777216.0;
+}
+
+// Specks on a jittered grid of `cell`-sized cells moving with `drift`: 1 inside a speck of
+// radius `size` (never under ~1 px), present in a `density` fraction of cells (none at 0).
+fn specks(wp: vec2<f32>, cell: f32, drift: vec2<f32>, density: f32, size: f32, px: f32, seed: f32) -> f32 {
+    if density <= 0.0 {
+        return 0.0;
+    }
+    let sp = (wp + drift) / cell;
+    let c = floor(sp);
+    let salt = u32(seed * 1000.0);
+    let j = vec2<f32>(cell_hash(c, salt), cell_hash(c, salt + 1u)) * 0.8 + 0.1;
+    let r = max(size, 0.8 * px) / cell;
+    let d = length(sp - c - j);
+    return (1.0 - smoothstep(r * 0.4, r, d)) * select(0.0, 1.0, cell_hash(c, salt + 2u) < density);
 }
 
 fn fbm(p: vec2<f32>) -> f32 {
@@ -80,12 +118,35 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         var sky = mix(sky_night, day * 0.7, clamp(bg.sun.x * 1.3, 0.0, 1.0));
         // Stars at night (hidden by impact dust).
         let winter = bg.effects.x;
-        let star = step(0.9985, hash21(floor(wp / max(2.0, 1.5 * px)))) * (1.0 - clamp(bg.sun.x * 3.0, 0.0, 1.0));
+        // Fixed in the world (they don't reshuffle on zoom), about a pixel across at any zoom.
+        let star_cell = floor(wp / 60.0);
+        let twinkle = 0.4 + 0.6 * cell_hash(star_cell, 91u);
+        let star = specks(wp, 60.0, vec2<f32>(0.0), 0.12, 0.9 * px, px, 0.9) * twinkle
+            * (1.0 - clamp(bg.sun.x * 3.0, 0.0, 1.0));
         sky += vec3<f32>(star) * (1.0 - winter);
         // Impact winter: a churning brown-grey dust pall.
         let dust = fbm(vec2<f32>(wp.x * 0.0008 + time * 0.02, wp.y * 0.002));
         let pall = mix(vec3<f32>(0.09, 0.075, 0.06), vec3<f32>(0.2, 0.16, 0.12), dust);
         sky = mix(sky, pall, clamp(winter * 1.4, 0.0, 0.95));
+        // The mountain above sea level (same profile as the terrain below the surface).
+        let f = (wp.x - bg.land.x) / max(bg.land.y, 1e-3);
+        if bg.land.w > 0.5 && f >= 0.0 && f <= bg.land.z - 1.0 {
+            let k = i32(floor(f));
+            let ridge = mix(land_sample(k), land_sample(k + 1), fract(f))
+                + 4.0 * (fbm(vec2<f32>(wp.x * 0.05, 0.0)) - 0.5);
+            let inside = 1.0 - smoothstep(-px, px, wp.y - ridge);
+            if inside > 0.0 {
+                let n = fbm(wp * 0.006) * 0.55 + fbm(wp * 0.03) * 0.3 + value_noise(wp * 0.15) * 0.15;
+                // The same rock as below the waterline, a little brighter by day.
+                var land = mix(vec3<f32>(0.03, 0.028, 0.03), vec3<f32>(0.11, 0.095, 0.08), n);
+                land *= 0.92 + 0.08 * sin(wp.y * 0.018 + fbm(wp * 0.004) * 9.0);
+                let daylight = 0.55 + 0.55 * clamp(bg.sun.x, 0.0, 1.0);
+                let crest = 1.0 - smoothstep(0.0, 30.0, ridge - wp.y);
+                land *= daylight * (1.0 + 0.4 * crest);
+                land = mix(land, pall * 0.8, clamp(winter * 1.2, 0.0, 0.9));
+                sky = mix(sky, land, inside);
+            }
+        }
         return vec4<f32>(sky, 1.0);
     }
 
@@ -147,15 +208,33 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let murk = 0.8 + 0.2 * fbm(wp * 0.01 + vec2<f32>(time * 0.01, 0.0));
     water = mix(water, vec3<f32>(0.035, 0.015, 0.03) * murk + water * 0.3, anoxic * 0.7);
     water += vec3<f32>(0.25, 0.02, 0.02) * toxin * (0.7 + 0.3 * fbm(wp * 0.02 - vec2<f32>(0.0, time * 0.05)));
-    // Water supersaturated with oxygen fizzes with tiny rising bubbles.
-    let fizz = smoothstep(1.02, 1.25, oxygen) * (1.0 - smoothstep(1.5, 4.0, px));
-    if fizz > 0.0 {
-        let bp = vec2<f32>(wp.x + sin(wp.y * 0.05 + time) * 3.0, wp.y - time * 18.0) / 9.0;
-        let bc = floor(bp);
-        let bj = vec2<f32>(hash21(bc + 3.1), hash21(bc + 9.7));
-        let bubble = (1.0 - smoothstep(0.08, 0.14, length(bp - bc - bj))) * step(hash21(bc), fizz * 0.35);
-        water += vec3<f32>(0.35, 0.5, 0.5) * bubble;
+    // What's dissolved in the water, visible when zoomed in: each chemical has its own look.
+    let near = 1.0 - smoothstep(1.5, 5.0, px);
+    let o2_rich = smoothstep(0.95, 1.3, oxygen);
+    // Oxygen-rich water is a little clearer, and fizzes with rising bubbles when supersaturated.
+    water += vec3<f32>(0.0, 0.015, 0.025) * o2_rich * select(1.0, 0.0, outside);
+    if near > 0.0 && !outside {
+        let wobble = vec2<f32>(sin(wp.y * 0.05 + time) * 3.0, 0.0);
+        let bubbles = specks(wp + wobble, 9.0, vec2<f32>(0.0, -time * 18.0), o2_rich * 0.4, 1.1, px, 3.1);
+        let rim = specks(wp + wobble, 9.0, vec2<f32>(0.0, -time * 18.0), o2_rich * 0.4, 0.6, px, 3.1);
+        water += vec3<f32>(0.45, 0.6, 0.65) * (bubbles - rim * 0.6) * near;
+        // Minerals: cyan sparks that twinkle.
+        let spark = specks(wp, 14.0, vec2<f32>(sin(time * 0.3) * 4.0, -time * 2.0), minerals * 0.7, 0.9, px, 7.7);
+        let twinkle = 0.5 + 0.5 * sin(time * 5.0 + hash21(floor(wp / 14.0)) * 30.0);
+        water += vec3<f32>(0.3, 1.3, 1.6) * spark * twinkle * near;
+        // Nutrients: pale green motes drifting in the light.
+        let motes = specks(wp, 17.0, vec2<f32>(time * 1.5, -time * 0.8), nutrients * 0.35, 0.8, px, 12.9);
+        water += vec3<f32>(0.25, 0.7, 0.2) * motes * (0.25 + 0.75 * brightness) * near;
+        // Toxin: red specks swirling.
+        let swirl = vec2<f32>(sin(wp.y * 0.02 + time * 0.7), cos(wp.x * 0.02 + time * 0.6)) * 6.0;
+        let poison = specks(wp + swirl, 11.0, vec2<f32>(0.0, 0.0), toxin * 0.9, 1.0, px, 21.3);
+        water += vec3<f32>(1.3, 0.15, 0.08) * poison * near;
+        // Dead zones: dark silt hanging in the water.
+        let silt = specks(wp, 13.0, vec2<f32>(time * 0.5, -time * 0.3), anoxic * 0.45, 1.2, px, 33.3);
+        water = mix(water, vec3<f32>(0.02, 0.01, 0.015), silt * 0.8 * near);
     }
+    // Nutrient-rich sunlit water is faintly greener.
+    water += vec3<f32>(0.0, 0.02, 0.004) * nutrients * brightness * select(1.0, 0.0, outside);
 
     // Vents: hot glow and a shimmering plume.
     let vent_count = u32(bg.sun.w);
@@ -243,7 +322,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             map_col = mix(vec3<f32>(0.45, 0.05, 0.4), vec3<f32>(0.1, 0.35, 0.95), smoothstep(0.0, 0.6, o));
             map_col = mix(map_col, vec3<f32>(0.6, 0.95, 1.0), smoothstep(0.66, 1.0, o));
         } else if map_mode == 2u {
+            let c = chem.a; // CO2, 0..2 scaled to 0..1
+            map_col = mix(vec3<f32>(0.05, 0.1, 0.3), vec3<f32>(0.95, 0.75, 0.2), c);
+        } else if map_mode == 3u {
             map_col = mix(vec3<f32>(0.03, 0.03, 0.05), vec3<f32>(0.3, 1.0, 0.25), nutrients);
+        } else if map_mode == 4u {
+            map_col = mix(vec3<f32>(0.03, 0.03, 0.05), vec3<f32>(0.2, 0.95, 1.1), minerals);
         } else {
             map_col = mix(vec3<f32>(0.03, 0.03, 0.05), vec3<f32>(1.0, 0.15, 0.1), toxin);
         }

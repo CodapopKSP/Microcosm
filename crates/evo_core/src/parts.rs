@@ -132,7 +132,7 @@ impl PartKind {
         match self {
             PartKind::Flagellum => "whips the water to swim (best for small bodies)",
             PartKind::Cilia => "beats slowly: a little thrust and filter feeding",
-            PartKind::Tentacle => "reaches out to grab food and prey",
+            PartKind::Tentacle => "grabs food and prey near its base and pulls them to the mouth",
             PartKind::Frond => "catches sunlight over a wide area",
             PartKind::Fin => "swims and steers (best for larger bodies)",
             PartKind::Fluke => "powerful swimming stroke (best for larger bodies)",

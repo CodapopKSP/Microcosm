@@ -326,6 +326,55 @@ fn diagnostics(world: &World) {
         m,
         d
     );
+    // Where chemosynthesis can pay: water with minerals worth eating (by richness), how much of
+    // it also has oxygen to breathe, how deep it is, and how many organisms live in it.
+    let minerals = &env.minerals;
+    let h = world.config.world.height;
+    let mut line = String::from("          minerals");
+    for threshold in [0.01f32, 0.05, 0.2] {
+        let (mut rich, mut breathable, mut depth) = (0u32, 0u32, 0.0f32);
+        for y in 0..minerals.ny {
+            for x in 0..minerals.nx {
+                let i = minerals.index(x, y);
+                if minerals.solid[i] || minerals.data[i] < threshold {
+                    continue;
+                }
+                rich += 1;
+                let at = glam::Vec2::new(
+                    (x as f32 + 0.5) * minerals.cell,
+                    (y as f32 + 0.5) * minerals.cell,
+                );
+                depth += h - at.y;
+                if env.oxygen.sample(at) >= 0.4 {
+                    breathable += 1;
+                }
+            }
+        }
+        let living = world
+            .organisms
+            .iter()
+            .filter(|o| minerals.sample(o.pos) >= threshold)
+            .count();
+        let area = minerals.cell_area() / 1e4;
+        line += &format!(
+            " | >={threshold}: {:.0} (100u)^2, {:.0}% with O2, mean depth {:.0}, {living} living there",
+            rich as f32 * area,
+            breathable as f32 / rich.max(1) as f32 * 100.0,
+            depth / rich.max(1) as f32,
+        );
+    }
+    let (peak_i, peak) = minerals
+        .data
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !minerals.solid[*i])
+        .fold((0, 0.0f32), |best, (i, &c)| if c > best.1 { (i, c) } else { best });
+    line += &format!(
+        " | peak {peak:.3} at x {:.0} depth {:.0}",
+        ((peak_i % minerals.nx) as f32 + 0.5) * minerals.cell,
+        h - ((peak_i / minerals.nx) as f32 + 0.5) * minerals.cell
+    );
+    println!("{line}");
 }
 
 /// Population mean of every gene, next to the ancestor's value.

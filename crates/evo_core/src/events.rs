@@ -169,7 +169,8 @@ impl Events {
         if !rolling && pending.is_empty() {
             return fx;
         }
-        let (w, h) = (config.world.width, config.world.height);
+        // Events happen in the ocean (not the basin beyond the mountain).
+        let (w, h) = (config.ocean_width(), config.world.height);
 
         if (forced(Trigger::Plague) || rolling && self.roll(cfg.plague_every))
             && !self.is_active(|e| matches!(e, WorldEvent::Plague { .. }))

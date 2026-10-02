@@ -35,6 +35,12 @@ pub struct Config {
 }
 
 impl Config {
+    /// Width of the open ocean (the world minus the mountain and the cut-off basin to its right).
+    pub fn ocean_width(&self) -> f32 {
+        (self.world.width - self.terrain.mountain_width - self.terrain.basin_width)
+            .max(self.world.width * 0.25)
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
@@ -90,7 +96,7 @@ pub struct WorldConfig {
 impl Default for WorldConfig {
     fn default() -> Self {
         Self {
-            width: 16000.0,
+            width: 20400.0,
             height: 6000.0,
             seed: 1,
         }
@@ -123,6 +129,20 @@ pub struct TerrainConfig {
     pub caves: u32,
     /// Typical cave size.
     pub cave_size: f32,
+    /// Past the ocean's right edge a mountain rises above sea level, cutting off a basin of
+    /// water beyond it. The ocean keeps the rest of the width (fractions above are of it).
+    pub mountain_width: f32,
+    /// Peak height above sea level.
+    pub mountain_height: f32,
+    /// Width and depth of the cut-off basin at the far right.
+    pub basin_width: f32,
+    pub basin_depth: f32,
+    /// Permanent vents: one in a cave on the shelf near `vent_cave_x` (a fraction of the
+    /// ocean's width), its roof opened to the water above, and one partway down the cliff, with
+    /// tunnels branching up from the cliff vent into that cave and the one nearest the cliff.
+    pub shelf_vents: bool,
+    pub vent_cave_x: f32,
+    pub cliff_vent_depth: f32,
 }
 
 impl Default for TerrainConfig {
@@ -140,6 +160,13 @@ impl Default for TerrainConfig {
             rock_size: 260.0,
             caves: 7,
             cave_size: 320.0,
+            mountain_width: 2000.0,
+            mountain_height: 380.0,
+            basin_width: 2400.0,
+            basin_depth: 1100.0,
+            shelf_vents: true,
+            vent_cave_x: 0.843,
+            cliff_vent_depth: 2250.0,
         }
     }
 }
@@ -318,7 +345,7 @@ pub struct VentsConfig {
 impl Default for VentsConfig {
     fn default() -> Self {
         Self {
-            count: 5,
+            count: 3,
             output: 30.0,
             radius: 48.0,
             lifetime_min: 2.0,
@@ -405,7 +432,7 @@ pub struct PartsConfig {
     pub eye_range: f32,
     /// Smell range of full-strength antennae, in body radii (every direction).
     pub smell_range: f32,
-    /// Tentacle reach beyond the body, as a fraction of the tentacle's length.
+    /// A tentacle grasps anything within this fraction of its length of its base (it bends).
     pub tentacle_reach: f32,
     /// Extra light-catching width per unit of frond length (in body radii).
     pub frond_span: f32,
@@ -435,7 +462,7 @@ impl Default for PartsConfig {
             crawl_speed: 12.0,
             eye_range: 40.0,
             smell_range: 16.0,
-            tentacle_reach: 0.8,
+            tentacle_reach: 1.0,
             frond_span: 0.45,
             frond_uptake: 0.3,
             stalk_bonus: 1.3,
@@ -709,6 +736,9 @@ pub struct FeedingConfig {
     /// How well food touching the body away from the mouth (and out of tentacle reach) is
     /// eaten, relative to at the mouth.
     pub body_contact: f32,
+    /// Speed at which full-strength tentacles drag what they hold toward the mouth
+    /// (× √hunter radius), shared between the two bodies by mass.
+    pub tentacle_pull: f32,
     /// Bite: mass removed per second per hunter radius² at full capability and jaws.
     pub bite_rate: f32,
     /// Damage reduction at full armor.
@@ -734,6 +764,7 @@ impl Default for FeedingConfig {
             kin_hunger: 0.5,
             min_hunt: 0.05,
             body_contact: 0.3,
+            tentacle_pull: 12.0,
             bite_rate: 0.3,
             armor_protection: 0.75,
             spike_damage: 0.6,

@@ -11,6 +11,21 @@ use crate::parts::{self, BodyShape, Instance, PartKind};
 
 /// Most eyes whose view cones the simulation tracks (the largest ones win).
 pub const MAX_EYES: usize = 6;
+/// Most tentacle grasps the simulation tracks (the widest ones win).
+pub const MAX_GRASPS: usize = 8;
+
+/// A body-local circle where a part works: a tentacle's grasp around its base. In body radii
+/// (0,0 = body center, +x = forward).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Zone {
+    pub x: f32,
+    pub y: f32,
+    pub radius: f32,
+    /// How strong the part is there, 0..1 (tentacle pull).
+    pub strength: f32,
+    /// Index of the part instance in the body layout (to draw the tentacle that's holding).
+    pub part: u8,
+}
 
 /// One eye's view cone.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -110,8 +125,10 @@ pub struct Traits {
     /// Longest sense range in body radii (0 = blind).
     pub sense_radii: f32,
 
-    /// How far tentacles reach beyond the body, in body radii.
-    pub reach: f32,
+    /// What each tentacle can grasp: a circle around its base. Each holds one thing at a time
+    /// and pulls it toward the mouth with its own strength.
+    pub grasps: [Zone; MAX_GRASPS],
+    pub grasp_count: u8,
     /// Extra marine-snow sweep from cilia and tentacles (multiplier − 1).
     pub filter: f32,
     /// Width that catches light, as a multiple of the body's (fronds).
@@ -267,7 +284,7 @@ struct PartSums {
     shell: [f32; 4],
     antennae: f32,
     lure: f32,
-    reach: f32,
+    grasps: Vec<Zone>,
     filter: f32,
     fronds: f32,
     mass: f32,
@@ -280,7 +297,7 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
     let small = small_swimmer(radius, pc.small_swimmer_radius);
     let large = large_swimmer(radius, pc.large_swimmer_radius);
     let mut p = PartSums::default();
-    for inst in instances {
+    for (index, inst) in instances.iter().enumerate() {
         let s = inst.size;
         let spec = inst.kind.spec();
         // Even a tiny part weighs and costs something.
@@ -310,7 +327,14 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
                 p.turning += 0.1 * s;
                 p.grip += 0.1 * s;
                 p.filter += 0.15 * s;
-                p.reach = p.reach.max(inst.length * pc.tentacle_reach * raised);
+                // It bends, so it can grasp anything within its length of its base.
+                p.grasps.push(Zone {
+                    x: inst.base.x,
+                    y: inst.base.y,
+                    radius: inst.length * pc.tentacle_reach,
+                    strength: saturating(1.5 * s),
+                    part: index.min(255) as u8,
+                });
             }
             PartKind::Frond => p.fronds += inst.length * raised,
             PartKind::Fin => {
@@ -374,6 +398,15 @@ impl Traits {
         parts::layout(&parts::decode_parts(genome), &body, &mut instances);
         let mut p = sum_parts(&instances, adult_radius, config);
 
+        // Tentacles: keep the widest grasps.
+        p.grasps.sort_by(|a, b| {
+            b.radius
+                .partial_cmp(&a.radius)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut grasps = [Zone::default(); MAX_GRASPS];
+        let grasp_count = p.grasps.len().min(MAX_GRASPS);
+        grasps[..grasp_count].copy_from_slice(&p.grasps[..grasp_count]);
         let armor_sides = p.shell.map(|v| saturating(0.9 * v));
         let spikes_sides = p.spines.map(|v| saturating(1.2 * v));
         let armor = armor_sides.iter().sum::<f32>() / 4.0;
@@ -570,7 +603,8 @@ impl Traits {
             eye_count: eye_count as u8,
             smell_radii,
             sense_radii,
-            reach: p.reach,
+            grasps,
+            grasp_count: grasp_count as u8,
             filter: p.filter,
             light_span: 1.0 + pc.frond_span * p.fronds,
             uptake_area: 1.0 + pc.frond_uptake * p.fronds,

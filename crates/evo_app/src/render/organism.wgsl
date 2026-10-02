@@ -20,6 +20,7 @@ struct Vertex {
     @location(6) state: vec4<f32>,  // energy, health, flags, maturity
     @location(7) motion: vec4<f32>, // moving, walking, eating flash, hurt flash
     @location(8) chem: vec4<f32>,   // oxygenic, toxin, fixation, lure
+    @location(9) wound: vec4<f32>,  // direction of the last bite (body-relative angle / 2π)
 };
 
 struct VertexOutput {
@@ -32,6 +33,7 @@ struct VertexOutput {
     @location(5) state: vec4<f32>,
     @location(6) motion: vec4<f32>,
     @location(7) chem: vec4<f32>,
+    @location(8) wound: vec4<f32>,
 };
 
 @vertex
@@ -48,6 +50,7 @@ fn vertex(v: Vertex) -> VertexOutput {
     out.state = v.state;
     out.motion = v.motion;
     out.chem = v.chem;
+    out.wound = v.wound;
     return out;
 }
 
@@ -275,9 +278,15 @@ fn part(in: VertexOutput) -> vec4<f32> {
         alpha = max(band, hairs * 0.9);
     } else if kind == 3u {
         // Tentacle: a swaying, curling arm; ringed when larger, then suckers and a clubbed tip.
+        // Holding something, it arches out to it (the quad already points at it) and its tip
+        // hooks around it.
+        let grip = in.chem.z;
+        let arch = (in.chem.w * 2.0 - 1.0) * 0.75;
         let sway = 0.16 * sin(a * 3.0 - time * 1.6 + phase) * a;
         let curl = (0.18 + 0.12 * sin(time * 0.45 + phase)) * a * a * a;
-        let y = sway + curl;
+        let hook = -arch * 0.6 * smoothstep(0.75, 1.0, a);
+        let held = arch * sin(PI * clamp(a, 0.0, 1.0)) + hook + 0.03 * sin(time * 5.0 + phase) * a;
+        let y = mix(sway + curl, held, grip);
         var hw = w * (1.0 - 0.65 * a);
         hw += w * 0.6 * smoothstep(0.78, 0.92, a) * (1.0 - smoothstep(0.94, 1.0, a)) * smoothstep(0.75, 0.95, s);
         let dist = abs(c - y);
@@ -299,8 +308,21 @@ fn part(in: VertexOutput) -> vec4<f32> {
         hw = max(hw, w * 0.14 * step(a, 0.2));
         let dist = abs(c - y);
         alpha = fill(dist, hw + aa * 0.3, aa) * inside;
-        let pigment = mix(vec3<f32>(0.42, 0.1, 0.38), vec3<f32>(0.1, 0.45, 0.08), in.chem.x);
-        col = mix(base, pigment, 0.55 + 0.35 * in.diet.x) * mix(1.15, 0.8, dist / max(hw, 1e-3));
+        // Leaves take the pigment's own colour (green releases oxygen, purple uses minerals),
+        // vivid with strong photosynthesis and pale and faded with weak; the body colour is
+        // only a faint hint, so complementary body colours don't turn them grey.
+        // Mixed pigments pass through golden-brown rather than purple + green = grey.
+        let purple = vec3<f32>(0.5, 0.12, 0.48);
+        let golden = vec3<f32>(0.58, 0.44, 0.1);
+        let green = vec3<f32>(0.14, 0.58, 0.1);
+        let pigment = select(
+            mix(golden, green, in.chem.x * 2.0 - 1.0),
+            mix(purple, golden, in.chem.x * 2.0),
+            in.chem.x < 0.5,
+        );
+        let faded = mix(pigment, vec3<f32>(0.8, 0.82, 0.72), 0.45);
+        let leaf = mix(faded, pigment, smoothstep(0.0, 0.6, in.diet.x));
+        col = mix(leaf, base, 0.08) * mix(1.15, 0.8, dist / max(hw, 1e-3));
         col = mix(col, col * 0.6, fill(dist, 0.015 + aa * 0.5, aa) * smoothstep(0.2, 0.35, s));
         let v = fract(a * 9.0 - dist / max(w, 1e-3) * 1.2);
         let vein = 1.0 - smoothstep(0.0, 0.08, min(v, 1.0 - v));
@@ -463,8 +485,8 @@ fn part(in: VertexOutput) -> vec4<f32> {
         let band = 1.0 - smoothstep(0.15, 0.25, abs(fract(a * 6.0) - 0.5));
         col *= 1.0 - 0.3 * band * smoothstep(0.4, 0.55, s) * detail;
     } else if kind == 14u {
-        // Jaw: a mandible that bows out and hooks in, snapping while eating; teeth on its inner
-        // edge once it's large enough.
+        // Jaw: a chitin mandible that bows out and hooks in, snapping while eating; serrated
+        // along its inner edge once it's large enough.
         let gape = eating * abs(sin(time * 14.0 + index)) * 0.2;
         let y = (0.12 + gape) * sin(PI * a) - (0.18 + 0.12 * s) * a * a * a;
         let hw = w * (1.0 - pow(a, 1.4) * 0.85);
@@ -476,10 +498,10 @@ fn part(in: VertexOutput) -> vec4<f32> {
         if teeth_w > 0.0 {
             let count = 3.0 + floor(s * 5.0);
             let t = fract(a * count);
-            let height = w * (0.5 + 0.5 * s) * (1.0 - abs(t - 0.5) * 2.0);
+            let height = w * (0.3 + 0.3 * s) * (1.0 - abs(t - 0.5) * 2.0);
             let inward = -dist - hw;
             let tooth = step(-aa, inward) * step(inward, height) * step(0.15, a) * step(a, 0.95) * teeth_w;
-            col = mix(col, vec3<f32>(1.2, 1.15, 1.0), tooth);
+            col = mix(col, vec3<f32>(0.3, 0.17, 0.07), tooth);
             alpha = max(alpha, tooth);
         }
     } else if kind == 15u {
@@ -503,12 +525,14 @@ fn part(in: VertexOutput) -> vec4<f32> {
         col = mix(mix(vec3<f32>(grey), col, 0.2) * 0.6, col, in.motion.y);
         alpha *= 0.85 * (1.0 - in.motion.x);
     }
-    col = mix(col, vec3<f32>(2.2, 0.15, 0.08), in.motion.w * 0.6 * step(0.01, alpha));
+    // Hurt: one quick, faint flash.
+    let hurt = in.motion.w;
+    col = mix(col, col * vec3<f32>(1.35, 0.75, 0.7), hurt * hurt * hurt * 0.2);
     return vec4<f32>(col, alpha);
 }
 
-// What a mouth does to the body: darken the interior, carve the opening, lips, plus parts
-// drawn on top (teeth, mandibles, proboscis, cilia).
+// What a mouth does to the body: darken the gullet, a pale fold along its rim, a small notch in
+// the outline, plus things drawn on top (cilia, grasping hooks, proboscis).
 struct Mouth {
     dark: f32,
     cut: f32,
@@ -516,9 +540,10 @@ struct Mouth {
     top: vec4<f32>,
 };
 
-// Mouths grow continuously with hunting (teeth with the jaws), or with scavenging:
-// hunters: cytostome (small dark pore) -> open mouth with lips -> maw lined with teeth.
-// (Mandibles are body parts, drawn separately.)
+// Mouths grow continuously with hunting, or with scavenging:
+// hunters: cytostome (a small dark pore) -> an oral groove, a funnel into the cell lined with
+// cilia beating inward, that widens and ripples while swallowing; jaws at the mouth add hooked
+// grasping spines at its corners. (Mandibles are body parts, drawn separately.)
 // scavengers: siphon pore -> proboscis ringed with beating cilia.
 fn mouth(q: vec2<f32>, dq: f32, angle: f32, hunt: f32, jaws: f32, scav: f32, eating: f32, base: vec3<f32>, seed: f32, time: f32, aa: f32) -> Mouth {
     var m: Mouth;
@@ -526,30 +551,66 @@ fn mouth(q: vec2<f32>, dq: f32, angle: f32, hunt: f32, jaws: f32, scav: f32, eat
     m.cut = 0.0;
     m.lip = 0.0;
     m.top = vec4<f32>(0.0);
-    let gape = eating * abs(sin(time * 16.0));
+    let gulp = eating * (0.5 + 0.5 * sin(time * 9.0));
     if hunt > 0.04 {
-        // Cytostome: a small dark oval at the front edge.
-        let pore = smoothstep(0.04, 0.12, hunt) * (1.0 - smoothstep(0.28, 0.38, hunt));
-        let oval = length((q - vec2<f32>(0.8, 0.0)) / vec2<f32>(0.12 + 0.2 * hunt, 0.08 + 0.25 * hunt));
+        // Cytostome: a small dark oval at the front edge, until the groove takes over.
+        let pore = smoothstep(0.04, 0.12, hunt) * (1.0 - smoothstep(0.25, 0.4, hunt));
+        let oval = length((q - vec2<f32>(0.82, 0.0)) / vec2<f32>(0.1 + 0.15 * hunt, 0.07 + 0.2 * hunt));
         m.dark = max(m.dark, (1.0 - smoothstep(0.8, 1.0, oval)) * pore);
-        // Open mouth: a notch that widens with hunting (and while eating).
-        let open_w = smoothstep(0.28, 0.38, hunt);
-        let opening = (0.12 + 0.5 * hunt + 0.2 * gape) * open_w;
-        let inside = step(abs(angle), opening) * open_w;
-        m.dark = max(m.dark, inside * smoothstep(0.45, 0.7, dq));
-        m.cut = inside * smoothstep(0.86, 0.96, dq);
-        let edge_dist = abs(abs(angle) - opening) * dq;
-        m.lip = open_w * (1.0 - smoothstep(0.04, 0.1 + aa, edge_dist)) * step(0.5, dq) * step(dq, 1.02);
-        // Teeth along both jaw edges, more and longer with the Jaws gene.
-        let teeth_w = smoothstep(0.5, 0.62, hunt);
-        if teeth_w > 0.0 {
-            let inward = (opening - abs(angle)) * dq;
-            let count = 3.0 + floor(jaws * 5.0);
-            let t = fract((dq - 0.58) / 0.42 * count);
-            let height = (0.07 + 0.14 * jaws) * (1.0 - abs(t - 0.5) * 2.0);
-            let tooth = teeth_w * step(0.0, inward) * step(inward, height) * step(0.58, dq) * step(dq, 0.99);
-            if tooth > m.top.a {
-                m.top = vec4<f32>(vec3<f32>(1.25, 1.2, 1.05), tooth);
+
+        // Oral groove: a funnel from the front edge into the cell, narrowing inward.
+        let open_w = smoothstep(0.25, 0.4, hunt);
+        let half = (0.08 + 0.26 * hunt) * (1.0 + 0.45 * gulp) * open_w;
+        let depth = 0.3 + 0.3 * hunt;
+        let u = 1.0 - q.x;                            // depth from the front
+        let taper = clamp(1.0 - u / depth, 0.0, 1.0);
+        let w = half * sqrt(taper);
+        let e = w - abs(q.y);                         // > 0 inside the funnel
+        let inside = smoothstep(-aa, aa, e) * step(0.0, u) * step(u, depth) * open_w;
+        // The gullet darkens inward and ripples while swallowing.
+        let ripple = eating * 0.35 * (0.5 + 0.5 * sin(u / depth * 14.0 + time * 12.0));
+        m.dark = max(m.dark, inside * (0.85 + 0.15 * (1.0 - taper) - ripple));
+        // A pale fold of membrane along the rim.
+        m.lip = open_w * (1.0 - smoothstep(0.0, 0.035 + aa, abs(e + 0.03))) * step(0.0, u) * step(u, depth * 0.9);
+
+        // Cilia: rooted along both walls of the groove and reaching into it, slanted back down
+        // the throat and beating in waves, sweeping food in.
+        let cilia_w = open_w * smoothstep(0.3, 0.5, hunt);
+        if cilia_w > 0.0 {
+            let inward = e;                            // distance in from the wall
+            let reach = min(0.06 + 0.05 * hunt, w * 0.85);
+            let beat = 0.5 + 0.35 * sin(time * (10.0 + 10.0 * eating) - u * 30.0 + seed * 9.0);
+            let lean = fract((u - inward * beat) * 18.0);
+            let hair = step(0.004, inward) * step(inward, reach) * step(lean, 0.2)
+                * step(0.01, u) * step(u, depth * 0.85) * cilia_w;
+            if hair > m.top.a {
+                m.top = vec4<f32>(base * 0.6 + vec3<f32>(0.35, 0.33, 0.3), hair * 0.6);
+            }
+        }
+
+        // Jaws at the mouth: hooked chitin spines at each corner, snapping shut while eating.
+        let hooks_w = smoothstep(0.03, 0.12, jaws) * open_w;
+        if hooks_w > 0.0 {
+            let pairs = 1 + i32(jaws > 0.55);
+            let close = 0.35 + 0.65 * (1.0 - eating * abs(sin(time * 14.0)));
+            for (var k = 0; k < pairs; k++) {
+                let back_k = f32(k) * 0.1;
+                for (var side = -1.0; side <= 1.0; side += 2.0) {
+                    let corner = vec2<f32>(1.0 - back_k - 0.02, side * (half * sqrt(max(1.0 - back_k / depth, 0.0)) + 0.02));
+                    let reach = 0.1 + 0.14 * jaws;
+                    let mid = corner + vec2<f32>(reach * 0.55, -side * reach * 0.35 * close);
+                    let tip = corner + vec2<f32>(reach * 0.6, -side * reach * (1.0 - 0.1 * close)) * vec2<f32>(close, 1.0);
+                    let s1 = seg(q, corner, mid);
+                    let s2 = seg(q, mid, tip);
+                    let thick1 = mix(0.035, 0.025, s1.y) * (0.8 + 0.4 * jaws);
+                    let thick2 = mix(0.025, 0.004, s2.y) * (0.8 + 0.4 * jaws);
+                    let a = max(fill(s1.x, thick1, aa), fill(s2.x, thick2, aa)) * hooks_w;
+                    if a > m.top.a {
+                        let along = select(0.5 + 0.5 * s2.y, 0.5 * s1.y, s1.x < s2.x);
+                        let chitin = mix(vec3<f32>(0.75, 0.55, 0.25), vec3<f32>(0.25, 0.12, 0.05), along);
+                        m.top = vec4<f32>(chitin, a);
+                    }
+                }
             }
         }
     }
@@ -694,8 +755,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         col += vec3<f32>(0.1, 0.9, 1.0) * in.diet.y * 0.6 * f32(!dead); // chemotrophs glow
         col += vec3<f32>(0.4, 1.2, 1.0) * in.chem.w * 1.5 * f32(!dead); // lures glow
-        col = mix(col, vec3<f32>(2.0, 0.2, 0.1), hurt * 0.8);
-        col += vec3<f32>(1.0, 0.8, 0.4) * eating * 0.6;
+        col = mix(col, col * vec3<f32>(1.4, 0.7, 0.65), hurt * hurt * hurt * 0.2);
         let body = vec4<f32>(col, a * select(0.95, 0.6, dead) * (1.0 - select(0.0, in.motion.x, dead)));
         return mix(body, vec4<f32>(overlay.rgb, 1.0), overlay.a * (1.0 - body.a * 0.5));
     }
@@ -767,6 +827,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     col *= 1.0 - 0.45 * crease;
 
     var mouth_top = vec4<f32>(0.0);
+    var mouth_dark = 0.0;
     if !dead {
         let photo = in.diet.x;
         let chemo = in.diet.y;
@@ -792,10 +853,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
         // Mouth (see `mouth`): darkened interior, carved opening, lips.
         let mo = mouth(q, dq, angle, hunt, jaws, scav, eating, base, seed, time, aa);
-        col = mix(col, vec3<f32>(0.07, 0.0, 0.01), mo.dark);
-        col = mix(col, vec3<f32>(0.75, 0.25, 0.3), mo.lip * 0.8);
+        col = mix(col, base * 0.06 + vec3<f32>(0.03, 0.01, 0.03), mo.dark);
+        col = mix(col, base * 1.35 + vec3<f32>(0.08), mo.lip * 0.7);
         alpha *= 1.0 - mo.cut;
         mouth_top = mo.top;
+        mouth_dark = mo.dark;
 
         // Starving organisms fade; wounded ones redden.
         let energy = in.state.x;
@@ -823,7 +885,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     col = mix(col, col * 0.45 + vec3<f32>(0.03, 0.02, 0.05), nucleus * 0.8);
 
     // Membrane rim light.
-    col += base * 0.5 * smoothstep(edge - 0.18, edge - 0.02, db);
+    col += base * 0.5 * smoothstep(edge - 0.18, edge - 0.02, db) * (1.0 - mouth_dark);
 
     if !dead {
         // Detail fades in once the organism is big enough on screen to show it.
@@ -851,9 +913,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         alpha *= 1.0 - torn_away;
         alpha *= 0.92 * (1.0 - in.motion.x);
     } else {
-        // Feeding: a warm glow and specks of food swirling in.
+        // Feeding: specks of food swirling in (no glow).
         if eating > 0.01 {
-            col += vec3<f32>(0.9, 0.6, 0.25) * eating * 0.2 * smoothstep(0.6, 1.0, dq) * alpha;
             var specks = 0.0;
             for (var k = 0; k < 6; k++) {
                 let phase = fract(time * 1.2 + f32(k) / 6.0);
@@ -867,8 +928,33 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Being bitten: a red flash.
-    col = mix(col, vec3<f32>(2.2, 0.15, 0.08), hurt * 0.7 * step(0.01, alpha));
+    // Being bitten (or a carcass being eaten): one quick flash, a reddened wound on the side the
+    // bite came from, and a few fine bits drifting away from it.
+    if hurt > 0.01 {
+        let wa = in.wound.x * TAU;
+        let wdir = vec2<f32>(cos(wa), sin(wa));
+        let flash = hurt * hurt * hurt;
+        col = mix(col, vec3<f32>(1.3, 0.85, 0.8), flash * 0.15 * alpha);
+        let wound_at = wdir * 0.92;
+        let near = 1.0 - smoothstep(0.1, 0.45, length(q - wound_at));
+        col = mix(col, col * vec3<f32>(1.2, 0.55, 0.5), hurt * 0.5 * near * alpha);
+        // The bits, in radius units (round even on long bodies).
+        let start = vec2<f32>(wound_at.x * bs.hl, wound_at.y * body_width(bs, wound_at.x * bs.hl));
+        let aa0 = 1.2 / max(radius_px, 0.3);
+        let out = 1.0 - hurt; // 0 when bitten, 1 when the effect is over
+        var bits = 0.0;
+        for (var k = 0; k < 6; k++) {
+            let h1 = hash21(vec2<f32>(seed * 7.0, f32(k)));
+            let h2 = hash21(vec2<f32>(f32(k) + 3.0, seed * 5.0));
+            let spread = (h1 - 0.5) * 1.2;
+            let d = vec2<f32>(cos(wa + spread), sin(wa + spread));
+            let at = start + d * (0.06 + (0.35 + 0.6 * h2) * out);
+            bits = max(bits, dot_at(q0, at, 0.025 + 0.015 * hurt + aa0 * 0.5, aa0));
+        }
+        let bits_col = mix(base * 0.7, vec3<f32>(0.5, 0.1, 0.07), 0.4);
+        col = mix(col, bits_col, bits * (1.0 - alpha * 0.5));
+        alpha = max(alpha, bits * hurt);
+    }
 
     let body = vec4<f32>(col, alpha);
     return vec4<f32>(mix(body.rgb, overlay.rgb, overlay.a * (1.0 - body.a * 0.3)), max(body.a, overlay.a));

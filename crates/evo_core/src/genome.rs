@@ -549,7 +549,9 @@ impl Genome {
             let sym = if rng.chance(0.5) { 1 } else { 0 };
             self.0[at] = sym << 4 | kind;
             self.0[at + 1] = self.0[at + 1].clamp(0x20, 0x60);
-            if rng.chance(0.5) {
+            // A slot that never held a part has a zero placement (the head, pointing straight
+            // forward), so it starts somewhere random; one that did may reuse where that part was.
+            if self.0[at + 2] == 0 || rng.chance(0.5) {
                 self.0[at + 2] = rng.below(256) as u8;
             }
         }
@@ -712,6 +714,29 @@ mod tests {
             shifted.mutate_part_kind(at, &mut rng);
             assert_ne!(shifted.0[at] & 0x0F, 0);
         }
+    }
+
+    #[test]
+    fn new_parts_start_anywhere_on_the_body() {
+        // The ancestor's empty slots are all zeros (the head, pointing straight forward); new
+        // parts must not all start there.
+        let mut cfg = MutationConfig::default();
+        cfg.part_new = 1.0;
+        let mut rng = Rng::new(11);
+        let ancestor = Genome::parse(ANCESTOR).unwrap();
+        let (mut front, mut angles) = (0, std::collections::HashSet::new());
+        for _ in 0..200 {
+            let mut g = ancestor;
+            g.mutate(&mut rng, &cfg);
+            let p = parts::decode_parts(&g);
+            let place = g.0[parts::slot_offset(p[0].slot) + 2];
+            if place == 0 {
+                front += 1;
+            }
+            angles.insert(place & 31);
+        }
+        assert!(front < 10, "{front} of 200 new parts at the very front");
+        assert!(angles.len() > 20, "angles vary: {}", angles.len());
     }
 
     #[test]

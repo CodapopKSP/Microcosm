@@ -12,6 +12,9 @@ shelf_depth = 600.0
 trench_depth = 500.0
 rocks = 7
 rock_size = 180.0
+mountain_width = 0.0     # no mountain, basin or permanent vents in the small world
+basin_width = 0.0
+shelf_vents = false
 
 [vents]
 count = 3
