@@ -271,6 +271,8 @@ fn toward(v: &[f32; 8], angle: f32) -> f32 {
 /// Sums of what the parts do.
 #[derive(Default)]
 struct PartSums {
+    /// Extra temperature tolerance from shell plates, °C.
+    insulation: f32,
     /// Swimming and walking thrust in the eight body-relative directions.
     thrust: [f32; 8],
     crawl: [f32; 8],
@@ -375,6 +377,8 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
                 for (k, v) in p.shell.iter_mut().enumerate() {
                     *v += side_weight(inst.dir, k) * (0.4 + 0.6 * s);
                 }
+                // Each plate also insulates, widening the temperatures the body can stand.
+                p.insulation += pc.shell_insulation * (0.5 + 0.5 * s);
             }
         }
     }
@@ -624,7 +628,7 @@ impl Traits {
             toxin,
             resistance: 0.9 * resistance,
             temp_pref: f(gene::TEMP_PREF) * gc.temp_max,
-            temp_tol: lerp(gc.tolerance_min, gc.tolerance_max, tolerance),
+            temp_tol: lerp(gc.tolerance_min, gc.tolerance_max, tolerance) + p.insulation,
             upkeep,
             absorptance,
             pigment,
@@ -910,6 +914,16 @@ mod tests {
         // A small second diet costs the main diet little and works linearly.
         let trace = diet_capabilities([1.0, 0.0, 0.0, 0.05], 0.6);
         assert!(trace[0] > 0.96 && trace[3] > 0.015);
+    }
+
+    #[test]
+    fn shell_plates_widen_tolerated_temperatures() {
+        let (g, config) = ancestor();
+        let bare = Traits::decode(&g, &config).temp_tol;
+        let (shelled, config) = with_part(PartKind::Shell, 5, 0xFF, 0);
+        let t = Traits::decode(&shelled, &config);
+        // A ring of six full-size plates: about ±6 °C more.
+        assert!((t.temp_tol - bare - 6.0).abs() < 0.01, "{bare} -> {}", t.temp_tol);
     }
 
     #[test]

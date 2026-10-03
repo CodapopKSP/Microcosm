@@ -480,6 +480,124 @@ decide what thrives there.
 
 ---
 
+## 10. Watching over the web, and performance
+
+Today the viewer runs the simulation itself (`evo_app/src/sim.rs` calls `world.step()`). To let
+people watch, and click organisms, from a URL, the simulation has to run on a server and the
+viewers have to connect to it. `evo_core` already has no graphics code and already serializes
+the world (rmp-serde for saves), so the split is realistic.
+
+**The simulation runs on the CPU, not the GPU** (rayon across cores). The GPU only draws. A
+server for this needs a fast CPU and good upload bandwidth; it doesn't need a big GPU unless it
+also does the drawing.
+
+### Three ways to do it
+
+1. **Stream video, and interact through chat or a Twitch overlay (a few days).** Run `evo_app`
+   as now and stream it with OBS. Viewers use chat commands (`!follow 1234`, `!species`) or
+   click a Twitch video-overlay extension, which asks a small web service inside the app for
+   that organism and shows its own inspector. Everyone shares one camera, and clicks have to be
+   matched to where the camera is. Closest to the Twitch plan, and the least code.
+2. **The server runs the simulation; each browser draws it (several weeks; the real version).**
+   The server runs `evo_core` headless, around the clock, and sends world updates over a
+   WebSocket. `evo_app` is built for the browser (WebAssembly + WebGPU, which Bevy supports;
+   the WGSL shaders carry over) and becomes a pure viewer. Every viewer gets their own camera,
+   zoom and selection. The inspector asks the server for an organism's full details only when
+   it is clicked. New work:
+   - an update format: only what's in each viewer's view, only what changed, compressed;
+   - smoothing movement in the viewer between updates;
+   - the background maps (chemicals, temperature) sent less often;
+   - the viewer working without its own simulation.
+
+   Bandwidth is the main cost. About 6000 organisms × ~20 bytes × 15 updates/s is about
+   2 MB/s per viewer for the whole world; sending only what's on screen cuts that a lot. The
+   server's work doesn't grow with the number of viewers, only its bandwidth does.
+3. **The server draws a separate video for each viewer, like cloud gaming.** Every viewer
+   costs a server-side render and a GPU video encode. Expensive, and it tops out at a handful of
+   viewers. Not recommended.
+
+**Recommended:** start with 1, move to 2 if people should explore on their own. Either way,
+give the simulation a clean boundary early: a "what's visible" update type and an "inspect
+organism" request. The same boundary serves a Twitch extension's web service and a full browser
+viewer, so 1 grows into 2 without throwing work away.
+
+**Hosting.** Any of these can run at home behind something like a Cloudflare Tunnel (no open
+ports); upload speed is the limit for option 2 with many viewers. A cheap CPU-heavy cloud
+server works just as well, since options 1 and 2 need no server GPU.
+
+### What viewers need for option 2
+
+Not much. The browser only draws: the server does all the simulation, so the viewer's machine
+does none of it. The world is a few thousand small shapes, a background shader and some
+particles, which is light work for any GPU from the last several years, including laptop and
+phone GPUs.
+
+- **Browser:** WebGPU is in current Chrome, Edge and Safari, and in Firefox on most platforms.
+  Bevy can fall back to WebGL2 for the rest, but WebGL2 can't run every shader feature, so the
+  shaders need checking against it.
+- **Weak machines:** the background shader is the heaviest part (noise, stars, chemistry
+  particles at every pixel). A quality setting (fewer particles, a lower-resolution background)
+  covers phones.
+- **Download:** a Bevy WebAssembly build is several MB (less once compressed and with unused
+  features off), a one-time load.
+- **Connection:** the update stream above. Sending only the visible part of the world keeps
+  it to a normal video stream's bandwidth or less.
+
+### Performance, and the GPU
+
+Measured on seed 1 at 6 years, with about 6000 organisms on 12 cores, the whole tick takes about
+6.6 ms. Normal speed is 30 ticks per second (`dt` = 1/30), so it runs about 6× faster than
+real time, around 190 ticks per second. Where the time goes (ms per tick):
+
+| Phase | ms | What it is |
+|---|---|---|
+| feed | 1.6 | eating, grabbing, tentacle pulls |
+| think | 1.6 | senses and decisions for every organism |
+| act | 1.2 | movement, collisions with rock and each other |
+| light | 0.6 | shading from bodies and rock |
+| grids | 0.5 | spatial lookup grids |
+| life | 0.5 | births, deaths, ageing |
+| environment | 0.4 | chemical diffusion, vents, temperature |
+| staging | 0.3 | preparing the tick |
+
+**A live stream at normal speed has about 5× headroom today**, so performance only matters if
+the world or the population grows a lot (10× the organisms), or for faster-than-real-time
+headless runs when balancing.
+
+Cheaper wins come before the GPU:
+- **Profile first** (for example `cargo flamegraph` on a headless run) to find the hot loops
+  inside feed and think.
+- **Memory layout:** organisms are structs holding a genome, part lists and a `Vec` of grasps.
+  Keeping the hot fields (position, velocity, energy) in tight arrays, and decoded traits
+  cached, helps the CPU cache. This is likely the biggest CPU win.
+- **Less work per tick:** some things don't need every tick — senses every 2–3 ticks, light
+  and diffusion every few ticks, staggered across organisms.
+- **Serial phases:** births, deaths and carcasses are probably serial; checking that each phase
+  really uses all cores is cheap.
+
+**What suits the GPU:** the grid work — chemical and temperature diffusion, vent plumes, light
+from above — is the same small sum at every cell. That's ideal for compute shaders and would
+scale to much finer or larger maps. Senses could follow: each organism looks up its neighbours
+in a grid, which is a known GPU pattern.
+
+**What doesn't suit the GPU:** births, deaths, mutation, eating conflicts (two hunters, one
+prey), species tracking and tentacle grasps are branchy, vary in size and need decisions made in
+a fixed order. The GPU is bad at all of that, so it stays on the CPU.
+
+**What it costs:**
+- **Data moves between CPU and GPU every tick.** At 30 ticks a second that's affordable, but at
+  hundreds of ticks a second (fast headless balancing) it can eat the gain unless the data stays
+  on the GPU.
+- **Results are harder to reproduce exactly.** GPU floating-point results can differ across
+  vendors and drivers, so the same seed might not reproduce across machines. Saves and seeds
+  are central to balancing here, so this matters.
+- **Two copies of the logic** (Rust and WGSL), which have to be kept in step.
+- **The server needs a GPU again**, which takes away some of the hosting simplicity above.
+
+**Recommendation:** not needed for streaming at today's size. If more speed is wanted (bigger
+world, faster balancing runs), profile and fix memory layout first; move the grids to the GPU
+only if the maps need to get much finer.
+
 ## Cross-cutting notes
 
 - **The genome grows.** Today it is 60 bytes. Modulators (about 18 bytes), sex (about 4),

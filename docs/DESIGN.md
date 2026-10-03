@@ -22,7 +22,7 @@ A **side-on cross-section of an ocean**. `y` grows upward; the water surface is 
 | Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Two are permanent parts of the terrain (below); three more open and die on the deep floor over hours. 35% of each vent's minerals seep out over 240 u around its base; the rest rise in a plume. The shelf vent's plume shoots straight up its open roof (30 u/s instead of 4) and reaches the surface, leaving mineral-rich, oxygenated water right where photosynthesizers live |
 | Shelf | A shallow region where the seafloor itself is sunlit |
 | Mountain and basin | Past the shelf a rugged mountain (ridges, shoulders and crags) rises above sea level, and beyond it lies a basin of water (about 1,100 deep) that it cuts off from the ocean. Nothing lives there at the start: ancestors, recolonization, random vents and events stay in the ocean. Reaching it is for later (see `docs/IDEAS.md`) |
-| Permanent vents | One inside a cave on the shelf near the cliff's edge (the cave nearest a fixed spot; made if there isn't one), opening upward in a wide V to the water above, with a short passage joining the little cave to its left. One on a small ledge partway down the cliff (about 2,250 deep), with the cliff bulging out below the ledge rather than falling in one even slope. Winding tunnels branch up from the cliff vent through the rock into both caves |
+| Permanent vents | One inside a cave on the shelf near the cliff's edge (the cave nearest a fixed spot; made if there isn't one), opening upward in a wide V to the water above, with a short passage joining the little cave to its left. Beside the vent, out of its plume and a little above it, a flat **warm ledge** (about 43 °C at its near end, mid-20s at its far end, rich in minerals seeping out) where chemotrophs can live without being cooked at the vent itself (55 °C); a short passage joins it to the vent. One on a small ledge partway down the cliff (about 2,250 deep), with the cliff bulging out below the ledge rather than falling in one even slope. Winding tunnels branch up from the cliff vent through the rock into both caves |
 | Rocks & crevices | Block movement and cast shade; narrow gaps shelter small organisms |
 | Caves | Hollow rock chambers with a narrow entrance, on the shelf and the deep floor. Dark inside; only small bodies fit through the entrance |
 | Currents | Slow gyres everywhere and faster eddies in the upper ~450 units stir plankton through the sunlit water |
@@ -169,7 +169,7 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 | Lure | Glows; anything drawn to light swims toward it | The anglerfish trick |
 | Spine | Hurts attackers | |
 | Jaw | Bite strength | Works best facing forward |
-| Shell plate | Armor | Heavy: slows and sinks the body |
+| Shell plate | Armor; also insulates: each full-size plate widens the tolerated temperatures by ±1 °C (smaller plates less) | Heavy: slows and sinks the body |
 
 **What parts add up to.** At birth the parts are laid out on the body and summed into plain numbers, so the per-tick simulation never looks at parts again:
 
@@ -258,7 +258,7 @@ Energy moves up the food chain with losses, so predators are rarer than prey, an
 ### Health
 
 - Max HP scales with mass and toughness (H1). Regeneration (H0) costs energy per HP.
-- **Temperature stress**: `s = ((T − T_pref) / tolerance)²`. Metabolism × (1 + 0.5 s); beyond tolerance (s > 1), HP damage.
+- **Temperature stress**: `s = ((T − T_pref) / tolerance)²`. Metabolism × (1 + 0.5 s); beyond tolerance (s > 1), HP damage. Tolerance comes from its gene (±1–15 °C) plus about ±1 °C per shell plate.
 
 ### Reproduction
 

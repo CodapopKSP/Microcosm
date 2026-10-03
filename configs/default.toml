@@ -123,6 +123,7 @@ stalk_bonus = 1.3            # parts on a stalk's tip work this much better
 lure_brightness = 0.3        # full lure light, as a fraction of surface noon light
 lure_radius = 160.0          # glow radius of a full lure
 contact_margin = 2.0         # distance from rock that still counts as touching
+shell_insulation = 1.0       # each full-size shell plate widens the tolerated temperatures by +-1 C
 base_smell = 6.0             # everyone smells others this close (body radii), antennae or not
 eye_dark = 0.15              # eyes need light: in darkness they see this fraction of their range
 eye_light = 0.1              # full sight from this light level (fraction of surface noon)

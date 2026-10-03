@@ -2570,6 +2570,24 @@ mod tests {
     }
 
     #[test]
+    fn the_shelf_vent_has_a_warm_ledge_beside_it() {
+        let mut config = Config::default();
+        config.population.initial = 0;
+        let world = World::new(config);
+        let vent = world.terrain.vent_sites[0];
+        let ledge_top = vent.y + 40.0;
+        let (near, far) = (Vec2::new(vent.x + 150.0, ledge_top), Vec2::new(vent.x + 250.0, ledge_top));
+        for p in [near, far] {
+            assert!(world.terrain.is_solid(p - Vec2::new(0.0, 20.0)), "rock under the ledge at {p:?}");
+            assert!(!world.terrain.is_solid(p + Vec2::new(0.0, 30.0)), "water over it at {p:?}");
+        }
+        let temp = |p: Vec2| world.env.temperature.sample(p + Vec2::new(0.0, 30.0));
+        let (core, warm, cooler) = (temp(vent), temp(near), temp(far));
+        assert!(core > warm && warm > cooler, "{core} {warm} {cooler}");
+        assert!((30.0..48.0).contains(&warm) && cooler > 20.0, "near {warm}, far {cooler}");
+    }
+
+    #[test]
     fn holdfasts_anchor_and_legs_walk_on_rock() {
         let mut world = empty_world();
         let x = 2000.0;

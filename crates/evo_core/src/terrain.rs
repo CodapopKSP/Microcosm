@@ -481,6 +481,41 @@ impl Terrain {
                 Vec2::new(vent.x - spread, vent.y - 70.0),
                 Vec2::new(vent.x + spread, funnel_top),
             );
+            // A warm ledge beside the vent: a flat platform out of the plume, a little above the
+            // vent, where the water is hot (about 43 °C at its near end, 26 °C at its far end)
+            // and rich in minerals seeping out of the vent, joined to the vent by a short
+            // passage. Level, so nothing on it slides into the vent.
+            let (near, far) = (vent.x + 130.0, vent.x + 270.0);
+            let ledge_top = vent.y + 40.0;
+            let lseed = seed ^ 0x1ED7;
+            let platform = move |p: Vec2| {
+                let lip = 6.0 * value_noise(lseed, p.x / 40.0);
+                p.x > near && p.x < far && p.y < ledge_top + lip && p.y > ledge_top - 220.0
+            };
+            stamp(
+                &mut solid,
+                &platform,
+                Vec2::new(near, ledge_top - 230.0),
+                Vec2::new(far, ledge_top + 10.0),
+            );
+            let alcove = move |p: Vec2| {
+                let wobble = 1.0 + 0.2 * value_noise(lseed ^ 1, p.x / 50.0);
+                let above = p.x > near - 10.0
+                    && p.x < far + 10.0
+                    && p.y > ledge_top + 8.0
+                    && p.y < ledge_top + 95.0 * wobble;
+                let passage = p.x > vent.x + 30.0
+                    && p.x < near
+                    && p.y > vent.y - 10.0
+                    && p.y < ledge_top + 70.0;
+                above || passage
+            };
+            carve(
+                &mut solid,
+                &alcove,
+                Vec2::new(vent.x + 20.0, vent.y - 20.0),
+                Vec2::new(far + 20.0, ledge_top + 120.0),
+            );
             // The little cave nearest the cliff, if there's another one on the shelf.
             let little = caves
                 .iter()

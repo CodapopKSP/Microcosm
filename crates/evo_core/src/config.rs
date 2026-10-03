@@ -464,6 +464,8 @@ pub struct PartsConfig {
     pub contact_margin: f32,
     /// Every organism smells others this close (in body radii), even without antennae.
     pub base_smell: f32,
+    /// Temperature tolerance (± °C) each full-size shell plate adds; smaller plates add less.
+    pub shell_insulation: f32,
     /// Eyes need light: in darkness they see this fraction of their range…
     pub eye_dark: f32,
     /// …reaching full range at this light level (fraction of surface noon light).
@@ -486,6 +488,7 @@ impl Default for PartsConfig {
             lure_radius: 160.0,
             contact_margin: 2.0,
             base_smell: 6.0,
+            shell_insulation: 1.0,
             eye_dark: 0.15,
             eye_light: 0.1,
         }
