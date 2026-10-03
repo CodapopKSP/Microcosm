@@ -598,6 +598,46 @@ a fixed order. The GPU is bad at all of that, so it stays on the CPU.
 world, faster balancing runs), profile and fix memory layout first; move the grids to the GPU
 only if the maps need to get much finer.
 
+**Done since (CPU, about 1.4× faster overall).** A full 6-year seed-1 run went from 72 to
+50 minutes. The changes:
+- organisms are re-sorted into spatial order every 100 ticks;
+- the grid clears only the occupied band of rows, and the smallest bodies get their own fine
+  level;
+- `best_move` uses precomputed direction tables;
+- each organism refreshes its current every 4 ticks;
+- feeding does the water trade in parallel (contested cells shared fairly), gives each field its
+  own thread, and applies bites prey by prey in parallel;
+- light updates every other tick, with a parallel shade deposit, and builds alongside the grid;
+- reproduction and death candidates are found in parallel.
+
+Seeds 1–3 on both builds showed no consistent quality change. The profiling tools are
+`examples/bench.rs` (ms per phase plus a state fingerprint) and `examples/profile.rs`.
+
+### Longer ticks (`dt`)
+
+`dt` is the length of one tick in sim-seconds (`[time] dt`, now 1/30). Nearly everything is
+already scaled by `dt`, and the cost of a tick barely depends on its length. So a longer tick is
+the biggest speed lever left: 1/20 is about 1.5× faster per sim-second, and 1/15 about 2×.
+
+A few things are applied per tick rather than per second. They'd need rescaling so behaviour per
+second stays the same:
+- **Collision push** (`physics.push_stiffness`): overlapping bodies separate by a fixed
+  fraction each tick.
+- **Brownian jitter** (`physics.brownian`): its random walk would add up to more drift per
+  second. It should scale with √dt.
+- **Tick-counted intervals** in `world.rs`: `STEER_INTERVAL` (reaction time), `CURRENT_INTERVAL`,
+  `LIGHT_INTERVAL`, `FIELD_INTERVAL`, `FX_THROTTLE`. Either express them in seconds or accept
+  slightly slower reactions.
+- **Per-tick damage terms:** `starvation_damage` is applied to the energy deficit each tick, so
+  check it still scales.
+- **Precision:** a microbe moves about 0.3 units per tick instead of 0.17. Bodies are about 1.6
+  units across, so collisions and chases get slightly coarser but should hold.
+
+The viewer would step 20 (or 15) times per second at 1×. Drawing already interpolates between
+ticks. Verify the way the CPU work was verified: 6-year runs on several seeds, comparing species
+over time, diet mix, hunters, depth spread and body parts. Do it after the current tuning
+settles, so a change in behaviour isn't mistaken for a tuning result.
+
 ## Cross-cutting notes
 
 - **The genome grows.** Today it is 60 bytes. Modulators (about 18 bytes), sex (about 4),

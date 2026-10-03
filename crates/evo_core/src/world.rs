@@ -37,6 +37,13 @@ const NONE: u32 = u32::MAX;
 const CARCASS: u32 = 1 << 31;
 /// Ticks between steering decisions of motile organisms.
 const STEER_INTERVAL: u64 = 2;
+/// Ticks between refreshing the water current each organism feels (staggered by id).
+const CURRENT_INTERVAL: u64 = 4;
+/// Ticks between light updates (bodies move a fraction of a unit per tick, so their shade
+/// can lag a tick).
+const LIGHT_INTERVAL: u64 = 2;
+/// Ticks between re-sorting organisms into spatial order (neighbours close in memory).
+const SORT_INTERVAL: u64 = 100;
 /// Drives weaker than this are ignored (skips sensing work for genes that drifted near neutral).
 const MIN_DRIVE: f32 = 0.02;
 /// Save format marker. Bumped when saves stop being loadable (v2: genome with parts and chemistry).
@@ -141,23 +148,112 @@ impl Timings {
     }
 }
 
+/// One organism's trade with the water during feed.
+#[derive(Clone, Copy, Default)]
+struct Uptake {
+    /// Its chemistry cell and detritus cell.
+    idx: u32,
+    d_idx: u32,
+    /// What it released during act, and its toxin signature.
+    chem: Chem,
+    hue: Vec2,
+    alive: bool,
+    /// Touches a carcass or prey, or holds something: fed one at a time afterwards.
+    active: bool,
+    /// What it takes per unit concentration (capped so it can't take more than the cell holds).
+    k_minerals: f32,
+    k_nutrients: f32,
+    k_detritus: f32,
+    /// Room left in its nutrient store.
+    room: f32,
+    /// Wanted, then taken.
+    minerals: f32,
+    nutrients: f32,
+    detritus: f32,
+    /// What it couldn't store and gave back.
+    excess_energy: f32,
+    excess_nutrients: f32,
+    /// Its strike at prey this tick (decided up front, applied prey by prey).
+    strike: Strike,
+    /// Index of its strike's outcome in `Scratch::taken`.
+    strike_slot: u32,
+    /// Energy it couldn't digest, released as detritus.
+    undigested: f32,
+}
+
+/// A hunter's strike at the prey it touches.
+#[derive(Clone, Copy)]
+struct Strike {
+    prey: u32,
+    /// Swallowed whole (the roll succeeded), else a bite of `bite` mass.
+    engulf: bool,
+    bite: f32,
+    /// Spines facing the attack.
+    spikes: f32,
+    hunter_pos: Vec2,
+    /// Where to show the bite, and how big (if the effect isn't throttled).
+    fx: Option<(Vec2, f32)>,
+}
+
+impl Default for Strike {
+    fn default() -> Self {
+        Self {
+            prey: NONE,
+            engulf: false,
+            bite: 0.0,
+            spikes: 0.0,
+            hunter_pos: Vec2::ZERO,
+            fx: None,
+        }
+    }
+}
+
+/// What a strike took from its prey.
+#[derive(Clone, Copy, Default)]
+struct Taken {
+    mass: f32,
+    energy: f32,
+    nutrients: f32,
+    /// The prey's toxin (poisons the hunter by the mass taken).
+    toxin: f32,
+    killed: bool,
+}
+
 struct Scratch {
     grid: SpatialGrid,
     carcass_grid: SpatialGrid,
     intents: Vec<Intent>,
     entries: Vec<Entry>,
     carcass_entries: Vec<Entry>,
+    uptakes: Vec<Uptake>,
+    /// Light has been computed since the world was made or loaded.
+    lit: bool,
+    /// Strikes as (prey, hunter), grouped by prey; and what each took.
+    strikes: Vec<(u32, u32)>,
+    taken: Vec<Taken>,
+    /// Per cell: minerals and nutrients wanted (chemistry grid), detritus wanted (detritus grid).
+    demand: [Vec<f32>; 3],
 }
 
 impl Scratch {
     fn new(config: &Config) -> Self {
         let (w, h) = (config.world.width, config.world.height);
         Self {
-            grid: SpatialGrid::new(w, h, 16.0, 4.0, 4),
+            grid: SpatialGrid::with_levels(
+                w,
+                h,
+                // Nearly all bodies are microbes (radius ≤ 2.5): a fine level just for them.
+                &[(12.0, 2.5), (32.0, 16.0), (128.0, 64.0), (512.0, 256.0)],
+            ),
             carcass_grid: SpatialGrid::new(w, h, 64.0, 4.0, 3),
             intents: Vec::new(),
             entries: Vec::new(),
             carcass_entries: Vec::new(),
+            uptakes: Vec::new(),
+            lit: false,
+            strikes: Vec::new(),
+            taken: Vec::new(),
+            demand: Default::default(),
         }
     }
 }
@@ -326,6 +422,92 @@ impl Reach {
             k
         })
     }
+}
+
+/// A hunter's strike at the prey touching it, decided from the state at the start of feeding:
+/// swallowed whole if small enough (and the roll succeeds), otherwise a bite. `None` (a strike
+/// with no prey) if it doesn't touch living prey or the swallow fails.
+fn strike(hunter: &Organism, i: usize, prey: &Organism, j: usize, config: &Config, tick: u64) -> Strike {
+    let fc = &config.feeding;
+    let dt = config.time.dt;
+    let t = &hunter.traits;
+    let r = hunter.radius;
+    let reach = Reach::new(hunter.pos, hunter.heading, r, t, fc.body_contact);
+    let contact = reach.touches(prey.pos, prey.radius);
+    if prey.dead.is_some() || contact <= 0.0 {
+        return Strike::default();
+    }
+    // Plates and spines only guard the side the attack comes from.
+    let from = hunter.pos - prey.pos;
+    let (armor, spikes) = prey
+        .traits
+        .defense_toward(from.y.atan2(from.x) - prey.heading);
+    let protection = 1.0 - fc.armor_protection * armor;
+    let mut st = Strike {
+        prey: j as u32,
+        spikes,
+        hunter_pos: hunter.pos,
+        ..Default::default()
+    };
+    if prey.radius <= fc.engulf_ratio * r {
+        let p = fc.engulf_rate * t.hunt * protection * contact * dt;
+        let mut rng = Rng::new(hunter.rng_seed_for(tick) ^ (i as u64) << 1 ^ 0x5717_1CE5);
+        if !rng.chance(p) {
+            return Strike::default();
+        }
+        st.engulf = true;
+    } else {
+        st.bite = fc.bite_rate * t.hunt * (0.2 + 1.8 * t.jaws) * r * r * dt * protection * contact;
+        if st.bite <= 0.0 {
+            return Strike::default();
+        }
+        if tick >= hunter.ate_tick + FX_THROTTLE {
+            let dir = (prey.pos - reach.mouth).normalize_or_zero();
+            st.fx = Some((
+                reach.mouth + dir * reach.mouth_radius * 0.5,
+                r.max(prey.radius * 0.5),
+            ));
+        }
+    }
+    st
+}
+
+/// Apply a strike to its prey: swallow it whole or bite off a piece. Returns what was taken.
+fn take_from_prey(prey: &mut Organism, st: &Strike, config: &Config, tick: u64, min_mass: f32) -> Taken {
+    let mut got = Taken {
+        toxin: prey.traits.toxin,
+        ..Default::default()
+    };
+    if st.engulf {
+        got.mass = prey.mass;
+        got.energy = prey.body_value(config);
+        got.nutrients = prey.body_nutrients(config);
+        prey.nutrients = 0.0;
+        prey.dead = Some(DeathCause::Eaten);
+        got.killed = true;
+        return got;
+    }
+    let dm = st.bite.min(prey.mass);
+    if dm <= 0.0 {
+        return got;
+    }
+    let frac = dm / prey.mass;
+    let reserves = prey.energy.max(0.0) * frac;
+    prey.energy -= reserves;
+    let stored = prey.nutrients.max(0.0) * frac;
+    prey.nutrients -= stored;
+    got.nutrients = dm * config.chemistry.nutrient_per_mass + stored;
+    got.mass = dm;
+    got.energy = dm * config.metabolism.body_energy + reserves;
+    prey.hp -= dm * prey.traits.hp_factor;
+    prey.set_mass(prey.mass - dm);
+    prey.hurt_tick = tick;
+    prey.hurt_dir = (st.hunter_pos - prey.pos).to_angle();
+    if prey.hp <= 0.0 || prey.mass < min_mass {
+        prey.dead = Some(DeathCause::Predation);
+        got.killed = true;
+    }
+    got
 }
 
 /// Tentacles drag a held body toward the mouth, around the side of the body if it's behind; the
@@ -537,11 +719,12 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
                 return true;
             }
             let delta = e.pos - pos;
-            let dist = delta.length();
             let reach = range + e.radius;
-            if dist >= reach || dist < 1e-4 {
+            let dist2 = delta.length_squared();
+            if dist2 >= reach * reach || dist2 < 1e-8 {
                 return true;
             }
+            let dist = dist2.sqrt();
             let dir = delta / dist;
             if !perceives(dir, dist, e.radius) {
                 return true;
@@ -620,6 +803,7 @@ struct ActCtx<'a> {
     env: &'a Environment,
     terrain: &'a Terrain,
     time: f32,
+    tick: u64,
 }
 
 fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
@@ -679,14 +863,16 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
         } else {
             Vec2::ZERO
         };
-        let water = crate::currents::flow(
-            o.pos,
-            ctx.time,
-            cfg.world.height,
-            &cfg.currents,
-            cfg.world.seed,
-        );
-        o.pos += (o.vel + (drift + brownian + water) * (1.0 - grip)) * dt + intent.push;
+        if (o.id + ctx.tick).is_multiple_of(CURRENT_INTERVAL) || o.age <= dt {
+            o.water = crate::currents::flow(
+                o.pos,
+                ctx.time,
+                cfg.world.height,
+                &cfg.currents,
+                cfg.world.seed,
+            );
+        }
+        o.pos += (o.vel + (drift + brownian + o.water) * (1.0 - grip)) * dt + intent.push;
     }
     ctx.terrain.collide(&mut o.pos, &mut o.vel, r);
 
@@ -852,6 +1038,18 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
     }
 }
 
+/// The sixteen body-relative directions `best_move` tries (every 22.5°): cosines and sines.
+const DIR16_COS: [f32; 16] = [
+    1.0, 0.923_879_5, 0.707_106_77, 0.382_683_43, 0.0, -0.382_683_43, -0.707_106_77,
+    -0.923_879_5, -1.0, -0.923_879_5, -0.707_106_77, -0.382_683_43, 0.0, 0.382_683_43,
+    0.707_106_77, 0.923_879_5,
+];
+const DIR16_SIN: [f32; 16] = [
+    0.0, 0.382_683_43, 0.707_106_77, 0.923_879_5, 1.0, 0.923_879_5, 0.707_106_77, 0.382_683_43,
+    0.0, -0.382_683_43, -0.707_106_77, -0.923_879_5, -1.0, -0.923_879_5, -0.707_106_77,
+    -0.382_683_43,
+];
+
 /// The best way to move toward world angle `want` for a body facing `heading`: the world
 /// direction, its speed multiplier (× √radius), and whether that's walking. Tries sixteen
 /// directions around the body (and `want` itself) and keeps the one that makes the most
@@ -863,29 +1061,94 @@ fn best_move(
     touching: bool,
 ) -> (f32, f32, bool) {
     let want_local = wrap_angle(want - heading);
-    let speed_at = |local: f32| {
-        let swim = t.swim_toward(local);
-        let walk = if touching { t.crawl_toward(local) } else { 0.0 };
-        if walk > swim {
-            (walk, true)
+    let (want_sin, want_cos) = want_local.sin_cos();
+    // Speeds at the sixteen directions: the eight organ directions and halfway between them.
+    let at = |v: &[f32; 8], k: usize| {
+        let i = k / 2;
+        if k % 2 == 0 {
+            v[i]
         } else {
-            (swim, false)
+            v[i] + (v[(i + 1) % 8] - v[i]) * 0.5
         }
     };
     let mut best = (heading, 0.0, false, 0.0);
-    for k in 0..=16 {
-        let local = if k == 16 {
-            want_local
-        } else {
-            k as f32 * std::f32::consts::TAU / 16.0
-        };
-        let (speed, walking) = speed_at(local);
-        let progress = speed * (local - want_local).cos();
+    for k in 0..16 {
+        let swim = at(&t.swim_dirs, k);
+        let walk = if touching { at(&t.crawl_dirs, k) } else { 0.0 };
+        let (speed, walking) = if walk > swim { (walk, true) } else { (swim, false) };
+        // Progress is at most the speed; skip the cosine when it can't win.
+        if speed <= best.3 {
+            continue;
+        }
+        let progress = speed * (DIR16_COS[k] * want_cos + DIR16_SIN[k] * want_sin);
         if progress > best.3 {
+            let local = k as f32 * std::f32::consts::TAU / 16.0;
             best = (heading + local, speed, walking, progress);
         }
     }
+    let swim = t.swim_toward(want_local);
+    let walk = if touching { t.crawl_toward(want_local) } else { 0.0 };
+    let (speed, walking) = if walk > swim { (walk, true) } else { (swim, false) };
+    if speed > best.3 {
+        best = (heading + want_local, speed, walking, speed);
+    }
     (best.0, best.1, best.2)
+}
+
+/// Light for this tick: shade from bodies, then sunlight down every column. Each thread owns
+/// a slab of columns and adds the bodies over it in organism order, so the sums don't depend
+/// on scheduling.
+fn shade(light: &mut crate::environment::LightField, entries: &[Entry], sun: f32, half_depth: f32) {
+    let geometry = light.geometry();
+    let ny = geometry.ny;
+    let slab = geometry.nx.div_ceil(rayon::current_num_threads().max(1) * 2).max(1);
+    light
+        .weight
+        .par_chunks_mut(slab * ny)
+        .enumerate()
+        .for_each(|(k, weight)| {
+            weight.fill(0.0);
+            let first = k * slab * ny;
+            let cols = (k * slab) as f32 * geometry.cell..((k + 1) * slab) as f32 * geometry.cell;
+            for e in entries {
+                let reach = e.light_radius;
+                if e.pos.x + reach < cols.start || e.pos.x - reach >= cols.end {
+                    continue;
+                }
+                let a = e.absorptance;
+                geometry.for_each_covered(e.pos, reach, |idx, w| {
+                    if let Some(v) = idx.checked_sub(first).and_then(|i| weight.get_mut(i)) {
+                        *v += w * a;
+                    }
+                });
+            }
+        });
+    light.propagate(sun, half_depth);
+}
+
+/// Reorder organisms along a Z-order curve over 32-unit cells, so that bodies near each other
+/// sit near each other in memory: grid building, neighbour queries and field reads and
+/// writes then mostly hit the cache. Ties keep their current order.
+fn sort_spatially(organisms: &mut Vec<Organism>) {
+    fn spread(v: u32) -> u32 {
+        let mut v = v & 0xFFFF;
+        v = (v | (v << 8)) & 0x00FF_00FF;
+        v = (v | (v << 4)) & 0x0F0F_0F0F;
+        v = (v | (v << 2)) & 0x3333_3333;
+        (v | (v << 1)) & 0x5555_5555
+    }
+    let mut order: Vec<(u32, u32)> = organisms
+        .par_iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let x = (o.pos.x.max(0.0) / 32.0) as u32;
+            let y = (o.pos.y.max(0.0) / 32.0) as u32;
+            (spread(x) | spread(y) << 1, i as u32)
+        })
+        .collect();
+    order.par_sort_unstable();
+    let mut slots: Vec<Option<Organism>> = std::mem::take(organisms).into_iter().map(Some).collect();
+    organisms.extend(order.iter().map(|&(_, i)| slots[i as usize].take().unwrap()));
 }
 
 impl Organism {
@@ -1147,6 +1410,10 @@ impl World {
 
         lap(&mut timings.environment);
 
+        if tick.is_multiple_of(SORT_INTERVAL) {
+            sort_spatially(&mut self.organisms);
+        }
+
         // 2. Grids and light. One parallel pass over the (large) organism structs builds a
         // compact entry array; everything else in this phase reads only that.
         self.organisms
@@ -1175,30 +1442,48 @@ impl World {
             config,
         );
         lap(&mut timings.staging);
-        scratch.grid.rebuild(&scratch.entries);
-        scratch.carcass_entries.clear();
-        scratch
-            .carcass_entries
-            .extend(self.carcasses.iter().enumerate().map(|(i, c)| Entry {
-                index: i as u32,
-                pos: c.pos,
-                radius: c.radius,
-                ..Default::default()
-            }));
-        scratch.carcass_grid.rebuild(&scratch.carcass_entries);
-        lap(&mut timings.grids);
-        {
-            let light = &mut self.env.light;
-            light.weight.fill(0.0);
-            let geometry = light.geometry();
-            for e in &scratch.entries {
-                let a = e.absorptance;
-                geometry
-                    .for_each_covered(e.pos, e.light_radius, |idx, w| light.weight[idx] += w * a);
-            }
-            light.propagate(self.env.clock.sun, config.light.half_depth);
-        }
-        lap(&mut timings.light);
+        // The spatial grids (serial) build alongside the light (parallel): neither needs the
+        // other.
+        let lit_now = tick.is_multiple_of(LIGHT_INTERVAL) || !scratch.lit;
+        scratch.lit = true;
+        let Scratch {
+            grid,
+            carcass_grid,
+            entries,
+            carcass_entries,
+            ..
+        } = &mut *scratch;
+        let entries = &*entries;
+        let carcasses = &self.carcasses;
+        let light = &mut self.env.light;
+        let (sun, half_depth) = (self.env.clock.sun, config.light.half_depth);
+        let (grid_time, light_time) = rayon::join(
+            || {
+                let start = std::time::Instant::now();
+                grid.rebuild(entries);
+                carcass_entries.clear();
+                carcass_entries.extend(carcasses.iter().enumerate().map(|(i, c)| Entry {
+                    index: i as u32,
+                    pos: c.pos,
+                    radius: c.radius,
+                    ..Default::default()
+                }));
+                carcass_grid.rebuild(carcass_entries);
+                start.elapsed().as_secs_f64()
+            },
+            || {
+                let start = std::time::Instant::now();
+                if lit_now {
+                    shade(light, entries, sun, half_depth);
+                }
+                start.elapsed().as_secs_f64()
+            },
+        );
+        // Each phase's own time (they overlap); the lap keeps the clock in step.
+        let mut overlap = 0.0;
+        lap(&mut overlap);
+        timings.grids += grid_time;
+        timings.light += light_time;
 
         // 3. Think.
         let think_ctx = ThinkCtx {
@@ -1222,6 +1507,7 @@ impl World {
             env: &self.env,
             terrain: &self.terrain,
             time: (tick as f64 * dt as f64) as f32,
+            tick,
         };
         self.organisms
             .par_iter_mut()
@@ -1490,9 +1776,9 @@ impl World {
         let fc = &config.feeding;
         let cc = &config.chemistry;
         let dt = config.time.dt;
-        let body_energy = config.metabolism.body_energy;
         let min_mass = config.genes.min_radius * config.genes.min_radius * 0.5;
-        let intents = &self.scratch.as_ref().unwrap().intents;
+        let mut scratch = self.scratch.take().expect("feed runs inside step");
+        let intents = &scratch.intents;
         let env = &mut self.env;
         let minerals = &mut env.minerals;
         let detritus = &mut env.detritus;
@@ -1510,101 +1796,367 @@ impl World {
         let fx = &mut self.fx;
         let terrain = &self.terrain;
 
-        for i in 0..self.organisms.len() {
-            let intent = intents[i];
-            let o = &mut self.organisms[i];
+        // Trading with the water, in parallel: each organism releases what it gave off during
+        // act, then takes minerals, nutrients and detritus from its cell. Where the bodies in a
+        // cell want more than it holds, each gets the same share of what's there.
+        let n = self.organisms.len();
+        let organisms = &self.organisms;
+        self.organisms
+            .par_iter()
+            .zip(intents.par_iter())
+            .enumerate()
+            .map(|(i, (o, intent))| {
+                let alive = o.dead.is_none();
+                let t = &o.traits;
+                let r = o.radius;
+                let mut u = Uptake {
+                    idx: minerals.water_index_at(o.pos) as u32,
+                    d_idx: detritus.water_index_at(o.pos) as u32,
+                    chem: o.chem,
+                    hue: if o.chem.toxin > 0.0 {
+                        Vec2::from_angle(t.hue as f32 / 256.0 * std::f32::consts::TAU)
+                    } else {
+                        Vec2::ZERO
+                    },
+                    alive,
+                    active: alive
+                        && (intent.carcass != NONE || intent.grabs.iter().any(|&g| g != NONE)),
+                    strike_slot: NONE,
+                    ..Default::default()
+                };
+                let j = intent.attack as usize;
+                if alive && intent.attack != NONE && j < n && j != i {
+                    u.strike = strike(o, i, &organisms[j], j, config, tick);
+                }
+                if alive {
+                    u.k_minerals = (fc.chemo_rate * t.chemo * r * dt).clamp(0.0, m_area);
+                    let room = o.max_nutrients(config) - o.nutrients;
+                    if t.uptake > 0.0 && room > 0.0 {
+                        let anchor = if o.anchored { cc.anchor_uptake } else { 1.0 };
+                        u.k_nutrients = (cc.uptake_rate * t.uptake * r * t.uptake_area * anchor * dt)
+                            .clamp(0.0, m_area);
+                        u.room = room;
+                    }
+                    let sweep = fc.scavenge_rate * r * (1.0 + t.filter)
+                        + fc.filter_rate * 2.0 * r * o.vel.length();
+                    u.k_detritus = (sweep * t.scavenge * dt).clamp(0.0, d_area);
+                }
+                u
+            })
+            .collect_into_vec(&mut scratch.uptakes);
+        // Each field is updated by its own thread, in organism order (so the result doesn't
+        // depend on scheduling).
+        let ups = &scratch.uptakes;
+        rayon::scope(|sc| {
+            sc.spawn(|_| {
+                for u in ups {
+                    let i = u.idx as usize;
+                    oxygen.data[i] = (oxygen.data[i] + u.chem.oxygen / m_area).max(0.0);
+                }
+            });
+            sc.spawn(|_| {
+                for u in ups {
+                    let i = u.idx as usize;
+                    co2.data[i] = (co2.data[i] + u.chem.co2 / m_area).max(0.0);
+                }
+            });
+            sc.spawn(|_| {
+                for u in ups {
+                    let i = u.idx as usize;
+                    minerals.data[i] = (minerals.data[i] + u.chem.minerals / m_area).max(0.0);
+                }
+            });
+            sc.spawn(|_| {
+                for u in ups {
+                    nutrients.data[u.idx as usize] += u.chem.nutrients / m_area;
+                }
+            });
+            sc.spawn(|_| {
+                for u in ups.iter().filter(|u| u.chem.toxin > 0.0) {
+                    let (i, c) = (u.idx as usize, u.chem.toxin);
+                    *toxin_present = true;
+                    toxin.data[i] += c / m_area;
+                    toxin_x.data[i] += c * u.hue.x / m_area;
+                    toxin_y.data[i] += c * u.hue.y / m_area;
+                }
+            });
+            sc.spawn(|_| {
+                for u in ups.iter().filter(|u| u.chem.waste > 0.0) {
+                    detritus.data[u.d_idx as usize] += u.chem.waste / d_area;
+                }
+            });
+        });
+        // What every body wants from its cell, and the total wanted from each cell.
+        scratch.uptakes.par_iter_mut().for_each(|u| {
+            let (idx, d_idx) = (u.idx as usize, u.d_idx as usize);
+            u.minerals = u.k_minerals * minerals.data[idx].max(0.0);
+            u.nutrients = (u.k_nutrients * nutrients.data[idx].max(0.0)).min(u.room);
+            u.detritus = u.k_detritus * detritus.data[d_idx].max(0.0);
+        });
+        let [demand_m, demand_n, demand_d] = &mut scratch.demand;
+        for (d, len) in [
+            (&mut *demand_m, minerals.data.len()),
+            (&mut *demand_n, nutrients.data.len()),
+            (&mut *demand_d, detritus.data.len()),
+        ] {
+            if d.len() != len {
+                *d = vec![0.0; len];
+            }
+        }
+        let ups = &scratch.uptakes;
+        rayon::scope(|sc| {
+            sc.spawn(|_| ups.iter().for_each(|u| demand_m[u.idx as usize] += u.minerals));
+            sc.spawn(|_| ups.iter().for_each(|u| demand_n[u.idx as usize] += u.nutrients));
+            sc.spawn(|_| ups.iter().for_each(|u| demand_d[u.d_idx as usize] += u.detritus));
+        });
+        let [demand_m, demand_n, demand_d] = &scratch.demand;
+        let share = |want: f32, total: f32, held: f32| {
+            if total > held && total > 0.0 {
+                want * held / total
+            } else {
+                want
+            }
+        };
+        let (minerals_ro, nutrients_ro, detritus_ro) = (&*minerals, &*nutrients, &*detritus);
+        self.organisms
+            .par_iter_mut()
+            .zip(scratch.uptakes.par_iter_mut())
+            .for_each(|(o, u)| {
+                if !u.alive {
+                    return;
+                }
+                let (idx, d_idx) = (u.idx as usize, u.d_idx as usize);
+                u.minerals = share(u.minerals, demand_m[idx], minerals_ro.data[idx] * m_area);
+                u.nutrients = share(u.nutrients, demand_n[idx], nutrients_ro.data[idx] * m_area);
+                u.detritus = share(u.detritus, demand_d[d_idx], detritus_ro.data[d_idx] * d_area);
+                o.nutrients += u.nutrients;
+                let absorbed = u.minerals * fc.chemo_yield;
+                let grazed = u.detritus;
+                let gained = absorbed + grazed;
+                o.energy += gained;
+                o.gain_rate += gained / dt;
+                // Label what it's living on, when that's a meaningful share of its needs.
+                let need = o.cost_rate.max(1e-6) * dt;
+                if grazed > need * 0.5 && grazed >= absorbed {
+                    o.activity = Activity::Grazing;
+                    o.ate_tick = tick;
+                } else if absorbed > need * 0.5 {
+                    o.activity = Activity::Absorbing;
+                }
+                if !u.active && u.strike.prey == NONE {
+                    // Anything it can't store is lost: energy as detritus, nutrients excreted.
+                    let excess = o.energy - o.max_energy();
+                    if excess > 0.0 {
+                        o.energy -= excess;
+                        u.excess_energy = excess;
+                    }
+                    let excess = o.nutrients - o.max_nutrients(config);
+                    if excess > 0.0 {
+                        o.nutrients -= excess;
+                        u.excess_nutrients = excess;
+                    }
+                }
+            });
+        let [demand_m, demand_n, demand_d] = &mut scratch.demand;
+        let ups = &scratch.uptakes;
+        rayon::scope(|sc| {
+            sc.spawn(|_| {
+                for u in ups {
+                    let i = u.idx as usize;
+                    minerals.data[i] = (minerals.data[i] - u.minerals / m_area).max(0.0);
+                    demand_m[i] = 0.0;
+                }
+            });
+            sc.spawn(|_| {
+                for u in ups {
+                    let i = u.idx as usize;
+                    let change = (u.excess_nutrients - u.nutrients) / m_area;
+                    nutrients.data[i] = (nutrients.data[i] + change).max(0.0);
+                    demand_n[i] = 0.0;
+                }
+            });
+            sc.spawn(|_| {
+                for u in ups {
+                    let i = u.d_idx as usize;
+                    let change = (u.excess_energy - u.detritus) / d_area;
+                    detritus.data[i] = (detritus.data[i] + change).max(0.0);
+                    demand_d[i] = 0.0;
+                }
+            });
+        });
 
-            // What it exchanged with the water during act (even if it died doing so).
-            let idx = minerals.water_index_at(o.pos);
-            let c = o.chem;
-            oxygen.data[idx] = (oxygen.data[idx] + c.oxygen / m_area).max(0.0);
-            co2.data[idx] = (co2.data[idx] + c.co2 / m_area).max(0.0);
-            minerals.data[idx] = (minerals.data[idx] + c.minerals / m_area).max(0.0);
-            nutrients.data[idx] += c.nutrients / m_area;
-            if c.toxin > 0.0 {
-                *toxin_present = true;
-                let hue = Vec2::from_angle(o.traits.hue as f32 / 256.0 * std::f32::consts::TAU);
-                toxin.data[idx] += c.toxin / m_area;
-                toxin_x.data[idx] += c.toxin * hue.x / m_area;
-                toxin_y.data[idx] += c.toxin * hue.y / m_area;
+        // Strikes: each prey takes the strikes at it in hunter order, then each hunter digests
+        // what it got. Both in parallel (a prey has one owner, a hunter one strike).
+        let strikes = &mut scratch.strikes;
+        strikes.clear();
+        strikes.extend(
+            scratch
+                .uptakes
+                .iter()
+                .enumerate()
+                .filter(|(_, u)| u.strike.prey != NONE)
+                .map(|(h, u)| (u.strike.prey, h as u32)),
+        );
+        strikes.sort_by_key(|&(prey, _)| prey);
+        for (k, &(_, h)) in strikes.iter().enumerate() {
+            scratch.uptakes[h as usize].strike_slot = k as u32;
+        }
+        scratch.taken.clear();
+        scratch.taken.resize(strikes.len(), Taken::default());
+        {
+            // Hand each prey its run of strikes (and their outcomes).
+            let mut runs: Vec<(&mut Organism, &[(u32, u32)], &mut [Taken])> = Vec::new();
+            let (mut rest_o, mut offset) = (&mut self.organisms[..], 0usize);
+            let (mut rest_s, mut rest_t) = (&strikes[..], &mut scratch.taken[..]);
+            while let Some(&(prey, _)) = rest_s.first() {
+                let len = rest_s.iter().take_while(|s| s.0 == prey).count();
+                let (s_run, s_rest) = rest_s.split_at(len);
+                let (t_run, t_rest) = std::mem::take(&mut rest_t).split_at_mut(len);
+                let (_, tail) = std::mem::take(&mut rest_o).split_at_mut(prey as usize - offset);
+                let (one, tail) = tail.split_at_mut(1);
+                runs.push((&mut one[0], s_run, t_run));
+                (rest_o, offset) = (tail, prey as usize + 1);
+                (rest_s, rest_t) = (s_rest, t_rest);
             }
-            let d_idx = detritus.water_index_at(o.pos);
-            if c.waste > 0.0 {
-                detritus.data[d_idx] += c.waste / d_area;
-            }
-            if o.dead.is_some() {
+            let ups = &scratch.uptakes;
+            runs.par_iter_mut().for_each(|(prey, run, taken)| {
+                for (&(_, h), out) in run.iter().zip(taken.iter_mut()) {
+                    if prey.dead.is_some() {
+                        break;
+                    }
+                    let st = &ups[h as usize].strike;
+                    *out = take_from_prey(prey, st, config, tick, min_mass);
+                }
+            });
+        }
+        let taken = &scratch.taken;
+        self.organisms
+            .par_iter_mut()
+            .zip(scratch.uptakes.par_iter_mut())
+            .for_each(|(hunter, u)| {
+                if u.strike.prey == NONE {
+                    return;
+                }
+                let got = taken[u.strike_slot as usize];
+                if got.energy > 0.0 {
+                    // Even a weak hunter digests much of what it catches.
+                    let hunt = hunter.traits.hunt;
+                    let assimilated = got.energy * fc.assimilation * (0.4 + 0.6 * hunt);
+                    hunter.energy += assimilated;
+                    hunter.gain_rate += assimilated / dt;
+                    hunter.nutrients += got.nutrients;
+                    u.undigested = got.energy - assimilated;
+                    hunter.activity = Activity::Feeding;
+                    hunter.ate_tick = tick;
+                    if u.strike.spikes > 0.0 {
+                        hunter.hp -= fc.spike_damage * u.strike.spikes * got.mass;
+                        if hunter.hp <= 0.0 {
+                            hunter.dead = Some(DeathCause::Spikes);
+                        }
+                    }
+                    if got.toxin > 0.0 {
+                        hunter.hp -= cc.poison_damage
+                            * got.toxin
+                            * got.mass
+                            * (1.0 - hunter.traits.resistance);
+                        if hunter.hp <= 0.0 && hunter.dead.is_none() {
+                            hunter.dead = Some(DeathCause::Poison);
+                        }
+                    }
+                    if got.killed {
+                        hunter.kills += 1;
+                    }
+                }
+                if !u.active {
+                    let excess = hunter.energy - hunter.max_energy();
+                    if excess > 0.0 {
+                        hunter.energy -= excess;
+                        u.excess_energy = excess;
+                    }
+                    let excess = hunter.nutrients - hunter.max_nutrients(config);
+                    if excess > 0.0 {
+                        hunter.nutrients -= excess;
+                        u.excess_nutrients = excess;
+                    }
+                }
+            });
+        // What hunters couldn't digest or store goes back to the water; effects and the first
+        // kill are noted.
+        for &(prey, h) in &scratch.strikes {
+            let u = &scratch.uptakes[h as usize];
+            let got = taken[u.strike_slot as usize];
+            if got.energy <= 0.0 {
                 continue;
             }
+            let (i, d_idx) = (u.idx as usize, u.d_idx as usize);
+            detritus.data[d_idx] += (u.undigested + u.excess_energy) / d_area;
+            nutrients.data[i] += u.excess_nutrients / m_area;
+            let (hunter, p) = (&self.organisms[h as usize], &self.organisms[prey as usize]);
+            if got.killed && first_kill.is_none() {
+                first_kill = Some((hunter.id, hunter.species));
+            }
+            if fx.len() >= MAX_FX {
+                continue;
+            }
+            if u.strike.engulf {
+                fx.push(Fx {
+                    kind: FxKind::Engulf,
+                    pos: p.pos,
+                    radius: p.radius,
+                    color: p.traits.color,
+                    tick,
+                    body: Some(FxBody {
+                        genome: p.genome,
+                        heading: p.heading,
+                        seed: ((p.id.wrapping_mul(2_654_435_761) >> 8) % 1000) as f32 / 1000.0,
+                        hunter: Some(hunter.id),
+                    }),
+                });
+            } else if let Some((pos, radius)) = u.strike.fx {
+                fx.push(Fx {
+                    kind: FxKind::Bite,
+                    pos,
+                    radius,
+                    color: p.traits.color,
+                    tick,
+                    body: None,
+                });
+            }
+        }
+        // Hunters that weren't fed one at a time below gave back any excess just now; the rest
+        // settle theirs at the end of the loop.
+        for u in &scratch.uptakes {
+            if u.strike.prey != NONE && taken[u.strike_slot as usize].energy <= 0.0 && !u.active {
+                detritus.data[u.d_idx as usize] += u.excess_energy / d_area;
+                nutrients.data[u.idx as usize] += u.excess_nutrients / m_area;
+            }
+        }
+
+        // Contact feeding, one organism at a time, for those touching a carcass or prey or
+        // holding something with a tentacle.
+        for i in 0..n {
+            let u = scratch.uptakes[i];
+            if !u.active || self.organisms[i].dead.is_some() {
+                continue;
+            }
+            let intent = intents[i];
+            let idx = u.idx as usize;
+            let o = &mut self.organisms[i];
 
             // Only the fields feeding needs (Traits is large; don't copy it all).
             struct Diet {
-                chemo: f32,
                 scavenge: f32,
                 hunt: f32,
                 jaws: f32,
-                filter: f32,
-                uptake: f32,
-                uptake_area: f32,
-                resistance: f32,
             }
             let t = Diet {
-                chemo: o.traits.chemo,
                 scavenge: o.traits.scavenge,
                 hunt: o.traits.hunt,
                 jaws: o.traits.jaws,
-                filter: o.traits.filter,
-                uptake: o.traits.uptake,
-                uptake_area: o.traits.uptake_area,
-                resistance: o.traits.resistance,
             };
             let r = o.radius;
             let reach = Reach::new(o.pos, o.heading, r, &o.traits, fc.body_contact);
             let mut gained = 0.0;
-            let mut absorbed = 0.0;
-            let mut grazed = 0.0;
-
-            if t.chemo > 0.0 {
-                let conc = minerals.data[idx];
-                if conc > 0.0 {
-                    let want = fc.chemo_rate * t.chemo * r * conc * dt;
-                    let take = want.min(conc * m_area);
-                    minerals.data[idx] -= take / m_area;
-                    gained += take * fc.chemo_yield;
-                    absorbed += take * fc.chemo_yield;
-                }
-            }
-            // Nutrients from the water (a holdfast also draws them from the rock).
-            let nutrient_cap = o.max_nutrients(config);
-            if t.uptake > 0.0 && o.nutrients < nutrient_cap {
-                let conc = nutrients.data[idx];
-                if conc > 0.0 {
-                    let anchor = if o.anchored { cc.anchor_uptake } else { 1.0 };
-                    let want = cc.uptake_rate * t.uptake * r * t.uptake_area * anchor * conc * dt;
-                    let take = want.min(conc * m_area).min(nutrient_cap - o.nutrients);
-                    nutrients.data[idx] -= take / m_area;
-                    o.nutrients += take;
-                }
-            }
-            if t.scavenge > 0.0 {
-                let conc = detritus.data[d_idx];
-                if conc > 0.0 {
-                    let sweep = fc.scavenge_rate * r * (1.0 + t.filter)
-                        + fc.filter_rate * 2.0 * r * o.vel.length();
-                    let want = sweep * t.scavenge * conc * dt;
-                    let take = want.min(conc * d_area);
-                    detritus.data[d_idx] -= take / d_area;
-                    gained += take;
-                    grazed += take;
-                }
-            }
-            // Label what it's living on, when that's a meaningful share of its needs.
-            let need = o.cost_rate.max(1e-6) * dt;
-            if grazed > need * 0.5 && grazed >= absorbed {
-                o.activity = Activity::Grazing;
-                o.ate_tick = tick;
-            } else if absorbed > need * 0.5 {
-                o.activity = Activity::Absorbing;
-            }
             if intent.carcass != NONE
                 && let Some(c) = self.carcasses.get_mut(intent.carcass as usize)
                 && c.energy > 0.0
@@ -1639,118 +2191,6 @@ impl World {
             }
             o.energy += gained;
             o.gain_rate += gained / dt;
-
-            // Hunting.
-            let j = intent.attack as usize;
-            if intent.attack != NONE && j < self.organisms.len() && j != i {
-                let (hunter, prey) = pair_mut(&mut self.organisms, i, j);
-                let contact = reach.touches(prey.pos, prey.radius);
-                if prey.dead.is_none() && contact > 0.0 {
-                    // Plates and spines only guard the side the attack comes from.
-                    let from = hunter.pos - prey.pos;
-                    let (armor, spikes) = prey
-                        .traits
-                        .defense_toward(from.y.atan2(from.x) - prey.heading);
-                    let protection = 1.0 - fc.armor_protection * armor;
-                    let mut taken_mass = 0.0;
-                    let mut taken_energy = 0.0;
-                    if prey.radius <= fc.engulf_ratio * hunter.radius {
-                        let p = fc.engulf_rate * t.hunt * protection * contact * dt;
-                        if hunter.rng.chance(p) {
-                            taken_mass = prey.mass;
-                            taken_energy = prey.body_value(config);
-                            hunter.nutrients += prey.body_nutrients(config);
-                            prey.nutrients = 0.0;
-                            prey.dead = Some(DeathCause::Eaten);
-                            if fx.len() < MAX_FX {
-                                fx.push(Fx {
-                                    kind: FxKind::Engulf,
-                                    pos: prey.pos,
-                                    radius: prey.radius,
-                                    color: prey.traits.color,
-                                    tick,
-                                    body: Some(FxBody {
-                                        genome: prey.genome,
-                                        heading: prey.heading,
-                                        seed: ((prey.id.wrapping_mul(2_654_435_761) >> 8) % 1000)
-                                            as f32
-                                            / 1000.0,
-                                        hunter: Some(hunter.id),
-                                    }),
-                                });
-                            }
-                        }
-                    } else {
-                        let bite = fc.bite_rate
-                            * t.hunt
-                            * (0.2 + 1.8 * t.jaws)
-                            * r
-                            * r
-                            * dt
-                            * protection
-                            * contact;
-                        let dm = bite.min(prey.mass);
-                        if dm > 0.0 {
-                            let frac = dm / prey.mass;
-                            let reserves = prey.energy.max(0.0) * frac;
-                            prey.energy -= reserves;
-                            let stored = prey.nutrients.max(0.0) * frac;
-                            prey.nutrients -= stored;
-                            hunter.nutrients += dm * cc.nutrient_per_mass + stored;
-                            taken_mass = dm;
-                            taken_energy = dm * body_energy + reserves;
-                            prey.hp -= dm * prey.traits.hp_factor;
-                            prey.set_mass(prey.mass - dm);
-                            if tick >= hunter.ate_tick + FX_THROTTLE && fx.len() < MAX_FX {
-                                let dir = (prey.pos - reach.mouth).normalize_or_zero();
-                                fx.push(Fx {
-                                    kind: FxKind::Bite,
-                                    pos: reach.mouth + dir * reach.mouth_radius * 0.5,
-                                    radius: hunter.radius.max(prey.radius * 0.5),
-                                    color: prey.traits.color,
-                                    tick,
-                                    body: None,
-                                });
-                            }
-                            prey.hurt_tick = tick;
-                            prey.hurt_dir = (hunter.pos - prey.pos).to_angle();
-                            if prey.hp <= 0.0 || prey.mass < min_mass {
-                                prey.dead = Some(DeathCause::Predation);
-                            }
-                        }
-                    }
-                    if taken_energy > 0.0 {
-                        // Even a weak hunter digests much of what it catches.
-                        let assimilated = taken_energy * fc.assimilation * (0.4 + 0.6 * t.hunt);
-                        hunter.energy += assimilated;
-                        hunter.gain_rate += assimilated / dt;
-                        detritus.add(hunter.pos, (taken_energy - assimilated) / d_area);
-                        hunter.activity = Activity::Feeding;
-                        hunter.ate_tick = tick;
-                        if spikes > 0.0 {
-                            hunter.hp -= fc.spike_damage * spikes * taken_mass;
-                            if hunter.hp <= 0.0 {
-                                hunter.dead = Some(DeathCause::Spikes);
-                            }
-                        }
-                        if prey.traits.toxin > 0.0 {
-                            hunter.hp -= cc.poison_damage
-                                * prey.traits.toxin
-                                * taken_mass
-                                * (1.0 - t.resistance);
-                            if hunter.hp <= 0.0 && hunter.dead.is_none() {
-                                hunter.dead = Some(DeathCause::Poison);
-                            }
-                        }
-                        if prey.dead.is_some() {
-                            hunter.kills += 1;
-                            if first_kill.is_none() {
-                                first_kill = Some((hunter.id, hunter.species));
-                            }
-                        }
-                    }
-                }
-            }
 
             // Each tentacle drags what it holds toward the mouth.
             for (k, &target) in intent.grabs[..reach.grasp_count].iter().enumerate() {
@@ -1815,6 +2255,7 @@ impl World {
             }
         }
 
+        self.scratch = Some(scratch);
         if let Some((id, species)) = first_kill
             && !self.milestones.first_kill
         {
@@ -1882,15 +2323,22 @@ impl World {
         let mut parents: Vec<usize> = Vec::new();
         let mut population = self.organisms.len();
 
-        for i in 0..self.organisms.len() {
+        // Find who's ready in parallel (most aren't), then bud them in order.
+        let ready: Vec<u32> = self
+            .organisms
+            .par_iter()
+            .enumerate()
+            .filter(|(_, o)| {
+                o.dead.is_none()
+                    && o.is_adult()
+                    && o.repro_cooldown <= 0.0
+                    && o.energy >= o.traits.repro_threshold * o.max_energy()
+            })
+            .map(|(i, _)| i as u32)
+            .collect();
+        for i in ready {
+            let i = i as usize;
             let o = &mut self.organisms[i];
-            if o.dead.is_some()
-                || !o.is_adult()
-                || o.repro_cooldown > 0.0
-                || o.energy < o.traits.repro_threshold * o.max_energy()
-            {
-                continue;
-            }
             if population >= max_population {
                 break;
             }
@@ -2011,7 +2459,15 @@ impl World {
         let area = detritus.cell_area();
         let n_area = nutrients.cell_area();
         let tick = self.tick;
-        for o in &self.organisms {
+        let dead: Vec<u32> = self
+            .organisms
+            .par_iter()
+            .enumerate()
+            .filter(|(_, o)| o.dead.is_some())
+            .map(|(i, _)| i as u32)
+            .collect();
+        for &i in &dead {
+            let o = &self.organisms[i as usize];
             let Some(cause) = o.dead else { continue };
             self.species.on_death(o.species, tick);
             self.stats.record_death(cause);
@@ -2042,10 +2498,8 @@ impl World {
             }
         }
         // swap_remove from the back: O(deaths) instead of shifting the whole array.
-        for i in (0..self.organisms.len()).rev() {
-            if self.organisms[i].dead.is_some() {
-                self.organisms.swap_remove(i);
-            }
+        for &i in dead.iter().rev() {
+            self.organisms.swap_remove(i as usize);
         }
     }
 

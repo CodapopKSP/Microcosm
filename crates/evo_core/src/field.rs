@@ -179,19 +179,18 @@ impl Field {
             return;
         }
         let (nx, ny) = (self.nx, self.ny);
-        for x in 0..nx {
-            if let Some(mask) = column_mask
-                && !mask[x]
-            {
-                continue;
-            }
-            // Process in the direction of motion so content moves at most one cell per call.
-            if up {
-                for y in (0..ny - 1).rev() {
+        let moves = |x: usize| column_mask.is_none_or(|mask| mask[x]);
+        // Row by row (memory order). Each column still shifts in the direction of motion, so
+        // content moves at most one cell per call, exactly as going column by column.
+        if up {
+            for y in (0..ny - 1).rev() {
+                for x in (0..nx).filter(|&x| moves(x)) {
                     self.shift(x + y * nx, x + (y + 1) * nx, fraction);
                 }
-            } else {
-                for y in 1..ny {
+            }
+        } else {
+            for y in 1..ny {
+                for x in (0..nx).filter(|&x| moves(x)) {
                     self.shift(x + y * nx, x + (y - 1) * nx, fraction);
                 }
             }
@@ -222,16 +221,14 @@ impl Field {
         self.data[to] += moved;
     }
 
-    /// Multiply every cell by `factor`, returning the total amount removed.
-    pub fn decay(&mut self, factor: f32) -> f64 {
+    /// Multiply every cell by `factor`.
+    pub fn decay(&mut self, factor: f32) {
         let keep = factor.clamp(0.0, 1.0);
-        let mut removed = 0.0f64;
-        for v in &mut self.data {
-            let loss = *v * (1.0 - keep);
-            removed += loss as f64;
-            *v -= loss;
-        }
-        removed
+        self.data.par_chunks_mut(self.nx).for_each(|row| {
+            for v in row {
+                *v -= *v * (1.0 - keep);
+            }
+        });
     }
 }
 

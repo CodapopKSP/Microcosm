@@ -17,3 +17,6 @@ clap = { version = "4", features = ["derive"] }
 [[bin]]
 name = "evo_headless"
 path = "src/bin/headless.rs"
+
+[dev-dependencies]
+pprof = { version = "0.15", features = ["flamegraph"] }

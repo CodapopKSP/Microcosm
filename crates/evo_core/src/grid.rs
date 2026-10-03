@@ -28,7 +28,6 @@ pub struct Entry {
 
 #[derive(Clone, Debug)]
 struct Level {
-    cell: f32,
     inv_cell: f32,
     nx: usize,
     ny: usize,
@@ -39,6 +38,10 @@ struct Level {
     count: usize,
     /// Largest radius actually present at this level (tightens query boxes).
     observed_max: f32,
+    /// Bodies up to this radius are stored here (at most half the cell).
+    max_radius: f32,
+    /// Rows holding entries: `rows.0..=rows.1` (only these are kept up to date in `starts`).
+    rows: (usize, usize),
 }
 
 impl Level {
@@ -52,7 +55,7 @@ impl Level {
     /// Largest radius stored at this level.
     #[inline]
     fn max_radius(&self) -> f32 {
-        self.cell * 0.5
+        self.max_radius
     }
 }
 
@@ -75,15 +78,28 @@ pub struct SpatialGrid {
 }
 
 impl SpatialGrid {
-    /// `base_cell` is the finest cell size; each level is `factor` times coarser.
+    /// `base_cell` is the finest cell size; each level is `factor` times coarser and holds
+    /// bodies up to half its cell size.
     pub fn new(width: f32, height: f32, base_cell: f32, factor: f32, levels: usize) -> Self {
-        let levels = (0..levels)
+        let levels: Vec<(f32, f32)> = (0..levels)
             .map(|i| {
                 let cell = base_cell * factor.powi(i as i32);
+                (cell, cell * 0.5)
+            })
+            .collect();
+        Self::with_levels(width, height, &levels)
+    }
+
+    /// Levels as `(cell size, largest radius stored)`, finest first. A level's largest radius
+    /// widens every query box there, so a level just for the commonest small bodies keeps
+    /// queries tight.
+    pub fn with_levels(width: f32, height: f32, levels: &[(f32, f32)]) -> Self {
+        let levels = levels
+            .iter()
+            .map(|&(cell, max_radius)| {
                 let nx = (width / cell).ceil().max(1.0) as usize;
                 let ny = (height / cell).ceil().max(1.0) as usize;
                 Level {
-                    cell,
                     inv_cell: 1.0 / cell,
                     nx,
                     ny,
@@ -91,6 +107,8 @@ impl SpatialGrid {
                     base: 0,
                     count: 0,
                     observed_max: 0.0,
+                    max_radius: max_radius.min(cell * 0.5),
+                    rows: (0, 0),
                 }
             })
             .collect();
@@ -115,47 +133,59 @@ impl SpatialGrid {
         self.slots.clear();
         self.slots.reserve(n);
         for level in &mut self.levels {
-            level.starts.fill(0);
             level.count = 0;
             level.observed_max = 0.0;
+            level.rows = (usize::MAX, 0);
         }
 
-        // Count per cell (stored shifted by one for the prefix sum).
+        // Which cell each body goes in, and the band of rows each level uses. Only that band
+        // is cleared and summed: most of the world is empty.
         for e in items {
             let li = level_for_radius(&self.levels, e.radius);
             let level = &mut self.levels[li];
             let (x, y) = level.cell_coords(e.pos);
-            let c = y * level.nx + x;
-            level.starts[c + 1] += 1;
             level.count += 1;
             level.observed_max = level.observed_max.max(e.radius);
-            self.slots.push((li as u8, c as u32));
+            level.rows = (level.rows.0.min(y), level.rows.1.max(y));
+            self.slots.push((li as u8, (y * level.nx + x) as u32));
+        }
+        for level in &mut self.levels {
+            if level.count > 0 {
+                let (lo, hi) = level.rows;
+                level.starts[lo * level.nx..=(hi + 1) * level.nx].fill(0);
+            }
         }
 
+        // Count per cell, then turn the counts into each cell's end offset.
+        for &(li, c) in &self.slots {
+            self.levels[li as usize].starts[c as usize] += 1;
+        }
         let mut base = 0;
         for level in &mut self.levels {
             level.base = base;
+            base += level.count;
+            if level.count == 0 {
+                continue;
+            }
+            let (lo, hi) = level.rows;
             let mut acc = 0u32;
-            for v in level.starts.iter_mut() {
+            for v in &mut level.starts[lo * level.nx..(hi + 1) * level.nx] {
                 acc += *v;
                 *v = acc;
             }
-            base += level.count;
+            // The cell after the band closes the last row.
+            level.starts[(hi + 1) * level.nx] = level.count as u32;
         }
 
-        // Scatter using `starts` as cursors, then shift back (memmove) to restore offsets.
+        // Scatter back to front, using the end offsets as cursors: each cell fills from its end,
+        // so entries keep their input order and the cursors finish at each cell's start.
         self.entries.clear();
         self.entries.resize(n, Entry::default());
-        for (e, &(li, c)) in items.iter().zip(self.slots.iter()) {
+        for (e, &(li, c)) in items.iter().zip(self.slots.iter()).rev() {
             let level = &mut self.levels[li as usize];
+            level.starts[c as usize] -= 1;
             let slot = level.starts[c as usize];
-            level.starts[c as usize] += 1;
             self.entries[level.base + slot as usize] = *e;
-        }
-        for level in &mut self.levels {
-            let len = level.starts.len();
-            level.starts.copy_within(0..len - 1, 1);
-            level.starts[0] = 0;
         }
     }
 
@@ -177,7 +207,7 @@ impl SpatialGrid {
             let reach = radius + level.observed_max;
             let (x0, y0) = level.cell_coords(pos - Vec2::splat(reach));
             let (x1, y1) = level.cell_coords(pos + Vec2::splat(reach));
-            for y in y0..=y1 {
+            for y in y0.max(level.rows.0)..=y1.min(level.rows.1) {
                 let row = y * level.nx;
                 let start = level.starts[row + x0] as usize;
                 let end = level.starts[row + x1 + 1] as usize;

@@ -205,6 +205,9 @@ pub struct Organism {
     /// This tick's exchange with the water.
     #[serde(skip)]
     pub chem: Chem,
+    /// The water current where it is, refreshed every few ticks (it changes slowly).
+    #[serde(skip)]
+    pub water: Vec2,
     pub dead: Option<DeathCause>,
 }
 
@@ -265,6 +268,7 @@ impl Organism {
             cost_rate: 0.0,
             temperature: 0.0,
             chem: Chem::default(),
+            water: Vec2::ZERO,
             dead: None,
         };
         o.heading = o.rng.angle();
