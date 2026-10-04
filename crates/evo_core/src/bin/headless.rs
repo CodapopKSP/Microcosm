@@ -453,7 +453,7 @@ fn ecology(world: &World) {
             r_sum += o.radius;
             r_max = r_max.max(o.radius);
             motile += t.is_motile() as u32;
-            senses += (t.sense_radii > 0.0) as u32;
+            senses += (t.eye_count > 0 || t.antenna_count > 0) as u32;
             chase += (t.is_motile() && t.hunt > 0.2 && t.drives[drive::SMALLER] > 0.15) as u32;
             flee += (t.is_motile() && t.drives[drive::LARGER] < -0.15) as u32;
             anchor += o.anchored as u32;
@@ -501,7 +501,7 @@ fn ecology(world: &World) {
             / n
     };
     println!(
-        "  mean drives: light {:+.2} warmth {:+.2} minerals {:+.2} carrion {:+.2} smaller {:+.2} larger {:+.2} kin {:+.2} rise {:+.2} oxygen {:+.2}",
+        "  mean drives: light {:+.2} warmth {:+.2} minerals {:+.2} carrion {:+.2} smaller {:+.2} larger {:+.2} kin {:+.2} crowding {:+.2} oxygen {:+.2}",
         d(0),
         d(1),
         d(2),

@@ -117,12 +117,18 @@ pub struct Traits {
     /// Reserve fullness required to reproduce.
     pub repro_threshold: f32,
 
-    /// View cones of the eyes (`eye_count` used).
+    /// View cones of the eyes (`eye_count` used). Sight is the only way to see light, other
+    /// bodies and carcasses.
     pub eyes: [Eye; MAX_EYES],
     pub eye_count: u8,
-    /// Smell range in body radii, in every direction (antennae).
+    /// Smell cones of the antennae (`antenna_count` used): each smells the water far out in
+    /// its direction.
+    pub antennae: [Eye; MAX_EYES],
+    pub antenna_count: u8,
+    /// Smell range in body radii, in every direction: how far apart it compares the water
+    /// (temperature, minerals, oxygen, detritus). Antennae add a little.
     pub smell_radii: f32,
-    /// Longest sense range in body radii (0 = blind).
+    /// Longest sight range in body radii (0 = blind).
     pub sense_radii: f32,
 
     /// What each tentacle can grasp: a circle around its base. Each holds one thing at a time
@@ -285,6 +291,7 @@ struct PartSums {
     jaws: f32,
     shell: [f32; 4],
     antennae: f32,
+    antenna_cones: Vec<Eye>,
     lure: f32,
     grasps: Vec<Zone>,
     filter: f32,
@@ -365,7 +372,15 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
                     range: pc.eye_range * (0.15 + 0.85 * s) * raised,
                 });
             }
-            PartKind::Antenna => p.antennae += s * raised,
+            PartKind::Antenna => {
+                p.antennae += s * raised;
+                let half = (45.0 - 15.0 * s).to_radians();
+                p.antenna_cones.push(Eye {
+                    dir: inst.dir,
+                    cos_half: half.cos(),
+                    range: pc.antenna_range * (0.2 + 0.8 * s) * raised,
+                });
+            }
             PartKind::Lure => p.lure += s * raised,
             PartKind::Spine => {
                 for (k, v) in p.spines.iter_mut().enumerate() {
@@ -521,12 +536,16 @@ impl Traits {
         let mut eyes = [Eye::default(); MAX_EYES];
         let eye_count = p.eyes.len().min(MAX_EYES);
         eyes[..eye_count].copy_from_slice(&p.eyes[..eye_count]);
-        // Everyone smells what's right next to them; antennae reach much farther.
+        // Everyone smells the water around them; antennae add a little all round, and much more
+        // out along their cones.
         let smell_radii = pc.base_smell + pc.smell_range * saturating(1.2 * p.antennae);
+        let mut antennae = [Eye::default(); MAX_EYES];
+        let antenna_count = p.antenna_cones.len().min(MAX_EYES);
+        antennae[..antenna_count].copy_from_slice(&p.antenna_cones[..antenna_count]);
         let sense_radii = eyes[..eye_count]
             .iter()
             .map(|e| e.range)
-            .fold(smell_radii, f32::max);
+            .fold(0.0, f32::max);
 
         let tolerance = f(gene::TEMP_TOL);
         let aerobic = f(gene::RESPIRATION);
@@ -611,6 +630,8 @@ impl Traits {
             repro_threshold,
             eyes,
             eye_count: eye_count as u8,
+            antennae,
+            antenna_count: antenna_count as u8,
             smell_radii,
             sense_radii,
             grasps,
@@ -931,9 +952,10 @@ mod tests {
         assert!((t.birth_fraction - 0.5).abs() < 1e-6);
         assert!(t.buoyancy > 0.0);
         assert_eq!(t.eye_count, 0);
+        assert_eq!(t.sense_radii, 0.0, "it's blind");
         assert_eq!(
-            t.sense_radii, config.parts.base_smell,
-            "it only smells what's close"
+            t.smell_radii, config.parts.base_smell,
+            "it smells what's close"
         );
         assert_eq!(t.part_count, 0);
         assert!(t.aerobic > 0.5 && t.oxygenic > 0.9);
@@ -1076,6 +1098,18 @@ mod tests {
         assert_eq!(t.eye_count, 2);
         assert!(t.sense_radii > 20.0);
         assert!((t.eyes[0].dir + t.eyes[1].dir).abs() < 1e-4, "mirrored");
+
+        // Antennae: a little more smell all round, and long smell cones.
+        let (g, config) = with_part(PartKind::Antenna, 1, 0xFF, 2);
+        let t = Traits::decode(&g, &config);
+        assert_eq!(t.antenna_count, 2);
+        assert!(t.smell_radii > config.parts.base_smell);
+        assert!(t.smell_radii < config.parts.base_smell + config.parts.smell_range + 1e-3);
+        assert!(
+            t.antennae[0].range > 3.0 * t.smell_radii,
+            "the cones reach much farther"
+        );
+        assert_eq!(t.sense_radii, 0.0, "antennae don't see");
 
         // Legs walk, holdfasts anchor, fronds widen the light catch.
         let (g, config) = with_part(PartKind::Leg, 1, 0xC0, 6 << 5 | 8);

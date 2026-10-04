@@ -291,8 +291,10 @@ fn body_plan(ui: &mut egui::Ui, world: &World, o: &evo_core::Organism) {
             ui.label(format!("{form}{segments} body."));
             if list.is_empty() {
                 ui.label(
-                    egui::RichText::new("No body parts: it drifts and can't sense anything.")
-                        .weak(),
+                    egui::RichText::new(
+                        "No body parts: it drifts, blind, smelling only the water around it.",
+                    )
+                    .weak(),
                 );
             }
             for p in &list {
@@ -357,7 +359,7 @@ fn body_plan(ui: &mut egui::Ui, world: &World, o: &evo_core::Organism) {
                     .map(|e| e.range)
                     .fold(0.0, f32::max);
                 abilities.push(format!(
-                    "{} eye{} see {:.0} u over {:.0}°",
+                    "{} eye{} see light, bodies and carcasses {:.0} u away over {:.0}°",
                     t.eye_count,
                     if t.eye_count == 1 { "" } else { "s" },
                     (range * o.radius).min(cap),
@@ -365,10 +367,26 @@ fn body_plan(ui: &mut egui::Ui, world: &World, o: &evo_core::Organism) {
                 ));
             }
             if t.smell_radii > 0.0 {
-                abilities.push(format!(
-                    "smells {:.0} u around",
+                let mut text = format!(
+                    "smells the water {:.0} u around",
                     (t.smell_radii * o.radius).min(cap)
-                ));
+                );
+                if t.antenna_count > 0 {
+                    let reach = t.antennae[..t.antenna_count as usize]
+                        .iter()
+                        .map(|a| a.range)
+                        .fold(0.0, f32::max);
+                    text += &format!(
+                        ", and {:.0} u out along {} antenna{}",
+                        (reach * o.radius).min(cap),
+                        t.antenna_count,
+                        if t.antenna_count == 1 { "" } else { "e" }
+                    );
+                }
+                abilities.push(text);
+            }
+            if t.eye_count == 0 {
+                abilities.push("blind: can't see light or other bodies".into());
             }
             if t.grasp_count > 0 {
                 let reach = t.grasps[..t.grasp_count as usize]

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::environment::{EnvEvent, Environment};
 use crate::events::{Events, WorldEvent, barrier_height};
-use crate::genome::{Genome, color_distance, drive};
+use crate::genome::{Genome, drive};
 use crate::grid::{Entry, SpatialGrid};
 use crate::organism::{Activity, Carcass, Chem, DeathCause, Grasp, Organism};
 use crate::rng::{Rng, mix64};
@@ -582,12 +582,9 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
         grabs: [NONE; MAX_GRASPS],
         activity: Activity::Drifting,
     };
-    let kin_threshold = cfg.species.kin_threshold;
-    let is_kin =
-        |e: &Entry| color_distance(t.hue, t.saturation, e.hue, e.saturation) < kin_threshold;
-    // Hunters spare look-alikes unless they're starving.
+    // Kin are the same species. Hunters spare kin unless they're starving.
     let hunger = 1.0 - (o.energy / o.max_energy().max(1e-6)).clamp(0.0, 1.0);
-    let spares = |e: &Entry| is_kin(e) && hunger < cfg.feeding.kin_hunger;
+    let spares = |e: &Entry| e.species == o.species && hunger < cfg.feeding.kin_hunger;
 
     // Contacts: soft collision push, a prey candidate at the mouth or body, and one target for
     // each tentacle that reaches something.
@@ -660,58 +657,85 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     let d = &t.drives;
     let fc = &cfg.feeding;
     let food = fc.hunger_min + (fc.hunger_max - fc.hunger_min) * hunger;
-    let probe = (2.0 * r).max(24.0);
     let env = ctx.env;
+    let cap = cfg.genes.sense_cap;
 
-    let mut foraging = Vec2::ZERO;
-    if d[drive::LIGHT].abs() > MIN_DRIVE {
-        let mut g = env.light.relative_gradient(pos, probe);
-        if env.any_glow {
-            // Lures count as light (the anglerfish trick).
-            let p = probe.max(env.glow.cell);
-            let here = env.light.level_at(pos) + env.glow.sample(pos);
-            g += env.glow.gradient(pos, p) * p / here.max(1e-4);
-        }
-        foraging += d[drive::LIGHT] * food * gradient_drive(g, 8.0);
+    // Smell: the water (temperature, minerals, oxygen, detritus), compared across the smell
+    // radius all round, and far out along each antenna.
+    let smell_d = (t.smell_radii * r).min(cap);
+    let antenna_count = t.antenna_count as usize;
+    let mut antennae = [(Vec2::ZERO, 0.0f32); MAX_EYES];
+    for (a, cone) in antennae.iter_mut().zip(&t.antennae[..antenna_count]) {
+        *a = (
+            Vec2::from_angle(o.heading + cone.dir),
+            (cone.range * r).min(cap),
+        );
     }
+    let smell = |field: &crate::field::Field, here: f32| {
+        let mut g = field.gradient(pos, smell_d.max(field.cell));
+        // Along each antenna (a third of the way, two thirds, its tip): the strongest change
+        // from here, per unit of distance.
+        for &(axis, reach) in &antennae[..antenna_count] {
+            let mut best = 0.0f32;
+            for k in 1..=3 {
+                let dist = (reach * k as f32 / 3.0).max(field.cell);
+                let change = (field.sample(pos + axis * dist) - here) / dist;
+                if change.abs() > best.abs() {
+                    best = change;
+                }
+            }
+            g += axis * best;
+        }
+        g
+    };
+    let mut foraging = Vec2::ZERO;
     if d[drive::MINERALS].abs() > MIN_DRIVE {
         let here = env.minerals.sample(pos);
-        let g = env.minerals.gradient(pos, probe.max(env.minerals.cell)) / (here + 1e-3);
+        let g = smell(&env.minerals, here) / (here + 1e-3);
         foraging += d[drive::MINERALS] * food * gradient_drive(g, 30.0);
     }
     let mut carrion = Vec2::ZERO;
     if d[drive::CARRION].abs() > MIN_DRIVE {
         let here = env.detritus.sample(pos);
-        let g = env.detritus.gradient(pos, probe.max(env.detritus.cell)) / (here + 1e-3);
+        let g = smell(&env.detritus, here) / (here + 1e-3);
         carrion += gradient_drive(g, 30.0);
     }
-    let mut steer = foraging;
+    let mut steer = Vec2::ZERO;
     if d[drive::WARMTH].abs() > MIN_DRIVE {
-        let g = env
-            .temperature
-            .gradient(pos, probe.max(env.temperature.cell));
+        let g = smell(&env.temperature, env.temperature.sample(pos));
         steer += d[drive::WARMTH] * gradient_drive(g, 20.0);
     }
     if d[drive::OXYGEN].abs() > MIN_DRIVE {
         let here = env.oxygen.sample(pos);
-        let g = env.oxygen.gradient(pos, probe.max(env.oxygen.cell)) / (here + 0.05);
+        let g = smell(&env.oxygen, here) / (here + 0.05);
         steer += d[drive::OXYGEN] * gradient_drive(g, 30.0);
     }
-    steer.y += d[drive::RISE];
+    // Crowding (touch): which way the bodies packed right around it are.
+    let mut crowding = Vec2::ZERO;
+    if d[drive::CROWDING].abs() > MIN_DRIVE {
+        let near = 3.0 * r;
+        ctx.grid.query(pos, near, 0.0, |e| {
+            if e.index as usize != i {
+                let delta = e.pos - pos;
+                let (dist, edge) = (delta.length(), near + e.radius);
+                if dist > 1e-4 && dist < edge {
+                    crowding += delta / dist * (1.0 - dist / edge);
+                }
+            }
+            true
+        });
+        crowding = d[drive::CROWDING] * saturate(crowding);
+        steer += crowding;
+    }
 
-    let mut hunting = Vec2::ZERO;
-    let mut fleeing = Vec2::ZERO;
-    let mut schooling = Vec2::ZERO;
-    let cap = cfg.genes.sense_cap;
-    let range = (t.sense_radii * r).min(cap);
-    if range > r {
-        // Smell works all around and in the dark; eyes see within their cones, and need light.
-        let smell = (t.smell_radii * r).min(cap);
-        let eye_count = t.eye_count as usize;
+    // Sight: eyes see within their cones, less far in the dark. Only eyes see light, other
+    // bodies and carcasses.
+    let eye_count = t.eye_count as usize;
+    let mut cones = [(Vec2::ZERO, 0.0f32, 0.0f32); MAX_EYES];
+    if eye_count > 0 {
         let pc = &cfg.parts;
         let brightness = env.light.level_at(pos) / cfg.light.surface_intensity.max(1e-6);
         let sight = pc.eye_dark + (1.0 - pc.eye_dark) * (brightness / pc.eye_light).min(1.0);
-        let mut cones = [(Vec2::ZERO, 0.0f32, 0.0f32); MAX_EYES];
         for (cone, eye) in cones.iter_mut().zip(&t.eyes[..eye_count]) {
             *cone = (
                 Vec2::from_angle(o.heading + eye.dir),
@@ -719,11 +743,37 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
                 (eye.range * r * sight).min(cap),
             );
         }
+    }
+    if eye_count > 0 && d[drive::LIGHT].abs() > MIN_DRIVE {
+        // Brighter out along an eye than here: that way. Lures count as light (the anglerfish
+        // trick).
+        let level = |p: Vec2| {
+            env.light.level_at(p)
+                + if env.any_glow {
+                    env.glow.sample(p)
+                } else {
+                    0.0
+                }
+        };
+        let here = level(pos).max(1e-4);
+        let mut g = Vec2::ZERO;
+        for &(axis, _, reach) in &cones[..eye_count] {
+            let dist = reach.clamp(env.light.cell, 400.0);
+            g += axis * (0.5 * (level(pos + axis * dist) - here) / here);
+        }
+        foraging += d[drive::LIGHT] * food * gradient_drive(g, 8.0);
+    }
+    steer += foraging;
+
+    let mut hunting = Vec2::ZERO;
+    let mut fleeing = Vec2::ZERO;
+    let mut schooling = Vec2::ZERO;
+    let range = cones[..eye_count].iter().map(|c| c.2).fold(0.0, f32::max);
+    if range > r {
         let perceives = |dir: Vec2, dist: f32, other: f32| {
-            dist < smell + other
-                || cones[..eye_count].iter().any(|&(axis, cos_half, reach)| {
-                    dist < reach + other && dir.dot(axis) >= cos_half
-                })
+            cones[..eye_count]
+                .iter()
+                .any(|&(axis, cos_half, reach)| dist < reach + other && dir.dot(axis) >= cos_half)
         };
         let mut nearest_smaller = f32::MAX;
         let mut seen = 0u32;
@@ -793,6 +843,14 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
                 Activity::Fleeing,
             ),
             (schooling.length(), Activity::Schooling),
+            (
+                if d[drive::CROWDING] > 0.0 {
+                    crowding.length()
+                } else {
+                    0.0
+                },
+                Activity::Schooling,
+            ),
         ];
         intent.activity = parts
             .iter()
@@ -1484,8 +1542,7 @@ impl World {
                     index: i as u32,
                     pos: o.pos,
                     radius: o.radius,
-                    hue: o.traits.hue,
-                    saturation: o.traits.saturation,
+                    species: o.species,
                     absorptance: o.traits.absorptance,
                     light_radius: o.radius * o.traits.light_span,
                     lure: o.traits.lure,
@@ -2349,9 +2406,9 @@ impl World {
         let phys = &config.physics;
         let time = self.time() as f32;
         let detritus = &mut self.env.detritus;
-        let nutrients = &mut self.env.nutrients;
+        // A body's nutrients go into the marine snow, and sink with it.
+        let snow = &mut self.env.snow_nutrients;
         let area = detritus.cell_area();
-        let n_area = nutrients.cell_area();
         for c in &mut self.carcasses {
             c.vel.y = -phys.carcass_sink * c.radius.sqrt();
             c.vel.x *= 0.9;
@@ -2369,15 +2426,15 @@ impl World {
             let lost = c.energy * rate * dt;
             c.energy -= lost;
             detritus.add(c.pos, lost / area);
-            // Rotting releases the body's nutrients.
+            // Rotting sheds the body's nutrients into the marine snow.
             let released = c.nutrients * rate * dt;
             c.nutrients -= released;
-            nutrients.add(c.pos, released / n_area);
+            snow.add(c.pos, released / area);
         }
         self.carcasses.retain(|c| {
             if c.energy < 0.3 || c.consumed() > 0.92 {
                 detritus.add(c.pos, c.energy.max(0.0) / area);
-                nutrients.add(c.pos, c.nutrients.max(0.0) / n_area);
+                snow.add(c.pos, c.nutrients.max(0.0) / area);
                 false
             } else {
                 true
@@ -2528,9 +2585,8 @@ impl World {
         let config = &self.config;
         let body_energy = config.metabolism.body_energy;
         let detritus = &mut self.env.detritus;
-        let nutrients = &mut self.env.nutrients;
+        let snow = &mut self.env.snow_nutrients;
         let area = detritus.cell_area();
-        let n_area = nutrients.cell_area();
         let tick = self.tick;
         let dead: Vec<u32> = self
             .organisms
@@ -2566,8 +2622,9 @@ impl World {
                     died_tick: tick,
                 });
             } else {
+                // A small body rots into the marine snow, nutrients and all.
                 detritus.add(o.pos, value / area);
-                nutrients.add(o.pos, o.body_nutrients(config) / n_area);
+                snow.add(o.pos, o.body_nutrients(config) / area);
             }
         }
         // swap_remove from the back: O(deaths) instead of shifting the whole array.
@@ -3039,6 +3096,7 @@ mod tests {
         World::new(config)
     }
 
+    /// Add an organism of its own species (so hunters don't spare it as kin).
     fn add(world: &mut World, genome: Genome, pos: Vec2) -> usize {
         let id = world.next_id;
         world.next_id += 1;
@@ -3046,7 +3104,7 @@ mod tests {
         let o = Organism::new(
             id,
             0,
-            0,
+            id as u32,
             0,
             genome,
             0,
@@ -3239,6 +3297,143 @@ mod tests {
         }
         let (ma, mb) = (world.organisms[a].mass, world.organisms[b].mass);
         assert!(mb > ma * 1.2, "fed {mb} starved {ma}");
+    }
+
+    #[test]
+    fn dead_bodies_nutrients_sink_with_the_marine_snow() {
+        let mut world = empty_world();
+        let h = world.config.world.height;
+        world.env.vents.clear();
+        world.env.snow_nutrients.data.fill(0.0);
+        let start = Vec2::new(2000.0, h - 100.0);
+        world.env.snow_nutrients.add(start, 10.0);
+        let total = |w: &World| {
+            let area = w.env.snow_nutrients.cell_area() as f64;
+            (
+                w.env.snow_nutrients.total() * area,
+                w.env.nutrients.total() * area,
+            )
+        };
+        let (snow0, water0) = total(&world);
+        let centroid = |f: &crate::field::Field| {
+            let (mut sum, mut weight) = (0.0f64, 0.0f64);
+            for y in 0..f.ny {
+                for x in 0..f.nx {
+                    let v = f.data[f.index(x, y)] as f64;
+                    sum += v * y as f64;
+                    weight += v;
+                }
+            }
+            sum / weight.max(1e-12)
+        };
+        let y0 = centroid(&world.env.snow_nutrients);
+        world.config.chemistry.ventilation = 0.0; // keep the water's nutrients to themselves
+        for _ in 0..1800 {
+            world.step();
+        }
+        let (snow1, water1) = total(&world);
+        assert!(
+            centroid(&world.env.snow_nutrients) < y0 - 0.5,
+            "the snow sank"
+        );
+        assert!(snow1 < snow0 * 0.95, "it rots: {snow0} -> {snow1}");
+        let released = snow0 - snow1;
+        assert!(
+            ((water1 - water0) - released).abs() < 0.05 * released,
+            "what it sheds goes into the water: {released} vs {}",
+            water1 - water0
+        );
+    }
+
+    #[test]
+    fn only_eyes_see_the_light() {
+        let run = |eyes: bool| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let mut g = with_part(world.ancestor, 0, PartKind::Flagellum, 0, 0xFF, 16);
+            if eyes {
+                g = with_part(g, 1, PartKind::Eye, 0, 0xFF, 0);
+            }
+            g.0[gene::DRIVES + drive::LIGHT] = 0xFF;
+            let i = add(&mut world, g, Vec2::new(2000.0, h - 700.0));
+            // Facing up, toward the light.
+            world.organisms[i].heading = std::f32::consts::FRAC_PI_2;
+            world.organisms[i].steer_heading = std::f32::consts::FRAC_PI_2;
+            world.step();
+            world.step();
+            let o = &world.organisms[i];
+            (o.activity, Vec2::from_angle(o.steer_heading))
+        };
+        let (seeing, heading) = run(true);
+        assert_eq!(seeing, Activity::Foraging, "with an eye it seeks the light");
+        assert!(heading.y > 0.5);
+        let (blind, _) = run(false);
+        assert_ne!(blind, Activity::Foraging, "without eyes it can't");
+    }
+
+    #[test]
+    fn antennae_smell_far_out_along_their_cones() {
+        let run = |antenna: bool| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let mut g = with_part(world.ancestor, 0, PartKind::Flagellum, 0, 0xFF, 16);
+            if antenna {
+                g = with_part(g, 1, PartKind::Antenna, 0, 0xFF, 0);
+            }
+            g.0[gene::SIZE] = 0x40;
+            g.0[gene::DRIVES + drive::MINERALS] = 0xFF;
+            let pos = Vec2::new(2000.0, h - 1500.0);
+            let i = add(&mut world, g, pos);
+            world.organisms[i].heading = 0.0;
+            world.organisms[i].steer_heading = 0.0;
+            // Clean water, with minerals well beyond the all-round smell, straight ahead.
+            world.env.minerals.data.fill(0.0);
+            world.env.vents.clear();
+            let r = world.organisms[i].radius;
+            world.env.minerals.add(pos + Vec2::new(25.0 * r, 0.0), 5.0);
+            world.step();
+            world.step();
+            world.organisms[i].activity
+        };
+        assert_eq!(run(true), Activity::Foraging, "the antenna smells it");
+        assert_ne!(
+            run(false),
+            Activity::Foraging,
+            "too far to smell without one"
+        );
+    }
+
+    #[test]
+    fn kin_are_the_same_species_not_look_alikes() {
+        // A fed hunter touching a same-coloured body bites it unless it's its own species.
+        let bitten = |same_species: bool| {
+            let mut world = empty_world();
+            let h = world.config.world.height;
+            let mut g = world.ancestor;
+            g.0[gene::SIZE] = 0x60;
+            g.0[gene::PHOTO] = 0;
+            g.0[gene::HUNT] = 0xFF;
+            let pos = Vec2::new(2000.0, h - 300.0);
+            let hunter = add(&mut world, g, pos);
+            let r = world.organisms[hunter].radius;
+            let mut prey_g = g;
+            prey_g.0[gene::HUNT] = 0;
+            let prey = add(&mut world, prey_g, pos + Vec2::new(1.5 * r, 0.0));
+            world.organisms[hunter].heading = 0.0;
+            if same_species {
+                world.organisms[prey].species = world.organisms[hunter].species;
+            }
+            for _ in 0..3 {
+                world.step();
+            }
+            world
+                .organisms
+                .iter()
+                .find(|o| o.genome.0[gene::HUNT] == 0)
+                .is_none_or(|o| o.hurt_tick > 0)
+        };
+        assert!(bitten(false), "a look-alike of another species is prey");
+        assert!(!bitten(true), "its own species is spared");
     }
 
     #[test]
@@ -3452,13 +3647,13 @@ mod tests {
         let h = world.config.world.height;
         let mut g = with_part(world.ancestor, 0, PartKind::Flagellum, 1, 0xFF, 8);
         g.0[gene::BUOYANCY] = 0x80;
-        g.0[gene::DRIVES + drive::RISE] = 0xFF;
+        g.0[gene::DRIVES + drive::WARMTH] = 0xFF; // the water is warmer up
         let i = add(&mut world, g, Vec2::new(2000.0, h - 1500.0));
         for _ in 0..60 {
             world.step();
         }
         let o = &world.organisms[i];
-        assert!(o.vel.y > 3.0, "swims up: {:?}", o.vel);
+        assert!(o.vel.y > 0.4, "swims up: {:?}", o.vel);
         let facing = Vec2::from_angle(o.heading);
         assert!(
             facing.y.abs() < 0.5,
@@ -3469,7 +3664,7 @@ mod tests {
         // No turning organ (a fluke facing back gives some): without any, it can't turn.
         let mut world = empty_world();
         let mut g = world.ancestor;
-        g.0[gene::DRIVES + drive::RISE] = 0xFF;
+        g.0[gene::DRIVES + drive::WARMTH] = 0xFF;
         let i = add(&mut world, g, Vec2::new(2000.0, h - 1500.0));
         let heading = world.organisms[i].heading;
         for _ in 0..30 {

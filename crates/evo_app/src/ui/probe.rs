@@ -138,6 +138,14 @@ pub fn draw(ui: &mut egui::Ui, world: &World, pos: Vec2) {
                 format!("{:.4}", env.detritus.get(pos)),
                 "marine snow (scavenger food)".into(),
             );
+            if !env.snow_nutrients.data.is_empty() {
+                row(
+                    ui,
+                    "Snow nutrients",
+                    format!("{:.4}", env.snow_nutrients.get(pos)),
+                    "in the marine snow, sinking; released as it rots".into(),
+                );
+            }
             let toxin = env.toxin.get(pos);
             if toxin >= 5e-5 {
                 row(

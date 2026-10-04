@@ -555,8 +555,10 @@ pub struct PartsConfig {
     pub crawl_speed: f32,
     /// Sight range of a full-size eye, in body radii.
     pub eye_range: f32,
-    /// Smell range of full-strength antennae, in body radii (every direction).
+    /// Smell range full antennae add all round, in body radii (on top of `base_smell`).
     pub smell_range: f32,
+    /// How far a full-size antenna smells out along its cone, in body radii.
+    pub antenna_range: f32,
     /// A tentacle grasps anything within this fraction of its length of its base (it bends).
     pub tentacle_reach: f32,
     /// Extra light-catching width per unit of frond length (in body radii).
@@ -571,7 +573,8 @@ pub struct PartsConfig {
     pub lure_radius: f32,
     /// Distance from rock (beyond the body) that still counts as touching it.
     pub contact_margin: f32,
-    /// Every organism smells others this close (in body radii), even without antennae.
+    /// Every organism smells the water this far around it (in body radii), even without
+    /// antennae: temperature, minerals, oxygen and detritus.
     pub base_smell: f32,
     /// Temperature tolerance (± °C) each full-size shell plate adds; smaller plates add less.
     pub shell_insulation: f32,
@@ -588,7 +591,8 @@ impl Default for PartsConfig {
             large_swimmer_radius: 6.0,
             crawl_speed: 12.0,
             eye_range: 40.0,
-            smell_range: 16.0,
+            smell_range: 4.0,
+            antenna_range: 30.0,
             tentacle_reach: 1.0,
             frond_span: 0.45,
             frond_uptake: 0.3,
@@ -596,7 +600,7 @@ impl Default for PartsConfig {
             lure_brightness: 0.3,
             lure_radius: 160.0,
             contact_margin: 2.0,
-            base_smell: 6.0,
+            base_smell: 4.0,
             shell_insulation: 1.0,
             eye_dark: 0.15,
             eye_light: 0.1,
@@ -857,7 +861,7 @@ pub struct FeedingConfig {
     pub engulf_ratio: f32,
     /// Engulf success chance per second of contact at full hunting capability.
     pub engulf_rate: f32,
-    /// Hunters spare look-alikes (kin) unless hungrier than this (0 = fed, 1 = starving).
+    /// Hunters spare their own species unless hungrier than this (0 = fed, 1 = starving).
     pub kin_hunger: f32,
     /// Hunting capability below this does nothing (trace genes from drift don't bite).
     pub min_hunt: f32,
@@ -1044,8 +1048,6 @@ pub struct SpeciesConfig {
     pub gene_cap: f32,
     /// Living members needed before a species is named and listed.
     pub established: u32,
-    /// Color distance under which organisms recognize each other as kin.
-    pub kin_threshold: f32,
 }
 
 impl Default for SpeciesConfig {
@@ -1056,7 +1058,6 @@ impl Default for SpeciesConfig {
             color_weight: 0.25,
             gene_cap: 0.3,
             established: 20,
-            kin_threshold: 0.08,
         }
     }
 }
@@ -1145,7 +1146,7 @@ impl Default for EventsConfig {
             plague_min_share: 0.35,
             plague_duration: 600.0,
             plague_kill_rate: 0.002,
-            upwelling_every: 3.0,
+            upwelling_every: 1.5,
             upwelling_duration: 1800.0,
             upwelling_rate: 40.0,
             upwelling_width: 1500.0,

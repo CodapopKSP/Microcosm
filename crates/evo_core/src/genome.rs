@@ -54,7 +54,8 @@ pub mod drive {
     pub const SMALLER: usize = 4;
     pub const LARGER: usize = 5;
     pub const KIN: usize = 6;
-    pub const RISE: usize = 7;
+    /// Toward (+) or away from (−) the bodies packed right around it, felt by touch.
+    pub const CROWDING: usize = 7;
     pub const OXYGEN: usize = 8;
     pub const COUNT: usize = 9;
 }
@@ -198,7 +199,7 @@ pub static CHROMOSOMES: [Chromosome; 9] = [
             s("Smaller"),
             s("Larger"),
             s("Kin"),
-            s("Rise"),
+            s("Crowding"),
             s("Oxygen"),
             g("Restlessness"),
         ],

@@ -91,7 +91,8 @@ small_swimmer_radius = 8.0   # flagella and cilia lose most of their push above 
 large_swimmer_radius = 6.0   # fins and flukes become efficient around this radius
 crawl_speed = 12.0           # walking speed on rock at full leg strength (x sqrt(radius))
 eye_range = 40.0             # sight range of a full-size eye, in body radii
-smell_range = 16.0           # smell range of full antennae, in body radii, all directions
+smell_range = 4.0            # smell range full antennae add all round, in body radii
+antenna_range = 30.0         # how far a full-size antenna smells out along its cone, in body radii
 tentacle_reach = 1.0         # a tentacle grasps within this fraction of its length of its base
 frond_span = 0.45            # extra light-catching width per unit of frond length
 frond_uptake = 0.3           # extra nutrient-uptake surface per unit of frond length
@@ -100,7 +101,7 @@ lure_brightness = 0.3        # full lure light, as a fraction of surface noon li
 lure_radius = 160.0          # glow radius of a full lure
 contact_margin = 2.0         # distance from rock that still counts as touching
 shell_insulation = 1.0       # each full-size shell plate widens the tolerated temperatures by +-1 C
-base_smell = 6.0             # everyone smells others this close (body radii), antennae or not
+base_smell = 4.0             # everyone smells the water this far around (body radii): temperature, minerals, oxygen, detritus
 eye_dark = 0.15              # eyes need light: in darkness they see this fraction of their range
 eye_light = 0.1              # full sight from this light level (fraction of surface noon)
 
@@ -191,7 +192,7 @@ carcass_rate = 0.5
 assimilation = 0.8
 engulf_ratio = 0.6       # prey at most this fraction of the hunter's radius is swallowed whole
 engulf_rate = 3.0
-kin_hunger = 0.5         # hunters spare look-alikes unless this hungry (0 fed .. 1 starving)
+kin_hunger = 0.5         # hunters spare their own species unless this hungry (0 fed .. 1 starving)
 min_hunt = 0.05          # hunting capability below this does nothing (trace genes don't bite)
 body_contact = 0.3       # eating through the body away from the mouth works this well
 tentacle_pull = 12.0     # speed tentacles drag what they hold to the mouth (x sqrt(radius))
@@ -243,7 +244,6 @@ genus_threshold = 0.07
 color_weight = 0.25
 gene_cap = 0.3           # most any single gene adds to distance (so one jump isn't a species)
 established = 20         # members needed before a species is named and listed
-kin_threshold = 0.08     # color distance under which organisms treat each other as kin
 
 [population]
 # The ancestor: a tiny, floating, green photosynthesizer with no parts, so it can't move.
@@ -267,7 +267,7 @@ plague_every = 8.0
 plague_min_share = 0.35      # only strikes a species with at least this share of all life
 plague_duration = 600.0      # seconds
 plague_kill_rate = 0.002     # chance per second for each member to die
-upwelling_every = 3.0
+upwelling_every = 1.5
 upwelling_duration = 1800.0
 upwelling_rate = 40.0        # mineral energy/s brought to the surface
 upwelling_width = 1500.0

@@ -1335,14 +1335,26 @@ fn draw_overlays(
     let p = o.prev_pos.lerp(o.pos, state.alpha);
     let center = Vec2::new(p.x, p.y);
     let color = Color::srgba(0.6, 0.9, 1.0, 0.25);
-    // Smell (antennae): a circle.
+    // Smell: a circle all round, and a cone out along each antenna.
+    let smell_color = Color::srgba(0.9, 0.8, 0.5, 0.25);
     let smell = (t.smell_radii * o.radius).min(cap);
     if smell > o.radius {
-        gizmos.circle_2d(
-            Isometry2d::from_translation(center),
-            smell,
-            Color::srgba(0.9, 0.8, 0.5, 0.25),
+        gizmos.circle_2d(Isometry2d::from_translation(center), smell, smell_color);
+    }
+    for a in &t.antennae[..t.antenna_count as usize] {
+        let range = (a.range * o.radius).min(cap);
+        let half = a.cos_half.acos();
+        let dir = o.heading + a.dir;
+        let arc_rotation = Rot2::radians(dir - half - std::f32::consts::FRAC_PI_2);
+        gizmos.arc_2d(
+            Isometry2d::new(center, arc_rotation),
+            half * 2.0,
+            range,
+            smell_color,
         );
+        for side in [dir - half, dir + half] {
+            gizmos.line_2d(center, center + Vec2::from_angle(side) * range, smell_color);
+        }
     }
     // Sight: one cone per eye.
     for eye in &t.eyes[..t.eye_count as usize] {

@@ -16,8 +16,8 @@ pub struct Entry {
     pub index: u32,
     pub pos: Vec2,
     pub radius: f32,
-    pub hue: u8,
-    pub saturation: u8,
+    /// Species (organisms only): kin are the same species.
+    pub species: u32,
     /// Light absorptance (organisms only; used for the light deposit).
     pub absorptance: f32,
     /// Half-width that catches light (body plus fronds).

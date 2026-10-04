@@ -250,6 +250,11 @@ pub struct Environment {
     pub temperature: Field,
     pub minerals: Field,
     pub detritus: Field,
+    /// Nutrients bound up in marine snow (dead bodies' nutrients): it sinks with the detritus
+    /// and releases them into the water where it rots, so the sunlit water empties and the
+    /// deep fills (the biological pump). Detritus grid.
+    #[serde(default)]
+    pub snow_nutrients: Field,
     /// Dissolved gases (1.0 = in equilibrium with today's air), nutrients and toxins.
     /// These share the minerals grid, so one index addresses all of them.
     pub oxygen: Field,
@@ -338,6 +343,11 @@ impl Environment {
             toxin_present: false,
             chem_clock: 0.0,
             water_cells: 0,
+            snow_nutrients: {
+                let mut f = detritus.clone();
+                f.data.fill(0.0);
+                f
+            },
             minerals,
             detritus,
             vents: Vec::new(),
@@ -482,8 +492,18 @@ impl Environment {
             // Most of the output pours out at the vent; some seeps out over a wide area around
             // its base.
             let amount = vc.output * vent.strength * dt;
-            emit_disc(&mut self.minerals, vent.pos, vc.radius, amount * (1.0 - vc.halo));
-            emit_disc(&mut self.minerals, vent.pos, vc.halo_radius, amount * vc.halo);
+            emit_disc(
+                &mut self.minerals,
+                vent.pos,
+                vc.radius,
+                amount * (1.0 - vc.halo),
+            );
+            emit_disc(
+                &mut self.minerals,
+                vent.pos,
+                vc.halo_radius,
+                amount * vc.halo,
+            );
             let cc = &config.chemistry;
             emit_disc(
                 &mut self.co2,
@@ -569,6 +589,54 @@ impl Environment {
                 });
         } else {
             self.detritus.decay(1.0 - rate);
+        }
+
+        // Nutrients in the marine snow sink and spread with it, and are released into the water
+        // as it rots (at the same pace: slower without oxygen).
+        if self.snow_nutrients.data.len() != self.detritus.data.len() {
+            self.snow_nutrients = self.detritus.clone();
+            self.snow_nutrients.data.fill(0.0);
+        }
+        let cell = self.detritus.cell;
+        self.snow_nutrients
+            .advect_vertical(dc.sink_speed * dt / cell, false, None);
+        self.snow_nutrients
+            .diffuse(dc.diffusion * dt / (cell * cell));
+        let release = |snow: f32, o2: f32| {
+            let aerobic = (o2 / cc.oxygen_half).clamp(0.0, 1.0);
+            snow * rate * (aerobic + (1.0 - aerobic) * cc.anoxic_decay)
+        };
+        if (cell - self.nutrients.cell).abs() < 1e-3 {
+            let nx = self.nutrients.nx;
+            self.snow_nutrients
+                .data
+                .par_chunks_mut(nx)
+                .zip(self.nutrients.data.par_chunks_mut(nx))
+                .zip(self.oxygen.data.par_chunks(nx))
+                .for_each(|((snow, nutrients), oxygen)| {
+                    for i in 0..snow.len() {
+                        if snow[i] > 0.0 {
+                            let released = release(snow[i], oxygen[i]);
+                            snow[i] -= released;
+                            nutrients[i] += released;
+                        }
+                    }
+                });
+        } else {
+            // Different grids: release each cell's share where it is.
+            let ratio = self.snow_nutrients.cell_area() / self.nutrients.cell_area();
+            for y in 0..self.snow_nutrients.ny {
+                for x in 0..self.snow_nutrients.nx {
+                    let i = self.snow_nutrients.index(x, y);
+                    let snow = self.snow_nutrients.data[i];
+                    if snow > 0.0 {
+                        let p = Vec2::new((x as f32 + 0.5) * cell, (y as f32 + 0.5) * cell);
+                        let released = release(snow, self.oxygen.sample(p));
+                        self.snow_nutrients.data[i] -= released;
+                        self.nutrients.add(p, released * ratio);
+                    }
+                }
+            }
         }
 
         // Dissolved gases change slowly; update them a few times a second.
@@ -755,6 +823,7 @@ impl Environment {
         for (field, holds_content) in [
             (&mut self.minerals, true),
             (&mut self.detritus, true),
+            (&mut self.snow_nutrients, true),
             (&mut self.oxygen, true),
             (&mut self.co2, true),
             (&mut self.nutrients, true),

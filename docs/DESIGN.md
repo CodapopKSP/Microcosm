@@ -40,7 +40,8 @@ Fields live on coarse grids and are what organisms sense and consume.
 | **Minerals** | 32 u | Vents; decaying detritus (more without oxygen) | Chemotroph and sulfur-photosynthesis uptake; slow precipitation; diffusion |
 | **Detritus** | 32 u | Small corpses, uneaten meal leftovers, decaying large corpses, fermentation waste | Scavenger uptake; decay (using oxygen); sinks and settles on the floor |
 | **Oxygen, CO₂** | 32 u | Photosynthesis (O₂), breathing, fermentation and rot (CO₂), the air, vents (CO₂) | Breathing and rot (O₂), photosynthesis (CO₂), vents (O₂), the air |
-| **Nutrients** | 32 u | Deep water, rotting bodies, excretion, vents, upwelling | Uptake by organisms |
+| **Nutrients** | 32 u | Deep water, marine snow rotting (wherever it has sunk to), excretion, vents, upwelling | Uptake by organisms |
+| **Snow nutrients** | 32 u | Dead bodies' nutrients, bound in the marine snow | Sink with the detritus and are released into the water as it rots (the biological pump) |
 | **Toxin** | 32 u | Toxic organisms | Breaks down (half-life ~35 s) |
 
 All the chemistry is described in §4.
@@ -108,9 +109,7 @@ With the default penalty of 0.4, a specialist (one gene only) gets `c = x`. Taki
 
 ### Example: the ancestor
 
-A tiny, floating, green photosynthesizer with no body parts, so it can neither move nor sense anything. Every other ability has to evolve.
-
-A tiny, floating, green photosynthesizer with no body parts, so it can neither move nor sense anything. Every other ability has to evolve.
+A tiny, floating, green photosynthesizer with no body parts, so it can't move, and it's blind: it only smells the water around it. Every other ability has to evolve.
 
 ```
 B: 20 A0 50 20 00 00   radius 2, floats gently, modest reserves, lives ~10 min, round
@@ -166,8 +165,8 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 | Leg | Rowing through open water and walking on rock, both across its axis (legs pointing down move forward), like a copepod's; grip against currents | Walks faster than it rows; turns best while walking |
 | Holdfast | Anchors to rock on contact; draws extra nutrients there | Anchored organisms can't be moved by currents |
 | Stalk | Raises whatever is attached to its tip | Parts on a stalk work 30% better |
-| Eye | Sight in a cone where it faces | Bigger = farther, narrower |
-| Antenna | Smell in every direction | Shorter range than eyes |
+| Eye | Sight in a cone where it faces: the only way to see light, other bodies and carcasses | Bigger = farther, narrower; needs light |
+| Antenna | Smell (temperature, minerals, oxygen, detritus) far out in a cone where it points, and a little farther all round | Works in the dark |
 | Lure | Glows; anything drawn to light swims toward it | The anglerfish trick |
 | Spine | Hurts attackers | |
 | Jaw | Bite strength | Works best facing forward |
@@ -179,7 +178,7 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 - **Moving and facing.** Each tick an organism moves in whichever direction its organs allow that gets it closest to where it wants to go, and turns so that its best direction points there. Forward swimmers face their target; a body that swims best sideways travels sideways.
 - **Turning** needs an organ to turn with: fins, cilia, flagella, flukes and tentacles, or legs while walking on rock. A body without one keeps its orientation forever. Long and segmented bodies turn more slowly.
 - **Walking** speed from legs, **grip** from legs, tentacles and holdfasts, **anchoring** from holdfasts. Only organisms with such parts check whether they touch rock.
-- **Senses**: each eye is a view cone (up to six are tracked); antennae give a smell radius. No eyes and no antennae means blind (contact only).
+- **Senses**: each eye is a view cone, and each antenna a smell cone (up to six of each are tracked). Everyone smells the water around it; without eyes it's blind to light and other bodies (touch only).
 - **Grasps**: one circle around each tentacle's base (up to 8), each with its own pull strength; **light span** and nutrient-uptake surface from fronds; **filtering** from cilia and tentacles; **glow** from lures.
 - **Armor** from shell plates and **spikes** from spines, **per side** (front, left, back, right): a plate or spine mostly guards the side it faces, so a shell on the back protects against chasers but not a head-on attack. **Jaws** from jaws, strongest facing forward. All with diminishing returns (1 − e^(−x)).
 - Every part costs **upkeep** and has **mass**: building a body with parts costs more, and heavy parts sink it.
@@ -206,7 +205,7 @@ The water carries oxygen, CO₂, nutrients and toxin, alongside minerals and det
 
 So aerobes are cheap to run but die in dead zones; fermenters live anywhere oxygen is scarce but pay more; a mix pays a little more everywhere.
 
-**Nutrients.** Building a unit of body mass takes one unit of nutrients. Organisms store up to their body mass in nutrients, take them up from the water (Uptake × radius × frond surface × concentration; ×3 while anchored by a holdfast), fix them at an energy cost (N-fixation, hampered by oxygen), or eat them in other bodies. A parent pays for each child's body and a starting store. When an organism dies or is eaten, its nutrients go to the eater, the carcass, or the water. Surface water is poor and deep water rich, so upwellings cause blooms, and animals that eat and excrete near photosynthesizers fertilize them.
+**Nutrients.** Building a unit of body mass takes one unit of nutrients. Organisms store up to their body mass in nutrients, take them up from the water (Uptake × radius × frond surface × concentration; ×3 while anchored by a holdfast), fix them at an energy cost (N-fixation, hampered by oxygen), or eat them in other bodies. A parent pays for each child's body and a starting store. When an organism is eaten, its nutrients go to the eater. When it dies, they go into its carcass, and as carcasses and small bodies rot, into the **marine snow**, which sinks and releases them deep down as it rots: the **biological pump**. So blooms strip the sunlit water of nutrients and the deep fills up, until upwellings, vents and slow mixing bring them back; upwellings cause blooms. What a living body excretes stays where it is, so animals that eat and excrete near photosynthesizers fertilize them.
 
 **Toxins.** Toxic organisms leak toxin that spreads and breaks down within a minute or so. It damages organisms in proportion to its concentration (small bodies suffer more), so it only matters in blooms of producers: red tides. The toxin carries the producers' hue, and organisms of that hue are immune: producers, their kin, and look-alikes. Resistance ignores up to 90%. Eating toxic prey poisons the hunter.
 
@@ -304,23 +303,24 @@ Motile organisms (anything that can swim or walk) steer by a weighted sum of **d
 
 | Gene | Drive | Stimulus |
 |------|-------|----------|
-| N0 | Light | Light gradient |
-| N1 | Warmth | Temperature gradient |
-| N2 | Minerals | Mineral gradient |
-| N3 | Carrion | Detritus gradient and sensed carcasses |
-| N4 | Smaller | Sensed non-kin organisms under 80% of own radius |
-| N5 | Larger | Sensed non-kin organisms over 125% of own radius |
-| N6 | Kin | Sensed organisms of similar color (schooling or spacing) |
-| N7 | Rise | Straight up (+) or down (−) |
-| N8 | Oxygen | Oxygen gradient |
+| N0 | Light | Light, seen (eyes only) |
+| N1 | Warmth | Temperature, smelled |
+| N2 | Minerals | Minerals, smelled |
+| N3 | Carrion | Detritus, smelled, and carcasses, seen |
+| N4 | Smaller | Seen organisms of other species under 80% of own radius |
+| N5 | Larger | Seen organisms of other species over 125% of own radius |
+| N6 | Kin | Seen members of its own species (schooling or spacing) |
+| N7 | Crowding | Bodies packed within 3 body radii, felt by touch: toward them (clumping) or away (spacing out) |
+| N8 | Oxygen | Oxygen, smelled |
 
 - Food-related drives (light, minerals, carrion, smaller) are scaled by **hunger**, so fed organisms relax.
 - When nothing is sensed, restlessness (N9) sets a cruising throttle and random turning.
-- **Fields** (light, warmth, minerals, detritus, oxygen) are sensed without organs. **Other organisms and carcasses** are smelled by everyone within 6 body radii; antennae extend smell much farther (all around, in the dark too), and eyes see far within their view cones but **need light**: in darkness they see only 15% as far (full sight from 10% of surface noon light). So the surface favors eyes and the deep favors smell. They only perceive individuals at least ~1/8 of their own size — a whale doesn't track single bacteria; it swims toward dense food fields instead.
+- **Smell** reads the water: temperature, minerals, oxygen and detritus. Everyone compares the water across 4 body radii all round, without organs. Each **antenna** adds a little to that (full antennae: +4 radii) and smells much farther out along its cone (30 body radii for a full-size one), so it can catch a plume ahead long before the body reaches it. Smell works in the dark.
+- **Sight** is the only way to sense **light** (phototaxis needs eyes), **other organisms** and **carcasses**. Eyes see within their view cones and **need light**: in darkness they see only 15% as far (full sight from 10% of surface noon light). Light is judged by looking: brighter out along an eye than here means that way. So the surface favors eyes and the deep favors antennae. Eyes only pick out individuals at least ~1/8 of their own size — a whale doesn't track single bacteria; it swims toward dense food fields instead.
 - **Lures** count as light: anything with a positive light drive swims toward them.
-- **Kin** = similar color (hue and saturation). Hunters spare kin unless they're hungry (below half-full reserves they turn cannibal). This makes color matter for predators, so camouflage-by-mimicry is possible, while a single-colored early world can still evolve predators.
+- **Kin** = the same species. Hunters spare their own species unless they're hungry (below half-full reserves they turn cannibal); a look-alike of another species is prey.
 
-Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Minerals, +Warmth), hunting (+Smaller), fleeing (−Larger), schooling (+Kin), bottom-dwelling (−Rise).
+Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Minerals, +Warmth), hunting (+Smaller), fleeing (−Larger), schooling (+Kin), mats and clumps (+Crowding) or spacing out (−Crowding). There's no drive to swim up or down: bodies float or sink by buoyancy, and only eyes find the light.
 
 ---
 
@@ -342,7 +342,7 @@ Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Min
 | Day/night, seasons | 10 min / 1 h | Pulses of light and temperature: reserves, and strategies that last the night, pay off |
 | Climate | Days | Global temperature drifts ±8 °C: range shifts, temperature specialists rise and fall |
 | Vent lifecycle | Hours | Vents flare, fade and die; new ones open elsewhere. Colonization and founder effects |
-| **Upwelling** | ~every 3 h | Minerals and nutrients well up into the sunlit water for 30 min: blooms, and a surface bonanza for chemotrophs and mixotrophs |
+| **Upwelling** | ~every 1.5 h | Minerals and nutrients well up into the sunlit water for 30 min: blooms, and a surface bonanza for chemotrophs and mixotrophs |
 | **Plague** | ~every 8 h | Strikes the most common species (only if it holds ≥35% of all life); ~70% of its members die over 10 min. Kill-the-winner keeps any one species from taking over |
 | **Rock wall** | ~every 30 h | A wall rises from the seafloor to the surface over about 6 minutes and splits the ocean in two for ~20 h, then sinks. Separated populations drift apart genetically (allopatric speciation), then meet again |
 | **Meteor impact** | ~every 48 h | Kills everything within 700 units, releases minerals, and dims the sun by up to 70% for ~4 days (an impact winter) |
