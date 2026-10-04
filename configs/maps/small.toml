@@ -1,0 +1,18 @@
+# A smaller world for quick experiments or slower machines: no mountain, basin or permanent
+# vents. Only overrides of the ocean map are listed.
+description = "Small ocean, no mountain or permanent vents"
+
+[world]
+width = 6000.0
+height = 3000.0
+
+[terrain]
+floor_height = 700.0
+floor_roughness = 200.0
+shelf_depth = 600.0
+trench_depth = 500.0
+rocks = 7
+rock_size = 180.0
+mountain_width = 0.0     # no mountain, basin or permanent vents in the small world
+basin_width = 0.0
+shelf_vents = false

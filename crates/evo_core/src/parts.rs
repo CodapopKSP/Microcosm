@@ -380,6 +380,9 @@ pub struct Instance {
     pub index: u8,
     /// Kind of the part this one is attached to, if any.
     pub parent: Option<PartKind>,
+    /// Index (in the laid-out instances) of the part this one is attached to, if any: it sits
+    /// on that part's tip and moves with it.
+    pub attached_to: Option<usize>,
 }
 
 impl Instance {
@@ -417,30 +420,33 @@ pub fn layout(parts: &[Part], body: &BodyShape, out: &mut Vec<Instance>) {
         let length = lerp(spec.length, part.size);
         let width = lerp(spec.width, part.size);
         let start = out.len();
-        let push =
-            |out: &mut Vec<Instance>, base: Vec2, dir: f32, mirror: f32, index: u8, parent| {
-                if out.len() < MAX_INSTANCES {
-                    // Eyes and shell plates sit on the surface; everything else grows outward.
-                    let base = match part.kind {
-                        PartKind::Eye | PartKind::Shell => {
-                            base - Vec2::from_angle(dir) * length * 0.35
-                        }
-                        _ => base,
-                    };
-                    out.push(Instance {
-                        kind: part.kind,
-                        slot: part.slot,
-                        size: part.size,
-                        base,
-                        dir: wrap_angle(dir),
-                        length,
-                        width,
-                        mirror,
-                        index,
-                        parent,
-                    });
-                }
-            };
+        let push = |out: &mut Vec<Instance>,
+                    base: Vec2,
+                    dir: f32,
+                    mirror: f32,
+                    index: u8,
+                    parent: Option<usize>| {
+            if out.len() < MAX_INSTANCES {
+                // Eyes and shell plates sit on the surface; everything else grows outward.
+                let base = match part.kind {
+                    PartKind::Eye | PartKind::Shell => base - Vec2::from_angle(dir) * length * 0.35,
+                    _ => base,
+                };
+                out.push(Instance {
+                    kind: part.kind,
+                    slot: part.slot,
+                    size: part.size,
+                    base,
+                    dir: wrap_angle(dir),
+                    length,
+                    width,
+                    mirror,
+                    index,
+                    parent: parent.map(|p| out[p].kind),
+                    attached_to: parent,
+                });
+            }
+        };
         match part.anchor {
             Anchor::Segment(_) | Anchor::EverySegment => {
                 let segments: Vec<u8> = match part.anchor {
@@ -464,14 +470,7 @@ pub fn layout(parts: &[Part], body: &BodyShape, out: &mut Vec<Instance>) {
                             let tip = parent.tip();
                             for (t, mirror, index) in copy_angles(part.count, theta) {
                                 let dir = parent.dir + t * parent.mirror;
-                                push(
-                                    out,
-                                    tip,
-                                    dir,
-                                    mirror * parent.mirror,
-                                    index,
-                                    Some(parent.kind),
-                                );
+                                push(out, tip, dir, mirror * parent.mirror, index, Some(p));
                             }
                         }
                     }
@@ -567,6 +566,8 @@ mod tests {
         assert_eq!(out.len(), 2);
         let (stalk, eye) = (out[0], out[1]);
         assert_eq!(eye.parent, Some(PartKind::Stalk));
+        assert_eq!(eye.attached_to, Some(0), "it rides on the stalk's tip");
+        assert_eq!(stalk.attached_to, None);
         assert!(eye.base.x > stalk.base.x, "eye sits out on the stalk");
     }
 

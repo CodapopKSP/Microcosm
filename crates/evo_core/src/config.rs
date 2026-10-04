@@ -1,7 +1,12 @@
 //! Simulation configuration. Every tunable number lives here.
 //!
-//! Defaults in this file must match `configs/default.toml` (enforced by a test).
-//! TOML files may omit any key; missing keys take the default.
+//! Defaults in this file must match `configs/default.toml` and, for the world size and terrain,
+//! `configs/maps/ocean.toml` (enforced by tests). TOML files may omit any key; missing keys take
+//! the default.
+//!
+//! The world's size and terrain come from a map file, `configs/maps/<world.map>.toml`, which
+//! holds only `[world]` width and height and a `[terrain]` table. Keys in the config file
+//! override the map's.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -42,9 +47,54 @@ impl Config {
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
+        Self::load_with_map(path, None)
+    }
+
+    /// Load a config file together with its map: `world.map` (or `map`, if given), read from
+    /// `maps/<name>.toml` next to the config. Keys in the config file override the map's.
+    pub fn load_with_map(path: &Path, map: Option<&str>) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-        Self::from_toml(&text).map_err(|e| format!("{}: {e}", path.display()))
+        let mut table: toml::Table =
+            toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        if let Some(name) = map {
+            let world = table
+                .entry("world")
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if let toml::Value::Table(world) = world {
+                world.insert("map".into(), toml::Value::String(name.into()));
+            }
+        }
+        let name = table
+            .get("world")
+            .and_then(|w| w.get("map"))
+            .and_then(|m| m.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| WorldConfig::default().map);
+        let map_path = map_path(path, &name);
+        let merged = match std::fs::read_to_string(&map_path) {
+            Ok(map_text) => {
+                let mut base =
+                    parse_map(&map_text).map_err(|e| format!("{}: {e}", map_path.display()))?;
+                merge(&mut base, table);
+                base
+            }
+            // The built-in defaults are the default map, so it may be missing.
+            Err(_) if map.is_none() && name == WorldConfig::default().map => table,
+            Err(e) => {
+                return Err(format!(
+                    "map \"{name}\": failed to read {}: {e}",
+                    map_path.display()
+                ));
+            }
+        };
+        let config: Config = toml::Value::Table(merged)
+            .try_into()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        config
+            .validate()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(config)
     }
 
     pub fn from_toml(text: &str) -> Result<Self, String> {
@@ -82,6 +132,51 @@ impl Config {
     }
 }
 
+/// Where map `name` lives for a config at `config_path`: `maps/<name>.toml` beside it.
+pub fn map_path(config_path: &Path, name: &str) -> std::path::PathBuf {
+    config_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("maps")
+        .join(format!("{name}.toml"))
+}
+
+/// A map file: optional `description`, `[world]` with only `width` and `height`, and
+/// `[terrain]`. Returns its world and terrain tables, ready to merge under a config.
+fn parse_map(text: &str) -> Result<toml::Table, String> {
+    let mut table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
+    table.remove("description");
+    for key in table.keys() {
+        if key != "world" && key != "terrain" {
+            return Err(format!(
+                "a map holds only [world] and [terrain], not \"{key}\""
+            ));
+        }
+    }
+    if let Some(world) = table.get("world").and_then(|w| w.as_table()) {
+        for key in world.keys() {
+            if key != "width" && key != "height" {
+                return Err(format!(
+                    "a map's [world] holds only width and height, not \"{key}\""
+                ));
+            }
+        }
+    }
+    Ok(table)
+}
+
+/// Overlay `over` onto `base`, merging tables key by key.
+fn merge(base: &mut toml::Table, over: toml::Table) {
+    for (key, value) in over {
+        match (base.get_mut(&key), value) {
+            (Some(toml::Value::Table(b)), toml::Value::Table(o)) => merge(b, o),
+            (_, value) => {
+                base.insert(key, value);
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WorldConfig {
@@ -89,8 +184,11 @@ pub struct WorldConfig {
     pub width: f32,
     /// World height in units; the water surface is at the top.
     pub height: f32,
-    /// Master seed: same seed + config ⇒ same run.
+    /// Master seed for life, events, random vents and currents: same seed + config ⇒ same
+    /// run. The terrain has its own seed (`terrain.seed`), so every run shares the map.
     pub seed: u64,
+    /// The map: world size and terrain from `configs/maps/<map>.toml`.
+    pub map: String,
 }
 
 impl Default for WorldConfig {
@@ -99,6 +197,7 @@ impl Default for WorldConfig {
             width: 20400.0,
             height: 6000.0,
             seed: 1,
+            map: "ocean".into(),
         }
     }
 }
@@ -106,6 +205,10 @@ impl Default for WorldConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TerrainConfig {
+    /// How the terrain is built (see [`TerrainGenerator`]).
+    pub generator: TerrainGenerator,
+    /// The terrain's own seed: the same map whatever the world seed.
+    pub seed: u64,
     pub cell: f32,
     /// Mean seafloor height above the bottom of the world.
     pub floor_height: f32,
@@ -145,9 +248,22 @@ pub struct TerrainConfig {
     pub cliff_vent_depth: f32,
 }
 
+/// Terrain generators. A map file picks one and sets its parameters; new kinds of world are
+/// added here and in `Terrain::generate`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerrainGenerator {
+    /// Open ocean with a trench, rocks and caves, a shallow shelf, and optionally a mountain
+    /// cutting off a basin and the permanent shelf and cliff vents.
+    #[default]
+    Ocean,
+}
+
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
+            generator: TerrainGenerator::Ocean,
+            seed: 1,
             cell: 8.0,
             floor_height: 1400.0,
             floor_roughness: 350.0,
@@ -280,11 +396,6 @@ pub struct MineralsConfig {
     pub plume_rise: f32,
     /// Half-width of a vent plume.
     pub plume_width: f32,
-    /// Upward drift straight above the shelf vent, whose cave is open above (a chimney), units/s:
-    /// its minerals reach the surface.
-    pub chimney_rise: f32,
-    /// Width of that fast-rising column.
-    pub chimney_width: f32,
 }
 
 impl Default for MineralsConfig {
@@ -295,8 +406,6 @@ impl Default for MineralsConfig {
             decay: 0.004,
             plume_rise: 4.0,
             plume_width: 96.0,
-            chimney_rise: 30.0,
-            chimney_width: 48.0,
         }
     }
 }
@@ -772,7 +881,7 @@ pub struct FeedingConfig {
 impl Default for FeedingConfig {
     fn default() -> Self {
         Self {
-            chemo_rate: 2.0,
+            chemo_rate: 20.0,
             chemo_yield: 1.0,
             scavenge_rate: 12.0,
             filter_rate: 0.05,
@@ -1087,6 +1196,42 @@ mod tests {
             Config::default(),
             "configs/default.toml and Config::default() have drifted apart"
         );
+    }
+
+    #[test]
+    fn the_ocean_map_is_the_built_in_default() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/maps/ocean.toml");
+        let map = parse_map(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let config: Config = toml::Value::Table(map).try_into().unwrap();
+        assert_eq!(config.terrain, TerrainConfig::default());
+        let d = WorldConfig::default();
+        assert_eq!(
+            (config.world.width, config.world.height),
+            (d.width, d.height)
+        );
+    }
+
+    #[test]
+    fn config_keys_override_the_map_and_maps_can_be_switched() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs");
+        let small = Config::load(&dir.join("small.toml")).unwrap();
+        assert_eq!(small.world.map, "small");
+        assert_eq!(small.world.width, 6000.0);
+        let switched = Config::load_with_map(&dir.join("default.toml"), Some("small")).unwrap();
+        assert_eq!(switched.world.width, 6000.0);
+        assert_eq!(switched.terrain, small.terrain);
+        assert!(Config::load_with_map(&dir.join("default.toml"), Some("nowhere")).is_err());
+    }
+
+    #[test]
+    fn every_map_loads() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs");
+        for entry in std::fs::read_dir(dir.join("maps")).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_stem().unwrap().to_str().unwrap().to_string();
+            Config::load_with_map(&dir.join("default.toml"), Some(&name))
+                .unwrap_or_else(|e| panic!("{e}"));
+        }
     }
 
     #[test]

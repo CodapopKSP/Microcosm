@@ -25,6 +25,8 @@ pub struct CameraState {
     pub director: bool,
     director_timer: f32,
     drag_origin: Option<Vec2>,
+    /// Where a right-button press started (a release close by is a click, not a pan).
+    right_origin: Option<Vec2>,
     /// Events already seen by the director (so it only reacts to new ones).
     seen_events: u64,
 }
@@ -42,12 +44,21 @@ pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera).add_systems(
-            Update,
-            (camera_input, director, follow_selection, apply_camera)
-                .chain()
-                .after(crate::sim::SimStep),
-        );
+        app.add_systems(Startup, spawn_camera)
+            .add_systems(PostStartup, open_probe)
+            .add_systems(
+                Update,
+                (camera_input, director, follow_selection, apply_camera)
+                    .chain()
+                    .after(crate::sim::SimStep),
+            );
+    }
+}
+
+/// `--probe x,y`: open the water inspector there at startup.
+fn open_probe(options: Res<crate::ViewerOptions>, mut selection: ResMut<Selection>) {
+    if let Some((x, y)) = options.probe {
+        selection.probe = Some(glam::Vec2::new(x, y));
     }
 }
 
@@ -90,6 +101,7 @@ fn spawn_camera(mut commands: Commands, state: Res<SimState>, options: Res<crate
                 organism: Some(o.id),
                 species,
                 follow: true,
+                probe: None,
             });
         } else {
             eprintln!("--follow: no living species matching '{name}'");
@@ -108,6 +120,7 @@ fn spawn_camera(mut commands: Commands, state: Res<SimState>, options: Res<crate
                 organism: Some(o.id),
                 species: None,
                 follow: true,
+                probe: None,
             });
         }
     }
@@ -119,6 +132,7 @@ fn spawn_camera(mut commands: Commands, state: Res<SimState>, options: Res<crate
         director: options.stream,
         director_timer: 0.0,
         drag_origin: None,
+        right_origin: None,
         seen_events: state.world.events.count,
     });
     commands.spawn((
@@ -198,6 +212,7 @@ fn camera_input(
             selection.organism = None;
             selection.species = None;
             selection.follow = false;
+            selection.probe = None;
         }
     }
 
@@ -237,6 +252,23 @@ fn camera_input(
             cam.center += delta;
             selection.follow = false;
             cam.director = false;
+        }
+    }
+
+    // Right-click (without dragging) inspects the water there.
+    if mouse.just_pressed(MouseButton::Right) && pointer_free {
+        cam.right_origin = window.cursor_position();
+    }
+    if mouse.just_released(MouseButton::Right) {
+        let was_click = match (cam.right_origin.take(), window.cursor_position()) {
+            (Some(a), Some(b)) => a.distance(b) <= 4.0,
+            _ => false,
+        };
+        if was_click
+            && pointer_free
+            && let Some(p) = cursor_world
+        {
+            selection.probe = Some(glam::Vec2::new(p.x, p.y));
         }
     }
 

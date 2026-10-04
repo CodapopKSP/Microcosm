@@ -178,9 +178,6 @@ pub struct Vent {
     /// Part of the terrain: never fades or dies.
     #[serde(default)]
     pub fixed: bool,
-    /// Open water straight above: its plume shoots up to the surface.
-    #[serde(default)]
-    pub chimney: bool,
 }
 
 impl Vent {
@@ -362,7 +359,6 @@ impl Environment {
                 age: 0.0,
                 lifetime: 0.0,
                 fixed: true,
-                chimney: terrain.chimneys.iter().any(|c| c.distance(pos) < 1.0),
             });
         }
         for _ in 0..config.vents.count {
@@ -446,7 +442,6 @@ impl Environment {
                 age: 0.0,
                 lifetime: hours * 3600.0,
                 fixed: false,
-                chimney: false,
             });
         }
         None
@@ -471,7 +466,7 @@ impl Environment {
 
         // Vents: age, emit, die, and open.
         let vc = &config.vents;
-        // Upward drift of minerals per column (units/s): plumes over vents, faster up chimneys.
+        // Upward drift of minerals per column (units/s): the plumes over vents.
         let mc = &config.minerals;
         let mut plume_columns = vec![0.0f32; self.minerals.nx];
         let mut i = 0;
@@ -509,17 +504,11 @@ impl Environment {
             }
             let cell = self.minerals.cell;
             let nx = self.minerals.nx;
-            let mut rise = |half_width: f32, speed: f32| {
-                let (half, cx) = (half_width / cell, vent.pos.x / cell);
-                let x0 = (cx - half).floor().max(0.0) as usize;
-                let x1 = ((cx + half).ceil() as usize).min(nx - 1);
-                for col in plume_columns.iter_mut().take(x1 + 1).skip(x0) {
-                    *col = col.max(speed);
-                }
-            };
-            rise(mc.plume_width, mc.plume_rise);
-            if vent.chimney {
-                rise(mc.chimney_width * 0.5, mc.chimney_rise);
+            let (half, cx) = (mc.plume_width / cell, vent.pos.x / cell);
+            let x0 = (cx - half).floor().max(0.0) as usize;
+            let x1 = ((cx + half).ceil() as usize).min(nx - 1);
+            for col in plume_columns.iter_mut().take(x1 + 1).skip(x0) {
+                *col = col.max(mc.plume_rise);
             }
             i += 1;
         }

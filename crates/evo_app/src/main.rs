@@ -27,6 +27,10 @@ pub struct Args {
     /// Override the world seed.
     #[arg(long)]
     pub seed: Option<u64>,
+    /// Use this map (configs/maps/NAME.toml) instead of the config's `world.map` (implies
+    /// `--new`).
+    #[arg(long)]
+    pub world_map: Option<String>,
     /// Resume a saved world (e.g. saves/autosave.bin).
     #[arg(long)]
     pub load: Option<PathBuf>,
@@ -50,6 +54,9 @@ pub struct Args {
     /// Initial view as `x,y,zoom` (zoom = world units per pixel).
     #[arg(long, value_delimiter = ',')]
     pub view: Option<Vec<f32>>,
+    /// Open the water inspector at world position `x,y` (as a right-click there does).
+    #[arg(long, value_delimiter = ',')]
+    pub probe: Option<Vec<f32>>,
     /// Select the organism nearest the initial view center.
     #[arg(long)]
     pub select: bool,
@@ -89,6 +96,7 @@ pub struct ViewerOptions {
     pub follow: Option<String>,
     pub follow_zoom: f32,
     pub map: Option<String>,
+    pub probe: Option<(f32, f32)>,
 }
 
 fn main() {
@@ -96,8 +104,11 @@ fn main() {
     // By default, pick up where the last session left off.
     let autosave = args.save_dir.join("autosave.bin");
     let resume = args.load.clone().or_else(|| {
-        let fresh =
-            args.new || args.config.is_some() || args.seed.is_some() || args.screenshot.is_some();
+        let fresh = args.new
+            || args.config.is_some()
+            || args.seed.is_some()
+            || args.world_map.is_some()
+            || args.screenshot.is_some();
         (!fresh && autosave.exists()).then(|| autosave.clone())
     });
     let mut world = if args.gallery {
@@ -136,7 +147,8 @@ fn main() {
                     .config
                     .clone()
                     .unwrap_or_else(|| PathBuf::from("configs/default.toml"));
-                let mut config = Config::load(&path).unwrap_or_else(|e| fail(&e));
+                let mut config = Config::load_with_map(&path, args.world_map.as_deref())
+                    .unwrap_or_else(|e| fail(&e));
                 if let Some(seed) = args.seed {
                     config.world.seed = seed;
                 }
@@ -188,6 +200,11 @@ fn main() {
             follow: args.follow.clone(),
             follow_zoom: args.follow_zoom,
             map: args.map.clone(),
+            probe: args
+                .probe
+                .as_ref()
+                .filter(|v| v.len() == 2)
+                .map(|v| (v[0], v[1])),
         })
         .add_plugins((
             sim::SimPlugin,

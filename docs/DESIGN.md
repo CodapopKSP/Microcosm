@@ -14,12 +14,14 @@ Guiding principles (see [VISION.md](VISION.md)):
 
 A **side-on cross-section of an ocean**. `y` grows upward; the water surface is at the top of the world, the seafloor is procedurally generated terrain at the bottom. Default size 20,400 × 6,000 units: 16,000 of open ocean, then a mountain and a cut-off basin (below). Explored with pan/zoom.
 
+The world's size and terrain come from a **map**: a file in `configs/maps/` (the default is `ocean.toml`, described here). A map has its own terrain seed, so every run on it shares the same seafloor, caves and permanent vents whatever the world seed. The world seed drives life, events, the random vents and the currents. A map also names the generator that builds it (only `ocean` so far), so new kinds of world can be added beside it.
+
 | Region | What makes it distinct |
 |--------|------------------------|
 | Sunlit surface | Most light; warm; phototrophs bloom and shade each other |
 | Twilight / open water | Light fades exponentially with depth; hunters and drifters |
 | Deep / seafloor | Dark and cold; detritus ("marine snow") settles into sediment |
-| Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Two are permanent parts of the terrain (below); three more open and die on the deep floor over hours. 35% of each vent's minerals seep out over 240 u around its base; the rest rise in a plume. The shelf vent's plume shoots straight up its open roof (30 u/s instead of 4) and reaches the surface, leaving mineral-rich, oxygenated water right where photosynthesizers live |
+| Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Two are permanent parts of the terrain (below); three more open and die on the deep floor over hours. 35% of each vent's minerals seep out over 240 u around its base; the rest rise in a plume. Plumes rise at 4 u/s all the way up; the shallow shelf vent's (about 850 deep) still reaches the surface with roughly 40% of its minerals, while deep vents' plumes mostly fade on the way. |
 | Shelf | A shallow region where the seafloor itself is sunlit |
 | Mountain and basin | Past the shelf a rugged mountain (ridges, shoulders and crags) rises above sea level, and beyond it lies a basin of water (about 1,100 deep) that it cuts off from the ocean. Nothing lives there at the start: ancestors, recolonization, random vents and events stay in the ocean. Reaching it is for later (see `docs/IDEAS.md`) |
 | Permanent vents | One inside a cave on the shelf near the cliff's edge (the cave nearest a fixed spot; made if there isn't one), opening upward in a wide V to the water above, with a short passage joining the little cave to its left. Beside the vent, out of its plume and a little above it, a flat **warm ledge** (about 43 °C at its near end, mid-20s at its far end, rich in minerals seeping out) where chemotrophs can live without being cooked at the vent itself (55 °C); a short passage joins it to the vent. One on a small ledge partway down the cliff (about 2,250 deep), with the cliff bulging out below the ledge rather than falling in one even slope. Winding tunnels branch up from the cliff vent through the rock into both caves |
@@ -239,7 +241,7 @@ needs     = (basal + movement) × breathing/fermentation cost (§4)
 | Diet | Mechanic | Scales with |
 |------|----------|-------------|
 | Photosynthesis | Share of light absorbed in the organism's light cell(s) (§1), limited by CO₂ or minerals (§4) | Width × frond span (big photosynthesizers need fronds) |
-| Chemosynthesis | Uptake from the mineral field: `2 × c × radius × concentration`, depleting it | Perimeter (favors small) |
+| Chemosynthesis | Uptake from the mineral field: `20 × c × radius × concentration`, depleting it | Perimeter (favors small) |
 | Scavenging | Uptake from the detritus field, `12 × c × radius × (1 + filter) × concentration` (intercepting falling marine snow), plus a filter-feeding bonus when swimming; eating large carcasses at the mouth or body (tentacles drag them there) | Width; width × speed when swimming |
 | Hunting | See below | Size, jaws |
 

@@ -5,30 +5,8 @@
 # Units: distances in world units, time in sim seconds, energy in energy units.
 
 [world]
-width = 20400.0          # 16000 of ocean, then the mountain and the cut-off basin
-height = 6000.0          # the water surface is at the top
-seed = 1                 # same seed + config => same run
-
-[terrain]
-cell = 8.0
-floor_height = 1400.0    # mean seafloor height above the bottom
-floor_roughness = 350.0
-shelf_start = 0.78       # shallow shelf from this fraction of the width to the right edge
-shelf_depth = 900.0      # shelf depth below the surface (sunlit seafloor)
-trench_center = 0.3
-trench_width = 0.06
-trench_depth = 1100.0
-rocks = 16               # pillars, ledges, arches, boulder fields
-rock_size = 260.0
-caves = 7                # hollow rock chambers with a narrow entrance (dark inside)
-cave_size = 320.0
-mountain_width = 2000.0  # past the ocean's right edge a mountain rises above sea level...
-mountain_height = 380.0  # ...this far, cutting off a basin of water beyond it
-basin_width = 2400.0
-basin_depth = 1100.0
-shelf_vents = true       # a permanent vent in a cave on the shelf (roof open), one down the cliff, and tunnels between
-vent_cave_x = 0.843      # the shelf vent goes in the cave nearest this point (a fraction of the ocean's width)
-cliff_vent_depth = 2250.0  # on a small ledge, with the cliff bulging out below it
+seed = 1                 # life, events, random vents and currents: same seed + config => same run
+map = "ocean"            # world size and terrain from configs/maps/<map>.toml (same for every seed)
 
 [time]
 dt = 0.0333333333        # sim seconds per tick; 1x speed = 1/dt ticks per second
@@ -63,8 +41,6 @@ diffusion = 100.0
 decay = 0.004
 plume_rise = 4.0         # minerals rise in vent plumes
 plume_width = 96.0
-chimney_rise = 30.0      # much faster straight up over the shelf vent (open above), to the surface
-chimney_width = 48.0
 
 [detritus]
 cell = 32.0
@@ -207,7 +183,7 @@ temp_damage = 0.05
 old_age_death_rate = 0.2
 
 [feeding]
-chemo_rate = 2.0
+chemo_rate = 20.0           # mineral uptake per second = rate × capability × radius × concentration
 chemo_yield = 1.0
 scavenge_rate = 12.0
 filter_rate = 0.05

@@ -30,7 +30,7 @@ Click any organism to see what each gene does.
 # Resumes saves/autosave.bin if it exists; otherwise starts a new world.
 cargo run --release
 
-# Start a fresh world (or: --config my.toml, --seed 7)
+# Start a fresh world (or: --config my.toml, --seed 7, --world-map small)
 cargo run --release -- --new
 
 # Load a specific save
@@ -63,7 +63,7 @@ cargo run --release -- --stream
 
 ### Art gallery
 
-`cargo run --release -- --gallery` opens a paused world with rows of organisms, each row sweeping one gene from `00` to `FF`: the size of each of the fifteen body parts, elongation, segments, mouths, and the chemistry genes that show on the body. The last rows freeze the budding (small bud, fission), dying, swallowed and bitten animations at nine stages each. Use it to check how things look.
+`cargo run --release -- --gallery` opens a paused world with rows of organisms, each row sweeping one gene from `00` to `FF`: the size of each of the fifteen body parts, fronds riding on swaying tentacles, elongation, segments, mouths, and the chemistry genes that show on the body. The last rows freeze the budding (small bud, fission), dying, swallowed and bitten animations at nine stages each. Use it to check how things look.
 
 ### Headless
 
@@ -79,6 +79,8 @@ cargo run --release -- --load saves/two_hours.bin
 ## Configuration
 
 All tunable numbers live in [`configs/default.toml`](configs/default.toml), with comments. Copy it, edit it, and pass it with `--config`. Every key is optional.
+
+The world's size and terrain live in map files in [`configs/maps/`](configs/maps/). A config picks one with `[world] map = "ocean"`, and `--world-map NAME` overrides that. Each map has its own terrain seed, so the map is the same for every world seed; any `[terrain]` keys in a config override the map's. To make a new map, copy `ocean.toml`, change it and its `seed`, and select it by name.
 
 ## Tests
 

@@ -4,7 +4,7 @@ use bevy_egui::egui;
 use evo_core::World;
 use evo_core::genome::{CHROMOSOMES, gene_code};
 use evo_core::parts::{self, BodyShape};
-use evo_core::traits::{describe_gene, format_duration};
+use evo_core::traits::{describe_gene, format_game_duration};
 
 use super::{DIET_NAMES, diet_color, swatch};
 use crate::sim::Selection;
@@ -117,8 +117,8 @@ pub fn draw(ui: &mut egui::Ui, world: &World, id: u64, selection: &mut Selection
         o.age / t.lifespan,
         format!(
             "{} / {}",
-            format_duration(o.age),
-            format_duration(t.lifespan)
+            format_game_duration(o.age, &world.config.time),
+            format_game_duration(t.lifespan, &world.config.time)
         ),
         egui::Color32::from_rgb(120, 120, 150),
     );

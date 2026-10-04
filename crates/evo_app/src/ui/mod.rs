@@ -2,12 +2,13 @@
 
 mod charts;
 mod inspector;
+mod probe;
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use evo_core::World;
 use evo_core::stats::EventKind;
-use evo_core::traits::format_duration;
+use evo_core::traits::{format_game_date, format_game_duration};
 
 use crate::camera::CameraState;
 use crate::sim::{SPEEDS, Selection, SimState};
@@ -60,8 +61,10 @@ pub struct UiState {
     history_filter: [bool; 6],
     pub show_senses: bool,
     pub map_mode: MapMode,
-    chart_tab: charts::ChartTab,
+    charts: charts::ChartState,
     fps: f64,
+    /// The egui style has been set up (quicker tooltips).
+    styled: bool,
 }
 
 impl Default for UiState {
@@ -76,8 +79,9 @@ impl Default for UiState {
             history_filter: [true; 6],
             show_senses: true,
             map_mode: MapMode::None,
-            chart_tab: charts::ChartTab::default(),
+            charts: charts::ChartState::default(),
             fps: 0.0,
+            styled: false,
         }
     }
 }
@@ -107,7 +111,7 @@ fn apply_stream_option(options: Res<crate::ViewerOptions>, mut ui: ResMut<UiStat
         _ => MapMode::None,
     };
     if options.tree {
-        ui.chart_tab = charts::ChartTab::Tree;
+        ui.charts.tab = charts::ChartTab::Tree;
     }
 }
 
@@ -182,7 +186,7 @@ pub fn clock_text(world: &World) -> String {
     )
 }
 
-fn event_color(kind: EventKind) -> egui::Color32 {
+pub fn event_color(kind: EventKind) -> egui::Color32 {
     match kind {
         EventKind::Species => egui::Color32::from_rgb(140, 220, 140),
         EventKind::Extinction => egui::Color32::from_rgb(230, 120, 110),
@@ -203,6 +207,14 @@ fn draw_ui(
     time: Res<Time<Real>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    if !ui_state.styled {
+        // Tooltips appear almost at once (the default waits half a second).
+        ctx.all_styles_mut(|style| {
+            style.interaction.tooltip_delay = 0.05;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+        ui_state.styled = true;
+    }
     let dt = time.delta_secs_f64();
     if dt > 0.0 {
         ui_state.fps = ui_state.fps * 0.95 + (1.0 / dt) * 0.05;
@@ -236,17 +248,33 @@ fn draw_ui(
             });
     }
 
+    if let Some(pos) = selection.probe {
+        let mut open = true;
+        egui::Window::new("Water here")
+            .open(&mut open)
+            .default_pos([20.0, 90.0])
+            .default_width(380.0)
+            .resizable(false)
+            .show(ctx, |ui| probe::draw(ui, &sim.world, pos));
+        if !open {
+            selection.probe = None;
+        }
+    }
+
     if ui_state.show_events {
         event_ticker(ctx, &sim.world, &mut selection, &mut cam);
     }
 
     if ui_state.show_charts {
         let mut open = true;
+        let charts_state = &mut ui_state.charts;
         egui::Window::new("Charts")
             .open(&mut open)
-            .default_size([640.0, 420.0])
+            .default_size([760.0, 560.0])
+            .min_size([360.0, 240.0])
+            .resizable(true)
             .show(ctx, |ui| {
-                charts::draw(ui, &sim.world, &mut selection, &mut ui_state.chart_tab)
+                charts::draw(ui, &sim.world, &mut selection, charts_state, &mut cam)
             });
         ui_state.show_charts = open;
     }
@@ -493,7 +521,10 @@ fn species_panel(
                         }
                         response.on_hover_ui(|ui| {
                             let age = (world.tick - s.founded) as f32 * world.config.time.dt;
-                            ui.label(format!("Founded {} ago", format_duration(age)));
+                            ui.label(format!(
+                                "Founded {} ago",
+                                format_game_duration(age, &world.config.time)
+                            ));
                             if let Some(p) = s.parent {
                                 ui.label(format!("Descended from {}", world.species.name(p)));
                             }
@@ -534,7 +565,7 @@ fn event_ticker(
                     for e in world.events.entries.iter().rev().take(6).rev() {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
-                                egui::RichText::new(format_duration(e.time as f32))
+                                egui::RichText::new(format_game_date(e.time, &world.config.time))
                                     .weak()
                                     .monospace(),
                             );
@@ -599,15 +630,10 @@ fn history(
                     continue;
                 }
                 ui.horizontal_wrapped(|ui| {
-                    let c = &world.config.time;
-                    let day = (e.time / c.day_length as f64) as u64 + 1;
                     ui.label(
-                        egui::RichText::new(format!(
-                            "Day {day:>3} {:>8}",
-                            format_duration(e.time as f32)
-                        ))
-                        .monospace()
-                        .weak(),
+                        egui::RichText::new(format_game_date(e.time, &world.config.time))
+                            .monospace()
+                            .weak(),
                     );
                     let response = ui.add(
                         egui::Label::new(egui::RichText::new(&e.text).color(event_color(e.kind)))
@@ -715,6 +741,7 @@ fn stream_overlay(ctx: &egui::Context, sim: &SimState, selection: &Selection) {
 fn help(ui: &mut egui::Ui) {
     ui.label("Camera: drag (any mouse button) or WASD/arrows to pan, scroll to zoom, Home for the whole world.");
     ui.label("Click an organism to inspect it and follow it (F toggles follow, Esc clears).");
+    ui.label("Right-click a spot to inspect its water: light, temperature, oxygen and the rest.");
     ui.label("Space: pause · 1–7: speed · +/-: faster/slower · F5: quicksave");
     ui.label(
         "Ctrl+1 plague · Ctrl+2 upwelling · Ctrl+3 meteor · Ctrl+4 rock wall (trigger events now)",

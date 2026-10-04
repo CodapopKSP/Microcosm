@@ -39,7 +39,9 @@ fn main() {
             .collect();
         // Self time by the innermost frame in our own source, as file:line plus function.
         let here = frames.frames.iter().flat_map(|f| f.iter()).find(|s| {
-            s.filename.as_ref().is_some_and(|f| f.to_string_lossy().contains("evo_core/src"))
+            s.filename
+                .as_ref()
+                .is_some_and(|f| f.to_string_lossy().contains("evo_core/src"))
         });
         if let Some(sym) = here {
             let file = sym.filename.as_ref().unwrap().to_string_lossy();

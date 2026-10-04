@@ -95,6 +95,8 @@ pub struct Selection {
     pub species: Option<u32>,
     /// Keep the camera on the selected organism.
     pub follow: bool,
+    /// A spot whose water is being inspected (right-click).
+    pub probe: Option<glam::Vec2>,
 }
 
 /// The simulation step for this frame; camera, rendering and UI run after it.

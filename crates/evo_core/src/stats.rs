@@ -37,6 +37,15 @@ pub struct StatSample {
     pub mean_parts: f32,
     /// (species id, population) for established living species.
     pub species_populations: Vec<(u32, u32)>,
+    /// Organisms by depth: surface (< 300), sunlit (300–900), twilight (900–2500), deep.
+    #[serde(default)]
+    pub depth_bands: [u32; 4],
+    /// Deaths since the last sample by cause (in `DeathCause::ALL` order).
+    #[serde(default)]
+    pub death_causes: [u32; 10],
+    /// Organisms carrying each kind of body part (in `PartKind::ALL` order).
+    #[serde(default)]
+    pub part_carriers: [u32; 15],
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -48,6 +57,8 @@ pub struct Stats {
     pub deaths_by_cause: [u64; 10],
     pub births_since_sample: u32,
     pub deaths_since_sample: u32,
+    /// Deaths since the last sample by cause.
+    pub causes_since_sample: [u32; 10],
     pub since_sample: f32,
 }
 
@@ -57,6 +68,7 @@ impl Stats {
         self.deaths_since_sample += 1;
         let i = DeathCause::ALL.iter().position(|&c| c == cause).unwrap();
         self.deaths_by_cause[i] += 1;
+        self.causes_since_sample[i] += 1;
     }
 
     pub fn record_birth(&mut self) {
@@ -114,10 +126,23 @@ pub struct EventLog {
     pub entries: VecDeque<Event>,
     /// Total events ever logged (entries may be trimmed).
     pub count: u64,
+    /// Every event that changed the world (environment, disasters, recolonizations), kept for
+    /// the whole run: they're rare, and the family tree marks them.
+    pub world: Vec<Event>,
 }
+
+/// Most world events kept (a cap far beyond weeks of running).
+const MAX_WORLD_EVENTS: usize = 50_000;
 
 impl EventLog {
     pub fn push(&mut self, event: Event, max: usize) {
+        if matches!(
+            event.kind,
+            EventKind::Environment | EventKind::Disaster | EventKind::Recolonization
+        ) && self.world.len() < MAX_WORLD_EVENTS
+        {
+            self.world.push(event.clone());
+        }
         self.entries.push_back(event);
         self.count += 1;
         while self.entries.len() > max.max(1) {

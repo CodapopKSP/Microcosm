@@ -6,7 +6,7 @@
 use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, TerrainConfig};
+use crate::config::{Config, TerrainConfig, TerrainGenerator};
 use crate::field::Field;
 use crate::rng::{Rng, mix64};
 
@@ -27,9 +27,6 @@ pub struct Terrain {
     /// Where permanent vents sit (in the shelf cave, and on the cliff ledge).
     #[serde(default)]
     pub vent_sites: Vec<Vec2>,
-    /// Vent sites with open water straight above: their plume shoots up to the surface.
-    #[serde(default)]
-    pub chimneys: Vec<Vec2>,
 }
 
 /// Where a generated cave is: its x, the top of its mound, and its chamber (center and radii).
@@ -95,10 +92,21 @@ pub fn mountain(cfg: &TerrainConfig, ocean_width: f32) -> (f32, f32) {
 /// Height of the mountain's surface at `x` (above `height`, the sea surface, near the peak),
 /// falling to the shelf on the left and the basin floor on the right, with ridges, shoulders
 /// and crags so it doesn't look like a smooth curve.
-fn mountain_height_at(cfg: &TerrainConfig, seed: u64, ocean_width: f32, height: f32, x: f32) -> f32 {
+fn mountain_height_at(
+    cfg: &TerrainConfig,
+    seed: u64,
+    ocean_width: f32,
+    height: f32,
+    x: f32,
+) -> f32 {
     let (peak_x, half) = mountain(cfg, ocean_width);
     let top = height + cfg.mountain_height;
-    let foot = height - if x < peak_x { cfg.shelf_depth } else { cfg.basin_depth };
+    let foot = height
+        - if x < peak_x {
+            cfg.shelf_depth
+        } else {
+            cfg.basin_depth
+        };
     // A slightly off-center, uneven peak: the shape bends with a slow noise.
     let skew = 0.18 * value_noise(seed ^ 0x3B11, 1.7);
     let t = ((x - peak_x) / half.max(1.0) - skew).abs().clamp(0.0, 1.0);
@@ -216,12 +224,22 @@ fn distance_transform(nx: usize, ny: usize, target: impl Fn(usize) -> bool) -> V
 }
 
 impl Terrain {
+    /// Build the map's terrain. It depends only on the map (`[world]` size and `[terrain]`),
+    /// never on the world seed, so every run on a map shares it.
     pub fn generate(config: &Config) -> Terrain {
+        match config.terrain.generator {
+            TerrainGenerator::Ocean => Self::ocean(config),
+        }
+    }
+
+    /// Open ocean: seafloor with a trench, rocks and caves, a shelf, and optionally a mountain
+    /// and basin beyond the ocean and the permanent shelf and cliff vents.
+    fn ocean(config: &Config) -> Terrain {
         let cfg = &config.terrain;
         let (width, height) = (config.world.width, config.world.height);
         // The ocean's layout is relative to its own width; the mountain and basin lie beyond.
         let ocean = config.ocean_width();
-        let seed = mix64(config.world.seed ^ 0x7E44_A1B0);
+        let seed = mix64(cfg.seed ^ 0x7E44_A1B0);
         let field = Field::new(width, height, cfg.cell, 0.0);
         let (nx, ny, cell) = (field.nx, field.ny, field.cell);
 
@@ -446,7 +464,6 @@ impl Terrain {
         // tunnels branch up from the cliff vent into that cave and the little cave nearest the
         // cliff.
         let mut vent_sites = Vec::new();
-        let mut chimneys = Vec::new();
         if cfg.shelf_vents {
             let want = cfg.vent_cave_x * ocean;
             let nearest = caves
@@ -460,7 +477,10 @@ impl Terrain {
                 _ => build_cave(&mut solid, want, cfg.cave_size, 1.0, seed ^ 0xCAFE),
             };
             // The vent on the cave's floor, under a wide opening in the roof.
-            let vent = Vec2::new(vent_cave.chamber.x, vent_cave.chamber.y - vent_cave.ch_h * 0.55);
+            let vent = Vec2::new(
+                vent_cave.chamber.x,
+                vent_cave.chamber.y - vent_cave.ch_h * 0.55,
+            );
             let rseed = seed ^ 0x2007;
             // A pocket of water around the vent (a later cave's mound may have filled part of
             // the chamber), and a funnel widening up through the roof to the water above.
@@ -552,7 +572,10 @@ impl Terrain {
             let mut ends = Vec::new();
             for cave in little.iter().chain(std::iter::once(&vent_cave)) {
                 for f in [-0.45, 0.35] {
-                    ends.push((cave.chamber + Vec2::new(f * cave.ch_w, -0.6 * cave.ch_h), cave.x));
+                    ends.push((
+                        cave.chamber + Vec2::new(f * cave.ch_w, -0.6 * cave.ch_h),
+                        cave.x,
+                    ));
                 }
             }
             let tunnels: Vec<[Vec2; 4]> = ends
@@ -578,7 +601,8 @@ impl Terrain {
                         let ab = b - a;
                         let t = ((p - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
                         let along = a + ab * t;
-                        let wiggle = 30.0 * value_noise(tseed ^ k as u64, (along.x + along.y) / 120.0);
+                        let wiggle =
+                            30.0 * value_noise(tseed ^ k as u64, (along.x + along.y) / 120.0);
                         let on = along + ab.perp().normalize_or_zero() * wiggle;
                         p.distance(on) < 16.0 + 4.0 * value_noise(tseed ^ 0x99, along.x / 50.0)
                     })
@@ -589,7 +613,6 @@ impl Terrain {
             let hi = Vec2::new(right, vent_cave.chamber.y + 100.0);
             carve(&mut solid, &passages, lo, hi);
             vent_sites.push(vent);
-            chimneys.push(vent);
             vent_sites.push(cliff_vent);
         }
 
@@ -602,7 +625,6 @@ impl Terrain {
             height,
             version: 0,
             vent_sites,
-            chimneys,
         };
         terrain.recompute_sdf(0, nx);
         terrain
@@ -763,6 +785,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_terrain_is_the_same_for_every_world_seed() {
+        let mut config = Config::default();
+        let a = Terrain::generate(&config);
+        config.world.seed = 2;
+        let b = Terrain::generate(&config);
+        assert_eq!(a.sdf.data, b.sdf.data);
+        assert_eq!(a.vent_sites, b.vent_sites);
+        config.terrain.seed = 2;
+        assert_ne!(
+            Terrain::generate(&config).sdf.data,
+            a.sdf.data,
+            "the map seed still matters"
+        );
+    }
+
+    #[test]
     fn terrain_has_water_above_and_rock_below() {
         let config = Config::default();
         let t = Terrain::generate(&config);
@@ -793,18 +831,30 @@ mod tests {
             let (w, h) = (config.world.width, config.world.height);
             let (peak_x, _) = mountain(&config.terrain, config.ocean_width());
             // The mountain reaches the surface; water lies on both sides of it.
-            assert!(t.is_solid(Vec2::new(peak_x, h - 4.0)), "peak is above water");
-            assert!(!t.is_solid(Vec2::new(peak_x - 1500.0, h - 100.0)), "ocean side");
+            assert!(
+                t.is_solid(Vec2::new(peak_x, h - 4.0)),
+                "peak is above water"
+            );
+            assert!(
+                !t.is_solid(Vec2::new(peak_x - 1500.0, h - 100.0)),
+                "ocean side"
+            );
             assert!(!t.is_solid(Vec2::new(w - 600.0, h - 100.0)), "basin side");
             assert!(t.floor_at(w - 600.0) < h - 800.0, "the basin is deep");
             // Two permanent vents in water: one near the surface, one down the cliff.
             assert_eq!(t.vent_sites.len(), 2);
             for &v in &t.vent_sites {
-                assert!(t.distance(v) > 2.0, "vent at {v:?} is in water (seed {seed})");
+                assert!(
+                    t.distance(v) > 2.0,
+                    "vent at {v:?} is in water (seed {seed})"
+                );
             }
             let (shelf, cliff) = (t.vent_sites[0], t.vent_sites[1]);
             let depth = h - shelf.y;
-            assert!((300.0..1300.0).contains(&depth), "shelf vent at depth {depth}");
+            assert!(
+                (300.0..1300.0).contains(&depth),
+                "shelf vent at depth {depth}"
+            );
             assert!(h - cliff.y > 1400.0, "cliff vent at depth {}", h - cliff.y);
             let ocean = config.ocean_width();
             assert!(

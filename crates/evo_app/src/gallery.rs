@@ -55,6 +55,11 @@ pub fn rows() -> Vec<(&'static str, Setter)> {
             set_part(g, 0, PartKind::Stalk, 0, v, 0, 5);
             set_part(g, 1, PartKind::Eye, 0, 0xC0, 7, 0);
         }),
+        ("Fronds on tentacles", |g, v| {
+            // Parts on a swaying tip should ride along with it.
+            set_part(g, 0, PartKind::Tentacle, 2, v, 0, 4);
+            set_part(g, 1, PartKind::Frond, 0, 0x60, 7, 0);
+        }),
         ("Eyes", |g, v| set_part(g, 0, PartKind::Eye, 1, v, 0, 3)),
         ("Antennae", |g, v| {
             set_part(g, 0, PartKind::Antenna, 1, v, 0, 2)

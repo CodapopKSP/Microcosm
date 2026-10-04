@@ -697,25 +697,95 @@ struct PartOwner {
     holds: Vec<(usize, glam::Vec2, f32, f32)>,
 }
 
+/// Where a part's midline sits across it, at `a` along it (0 base, 1 tip): in part lengths,
+/// in the part's mirrored frame. The same sway as in `organism.wgsl` (keep them in step), so
+/// parts attached to a tip can follow it. Flagella are left out: parts on a flagellum stay on
+/// its resting tip rather than whipping about with it.
+#[allow(clippy::too_many_arguments)]
+fn midline(
+    kind: PartKind,
+    a: f32,
+    time: f32,
+    phase: f32,
+    activity: f32,
+    grip: f32,
+    arch: f32,
+) -> f32 {
+    use std::f32::consts::PI;
+    match kind {
+        PartKind::Tentacle => {
+            let sway = 0.16 * (a * 3.0 - time * 1.6 + phase).sin() * a;
+            let curl = (0.18 + 0.12 * (time * 0.45 + phase).sin()) * a * a * a;
+            let t = ((a - 0.75) / 0.25).clamp(0.0, 1.0);
+            let hook = -arch * 0.6 * t * t * (3.0 - 2.0 * t);
+            let held = arch * (PI * a.clamp(0.0, 1.0)).sin()
+                + hook
+                + 0.03 * (time * 5.0 + phase).sin() * a;
+            sway + curl + (held - sway - curl) * grip
+        }
+        PartKind::Frond => 0.07 * (time * 0.8 + phase + a * 2.0).sin() * a * a,
+        PartKind::Fin => 0.25 * (time * (2.5 + 7.0 * activity) + phase).sin() * a,
+        PartKind::Fluke => 0.25 * (time * (2.0 + 6.0 * activity) + phase).sin() * a,
+        PartKind::Stalk => 0.06 * (time * 0.7 + phase).sin() * a * a,
+        PartKind::Antenna => (0.12 * (time * 2.2 + phase).sin() + 0.18) * a * a,
+        PartKind::Lure => (0.15 * (time * 0.9 + phase).sin() + 0.1) * a * a,
+        _ => 0.0,
+    }
+}
+
+/// A part as drawn this frame (world space).
+#[derive(Clone, Copy, Default)]
+struct Placed {
+    base: glam::Vec2,
+    angle: f32,
+    /// Base-to-tip distance (shorter than the length while a tentacle bends to what it holds).
+    chord: f32,
+    bend: f32,
+    grip: f32,
+    /// Where its swaying tip is, and which way the tip points.
+    tip: glam::Vec2,
+    tip_angle: f32,
+}
+
 /// Push the quads of `instances` that are behind (`front == false`) or in front of the body.
+/// `time` is the shader's clock: parts on another part's tip ride on its sway.
 fn push_parts(
     b: &mut QuadBuffers,
     instances: &[Instance],
     owner: &PartOwner,
     front: bool,
     px: f32,
+    time: f32,
 ) {
     let rot = glam::Vec2::from_angle(owner.heading);
+    let seed = (owner.seed * 255.0) as u8;
+    // The shader's inputs, as the shader sees them (quantized to bytes).
+    let dead = owner.quad.state[2] & FLAG_DEAD != 0;
+    let time = if dead { 0.0 } else { time };
+    let activity = if dead {
+        0.0
+    } else {
+        owner.quad.motion[0] as f32 / 255.0
+    };
+    let mut placed: Vec<Placed> = Vec::with_capacity(instances.len());
     for (index, inst) in instances.iter().enumerate() {
-        if inst.kind.in_front() != front {
-            continue;
-        }
         let length = inst.length * owner.radius;
-        if length < 1.2 * px {
-            continue;
-        }
-        let base = owner.pos + rot.rotate(inst.base * owner.radius);
-        let mut angle = owner.heading + inst.dir;
+        // On another part's tip: carried by that tip's sway and turn.
+        let (base, mut angle) = match inst.attached_to.filter(|&p| p < placed.len()) {
+            Some(p) => {
+                let parent = &placed[p];
+                let turn = parent.tip_angle - (owner.heading + instances[p].dir);
+                let offset = (inst.base - instances[p].tip()) * owner.radius;
+                (
+                    parent.tip + glam::Vec2::from_angle(owner.heading + turn).rotate(offset),
+                    owner.heading + inst.dir + turn,
+                )
+            }
+            None => (
+                owner.pos + rot.rotate(inst.base * owner.radius),
+                owner.heading + inst.dir,
+            ),
+        };
         // A tentacle holding something swings to touch it, bowing out to keep its length.
         let mut chord = length;
         let mut bend = 0.0;
@@ -740,8 +810,38 @@ fn push_parts(
                 grip = g;
             }
         }
+        // The swaying tip: the midline's end, and its slope there.
+        let m = if inst.mirror < 0.0 { -1.0 } else { 1.0 };
+        let part_seed = seed.wrapping_add(inst.slot as u8 * 37) as f32 / 255.0;
+        let phase = part_seed * 40.0 + inst.index.min(100) as f32 * 1.9;
+        let arch = unorm(0.5 + 0.5 * bend * m / 0.75) as f32 / 255.0 * 1.5 - 0.75;
+        let grip_q = unorm(grip) as f32 / 255.0;
+        let y = |a: f32| midline(inst.kind, a, time, phase, activity, grip_q, arch);
+        let (end, slope) = (y(1.0), (y(1.0) - y(0.98)) / 0.02);
         let axis = glam::Vec2::from_angle(angle);
-        let center = base + axis * (chord * 0.5);
+        let side = glam::Vec2::new(-axis.y, axis.x);
+        placed.push(Placed {
+            base,
+            angle,
+            chord,
+            bend,
+            grip,
+            tip: base + axis * chord + side * (end * m * chord),
+            tip_angle: angle + (slope * m).atan(),
+        });
+    }
+
+    for (inst, p) in instances.iter().zip(&placed) {
+        if inst.kind.in_front() != front {
+            continue;
+        }
+        let length = inst.length * owner.radius;
+        if length < 1.2 * px {
+            continue;
+        }
+        let (chord, bend) = (p.chord, p.bend);
+        let axis = glam::Vec2::from_angle(p.angle);
+        let center = p.base + axis * (chord * 0.5);
         let half_width = inst.width * owner.radius / chord * 0.5;
         let margin = part_margin(inst.kind) + 2.0 * px / chord;
         let hx = 0.5 + margin.min(0.3);
@@ -750,11 +850,10 @@ fn push_parts(
         quad.shape = [hx, hy, half_width, chord / px];
         if inst.kind == PartKind::Tentacle {
             // In the part's mirrored frame, as the shader draws it.
-            quad.chem[2] = unorm(grip);
+            quad.chem[2] = unorm(p.grip);
             quad.chem[3] = unorm(0.5 + 0.5 * bend * inst.mirror.signum() / 0.75);
         }
         let mirror = if inst.mirror < 0.0 { 1u8 } else { 0 };
-        let seed = (owner.seed * 255.0) as u8;
         quad.body = [
             inst.kind.code(),
             unorm(inst.size),
@@ -782,6 +881,8 @@ fn update_organisms(
     let world = &state.world;
     let alpha = state.alpha;
     let px = cam.zoom; // world units per pixel
+    // The organism shader's clock (its `params.x`), for parts riding on swaying tips.
+    let now = time.elapsed_secs_wrapped();
     let half_view = Vec2::new(window.width(), window.height()) * 0.5 * px;
     let (view_min, view_max) = (cam.center - half_view, cam.center + half_view);
     let min_half = 1.6 * px; // never smaller than ~3 px across
@@ -864,11 +965,11 @@ fn update_organisms(
         // Carcasses lose their parts as they are eaten.
         let draw_parts = c.radius >= parts_from && c.consumed() < 0.6;
         if draw_parts {
-            push_parts(&mut b, &instances, &owner, false, px);
+            push_parts(&mut b, &instances, &owner, false, px, now);
         }
         b.push_oriented(c.pos, ext, glam::Vec2::from_angle(c.heading), quad);
         if draw_parts {
-            push_parts(&mut b, &instances, &owner, true, px);
+            push_parts(&mut b, &instances, &owner, true, px, now);
         }
     }
 
@@ -1033,11 +1134,11 @@ fn update_organisms(
             );
         }
         if let Some(i) = &instances {
-            push_parts(&mut b, i, &owner, false, px);
+            push_parts(&mut b, i, &owner, false, px, now);
         }
         b.push_oriented(pos, ext, glam::Vec2::from_angle(o.heading), quad);
         if let Some(i) = &instances {
-            push_parts(&mut b, i, &owner, true, px);
+            push_parts(&mut b, i, &owner, true, px, now);
         }
     }
 
@@ -1108,11 +1209,11 @@ fn update_organisms(
                 None
             };
             if let Some(i) = &instances {
-                push_parts(&mut b, i, &owner, false, px);
+                push_parts(&mut b, i, &owner, false, px, now);
             }
             b.push_oriented(pose.pos, ext, glam::Vec2::from_angle(pose.heading), quad);
             if let Some(i) = &instances {
-                push_parts(&mut b, i, &owner, true, px);
+                push_parts(&mut b, i, &owner, true, px, now);
             }
             continue;
         }
@@ -1171,13 +1272,58 @@ fn update_organisms(
     }
 }
 
-/// Sense range of the selected organism, drawn with gizmos.
+/// Sense range of the selected organism and the inspected water tile, drawn with gizmos.
 fn draw_overlays(
     mut gizmos: Gizmos,
     state: Res<SimState>,
     selection: Res<Selection>,
     ui: Res<crate::ui::UiState>,
+    cam: Res<CameraState>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
+    // Every member of the highlighted species gets a ring, big enough to spot when zoomed out.
+    if let Some(species) = selection.species
+        && let Ok(window) = windows.single()
+    {
+        let px = cam.zoom;
+        let half = Vec2::new(window.width(), window.height()) * 0.5 * px;
+        let (lo, hi) = (cam.center - half, cam.center + half);
+        let color = Color::srgba(1.0, 0.95, 0.55, 0.75);
+        let mut drawn = 0;
+        for o in state
+            .world
+            .organisms
+            .iter()
+            .filter(|o| o.species == species)
+        {
+            let p = o.prev_pos.lerp(o.pos, state.alpha);
+            let p = Vec2::new(p.x, p.y);
+            let r = (o.radius * 1.8).max(7.0 * px);
+            if p.x + r < lo.x || p.x - r > hi.x || p.y + r < lo.y || p.y - r > hi.y {
+                continue;
+            }
+            gizmos.circle_2d(Isometry2d::from_translation(p), r, color);
+            drawn += 1;
+            if drawn >= 4000 {
+                break;
+            }
+        }
+    }
+    // The tile whose water is being inspected: its outline and the exact spot.
+    if let Some(p) = selection.probe {
+        let cell = state.world.env.oxygen.cell;
+        let corner = (p / cell).floor() * cell;
+        let color = Color::srgba(1.0, 1.0, 0.6, 0.8);
+        gizmos.rect_2d(
+            Isometry2d::from_translation(Vec2::new(corner.x, corner.y) + Vec2::splat(cell * 0.5)),
+            Vec2::splat(cell),
+            color,
+        );
+        let c = Vec2::new(p.x, p.y);
+        let arm = cell * 0.15;
+        gizmos.line_2d(c - Vec2::X * arm, c + Vec2::X * arm, color);
+        gizmos.line_2d(c - Vec2::Y * arm, c + Vec2::Y * arm, color);
+    }
     if !ui.show_senses {
         return;
     }

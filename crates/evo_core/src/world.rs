@@ -427,7 +427,14 @@ impl Reach {
 /// A hunter's strike at the prey touching it, decided from the state at the start of feeding:
 /// swallowed whole if small enough (and the roll succeeds), otherwise a bite. `None` (a strike
 /// with no prey) if it doesn't touch living prey or the swallow fails.
-fn strike(hunter: &Organism, i: usize, prey: &Organism, j: usize, config: &Config, tick: u64) -> Strike {
+fn strike(
+    hunter: &Organism,
+    i: usize,
+    prey: &Organism,
+    j: usize,
+    config: &Config,
+    tick: u64,
+) -> Strike {
     let fc = &config.feeding;
     let dt = config.time.dt;
     let t = &hunter.traits;
@@ -473,7 +480,13 @@ fn strike(hunter: &Organism, i: usize, prey: &Organism, j: usize, config: &Confi
 }
 
 /// Apply a strike to its prey: swallow it whole or bite off a piece. Returns what was taken.
-fn take_from_prey(prey: &mut Organism, st: &Strike, config: &Config, tick: u64, min_mass: f32) -> Taken {
+fn take_from_prey(
+    prey: &mut Organism,
+    st: &Strike,
+    config: &Config,
+    tick: u64,
+    min_mass: f32,
+) -> Taken {
     let mut got = Taken {
         toxin: prey.traits.toxin,
         ..Default::default()
@@ -1040,13 +1053,39 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
 
 /// The sixteen body-relative directions `best_move` tries (every 22.5°): cosines and sines.
 const DIR16_COS: [f32; 16] = [
-    1.0, 0.923_879_5, 0.707_106_77, 0.382_683_43, 0.0, -0.382_683_43, -0.707_106_77,
-    -0.923_879_5, -1.0, -0.923_879_5, -0.707_106_77, -0.382_683_43, 0.0, 0.382_683_43,
-    0.707_106_77, 0.923_879_5,
+    1.0,
+    0.923_879_5,
+    0.707_106_77,
+    0.382_683_43,
+    0.0,
+    -0.382_683_43,
+    -0.707_106_77,
+    -0.923_879_5,
+    -1.0,
+    -0.923_879_5,
+    -0.707_106_77,
+    -0.382_683_43,
+    0.0,
+    0.382_683_43,
+    0.707_106_77,
+    0.923_879_5,
 ];
 const DIR16_SIN: [f32; 16] = [
-    0.0, 0.382_683_43, 0.707_106_77, 0.923_879_5, 1.0, 0.923_879_5, 0.707_106_77, 0.382_683_43,
-    0.0, -0.382_683_43, -0.707_106_77, -0.923_879_5, -1.0, -0.923_879_5, -0.707_106_77,
+    0.0,
+    0.382_683_43,
+    0.707_106_77,
+    0.923_879_5,
+    1.0,
+    0.923_879_5,
+    0.707_106_77,
+    0.382_683_43,
+    0.0,
+    -0.382_683_43,
+    -0.707_106_77,
+    -0.923_879_5,
+    -1.0,
+    -0.923_879_5,
+    -0.707_106_77,
     -0.382_683_43,
 ];
 
@@ -1075,7 +1114,11 @@ fn best_move(
     for k in 0..16 {
         let swim = at(&t.swim_dirs, k);
         let walk = if touching { at(&t.crawl_dirs, k) } else { 0.0 };
-        let (speed, walking) = if walk > swim { (walk, true) } else { (swim, false) };
+        let (speed, walking) = if walk > swim {
+            (walk, true)
+        } else {
+            (swim, false)
+        };
         // Progress is at most the speed; skip the cosine when it can't win.
         if speed <= best.3 {
             continue;
@@ -1087,8 +1130,16 @@ fn best_move(
         }
     }
     let swim = t.swim_toward(want_local);
-    let walk = if touching { t.crawl_toward(want_local) } else { 0.0 };
-    let (speed, walking) = if walk > swim { (walk, true) } else { (swim, false) };
+    let walk = if touching {
+        t.crawl_toward(want_local)
+    } else {
+        0.0
+    };
+    let (speed, walking) = if walk > swim {
+        (walk, true)
+    } else {
+        (swim, false)
+    };
     if speed > best.3 {
         best = (heading + want_local, speed, walking, speed);
     }
@@ -1101,7 +1152,10 @@ fn best_move(
 fn shade(light: &mut crate::environment::LightField, entries: &[Entry], sun: f32, half_depth: f32) {
     let geometry = light.geometry();
     let ny = geometry.ny;
-    let slab = geometry.nx.div_ceil(rayon::current_num_threads().max(1) * 2).max(1);
+    let slab = geometry
+        .nx
+        .div_ceil(rayon::current_num_threads().max(1) * 2)
+        .max(1);
     light
         .weight
         .par_chunks_mut(slab * ny)
@@ -1147,8 +1201,13 @@ fn sort_spatially(organisms: &mut Vec<Organism>) {
         })
         .collect();
     order.par_sort_unstable();
-    let mut slots: Vec<Option<Organism>> = std::mem::take(organisms).into_iter().map(Some).collect();
-    organisms.extend(order.iter().map(|&(_, i)| slots[i as usize].take().unwrap()));
+    let mut slots: Vec<Option<Organism>> =
+        std::mem::take(organisms).into_iter().map(Some).collect();
+    organisms.extend(
+        order
+            .iter()
+            .map(|&(_, i)| slots[i as usize].take().unwrap()),
+    );
 }
 
 impl Organism {
@@ -1833,8 +1892,9 @@ impl World {
                     let room = o.max_nutrients(config) - o.nutrients;
                     if t.uptake > 0.0 && room > 0.0 {
                         let anchor = if o.anchored { cc.anchor_uptake } else { 1.0 };
-                        u.k_nutrients = (cc.uptake_rate * t.uptake * r * t.uptake_area * anchor * dt)
-                            .clamp(0.0, m_area);
+                        u.k_nutrients =
+                            (cc.uptake_rate * t.uptake * r * t.uptake_area * anchor * dt)
+                                .clamp(0.0, m_area);
                         u.room = room;
                     }
                     let sweep = fc.scavenge_rate * r * (1.0 + t.filter)
@@ -1905,9 +1965,18 @@ impl World {
         }
         let ups = &scratch.uptakes;
         rayon::scope(|sc| {
-            sc.spawn(|_| ups.iter().for_each(|u| demand_m[u.idx as usize] += u.minerals));
-            sc.spawn(|_| ups.iter().for_each(|u| demand_n[u.idx as usize] += u.nutrients));
-            sc.spawn(|_| ups.iter().for_each(|u| demand_d[u.d_idx as usize] += u.detritus));
+            sc.spawn(|_| {
+                ups.iter()
+                    .for_each(|u| demand_m[u.idx as usize] += u.minerals)
+            });
+            sc.spawn(|_| {
+                ups.iter()
+                    .for_each(|u| demand_n[u.idx as usize] += u.nutrients)
+            });
+            sc.spawn(|_| {
+                ups.iter()
+                    .for_each(|u| demand_d[u.d_idx as usize] += u.detritus)
+            });
         });
         let [demand_m, demand_n, demand_d] = &scratch.demand;
         let share = |want: f32, total: f32, held: f32| {
@@ -1928,7 +1997,11 @@ impl World {
                 let (idx, d_idx) = (u.idx as usize, u.d_idx as usize);
                 u.minerals = share(u.minerals, demand_m[idx], minerals_ro.data[idx] * m_area);
                 u.nutrients = share(u.nutrients, demand_n[idx], nutrients_ro.data[idx] * m_area);
-                u.detritus = share(u.detritus, demand_d[d_idx], detritus_ro.data[d_idx] * d_area);
+                u.detritus = share(
+                    u.detritus,
+                    demand_d[d_idx],
+                    detritus_ro.data[d_idx] * d_area,
+                );
                 o.nutrients += u.nutrients;
                 let absorbed = u.minerals * fc.chemo_yield;
                 let grazed = u.detritus;
@@ -2514,9 +2587,26 @@ impl World {
             surface_temp: self.env.clock.surface_temp,
             ..Default::default()
         };
+        sample.death_causes = std::mem::take(&mut self.stats.causes_since_sample);
+        let height = self.config.world.height;
         let mut radius_sum = 0.0;
         let mut part_sum = 0u64;
         for o in &self.organisms {
+            let depth = height - o.pos.y;
+            let band = [300.0, 900.0, 2500.0]
+                .iter()
+                .filter(|&&d| depth >= d)
+                .count();
+            sample.depth_bands[band] += 1;
+            if o.traits.part_count > 0 {
+                let mut has = [false; 15];
+                for p in crate::parts::decode_parts(&o.genome) {
+                    has[p.kind as usize - 1] = true;
+                }
+                for (n, h) in sample.part_carriers.iter_mut().zip(has) {
+                    *n += h as u32;
+                }
+            }
             sample.biomass += o.mass;
             if o.traits.part_count > 0 {
                 sample.with_parts += 1;
@@ -3030,15 +3120,27 @@ mod tests {
         let world = World::new(config);
         let vent = world.terrain.vent_sites[0];
         let ledge_top = vent.y + 40.0;
-        let (near, far) = (Vec2::new(vent.x + 150.0, ledge_top), Vec2::new(vent.x + 250.0, ledge_top));
+        let (near, far) = (
+            Vec2::new(vent.x + 150.0, ledge_top),
+            Vec2::new(vent.x + 250.0, ledge_top),
+        );
         for p in [near, far] {
-            assert!(world.terrain.is_solid(p - Vec2::new(0.0, 20.0)), "rock under the ledge at {p:?}");
-            assert!(!world.terrain.is_solid(p + Vec2::new(0.0, 30.0)), "water over it at {p:?}");
+            assert!(
+                world.terrain.is_solid(p - Vec2::new(0.0, 20.0)),
+                "rock under the ledge at {p:?}"
+            );
+            assert!(
+                !world.terrain.is_solid(p + Vec2::new(0.0, 30.0)),
+                "water over it at {p:?}"
+            );
         }
         let temp = |p: Vec2| world.env.temperature.sample(p + Vec2::new(0.0, 30.0));
         let (core, warm, cooler) = (temp(vent), temp(near), temp(far));
         assert!(core > warm && warm > cooler, "{core} {warm} {cooler}");
-        assert!((30.0..48.0).contains(&warm) && cooler > 20.0, "near {warm}, far {cooler}");
+        assert!(
+            (30.0..48.0).contains(&warm) && cooler > 20.0,
+            "near {warm}, far {cooler}"
+        );
     }
 
     #[test]
@@ -3208,14 +3310,22 @@ mod tests {
         g = with_part(g, 0, PartKind::Tentacle, 0, 0xFF, 8);
         let t = crate::traits::Traits::decode(&g, &world.config);
         assert_eq!(t.grasp_count, 1);
-        assert!(t.grasps[0].y > 0.5, "the grasp is around the base: {:?}", t.grasps[0]);
+        assert!(
+            t.grasps[0].y > 0.5,
+            "the grasp is around the base: {:?}",
+            t.grasps[0]
+        );
         let r = t.adult_radius;
         let reach = Reach::new(Vec2::ZERO, 0.0, r, &t, 0.3);
         let out = r * (1.0 + t.grasps[0].radius * 0.8);
         let (left, right) = (Vec2::new(0.0, out), Vec2::new(0.0, -out));
         assert_eq!(reach.grasping(left, 1.0), 1, "grabbed on its side");
         assert_eq!(reach.touches(left, 1.0), 0.0, "but not eaten there");
-        assert_eq!(reach.grasping(right, 1.0), 0, "out of reach on the other side");
+        assert_eq!(
+            reach.grasping(right, 1.0),
+            0,
+            "out of reach on the other side"
+        );
     }
 
     #[test]
@@ -3294,7 +3404,10 @@ mod tests {
         let holding: Vec<&Grasp> = o.grasps.iter().filter(|g| g.tick == world.tick).collect();
         assert_eq!(holding.len(), 3, "each tentacle holds one: {:?}", o.grasps);
         for (a, b) in [(0, 1), (0, 2), (1, 2)] {
-            assert!(holding[a].pos.distance(holding[b].pos) > 1.0, "different prey");
+            assert!(
+                holding[a].pos.distance(holding[b].pos) > 1.0,
+                "different prey"
+            );
         }
     }
 

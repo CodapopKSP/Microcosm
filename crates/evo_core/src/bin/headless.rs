@@ -22,6 +22,9 @@ struct Args {
     /// Override the world seed.
     #[arg(long)]
     seed: Option<u64>,
+    /// Use this map (configs/maps/NAME.toml) instead of the config's `world.map`.
+    #[arg(long)]
+    world_map: Option<String>,
     /// Sim hours to run (sim seconds = hours × 3600).
     #[arg(long, default_value_t = 0.5)]
     hours: f64,
@@ -77,7 +80,8 @@ fn main() {
             w
         }
         None => {
-            let mut config = Config::load(&args.config).unwrap_or_else(|e| fail(&e));
+            let mut config = Config::load_with_map(&args.config, args.world_map.as_deref())
+                .unwrap_or_else(|e| fail(&e));
             if let Some(seed) = args.seed {
                 config.world.seed = seed;
             }
@@ -368,7 +372,10 @@ fn diagnostics(world: &World) {
         .iter()
         .enumerate()
         .filter(|(i, _)| !minerals.solid[*i])
-        .fold((0, 0.0f32), |best, (i, &c)| if c > best.1 { (i, c) } else { best });
+        .fold(
+            (0, 0.0f32),
+            |best, (i, &c)| if c > best.1 { (i, c) } else { best },
+        );
     line += &format!(
         " | peak {peak:.3} at x {:.0} depth {:.0}",
         ((peak_i % minerals.nx) as f32 + 0.5) * minerals.cell,

@@ -732,7 +732,10 @@ pub fn describe_gene(index: usize, genome: &Genome, traits: &Traits, config: &Co
             }
         }
         gene::RESERVES => format!("stores {:.1}× body mass", traits.reserve_factor),
-        gene::LONGEVITY => format!("lives ~{}", format_duration(traits.lifespan)),
+        gene::LONGEVITY => format!(
+            "lives ~{}",
+            format_game_duration(traits.lifespan, &config.time)
+        ),
         gene::ELONGATION => {
             let aspect = 1.0 + 3.0 * traits.elongation;
             if aspect < 1.15 {
@@ -846,6 +849,44 @@ fn pct_precise(x: f32) -> String {
 }
 
 /// `90 s`, `12 min`, `3.5 h`.
+/// A span of sim time in game time: years and days, days, hours or minutes. A game day is
+/// `time.day_length` sim seconds and a year `time.year_length` days.
+pub fn format_game_duration(seconds: f32, time: &crate::config::TimeConfig) -> String {
+    let day = time.day_length.max(1e-3);
+    let days = seconds.max(0.0) / day;
+    let year_days = time.year_length.max(1e-3);
+    let plural = |n: f32, unit: &str| {
+        if (n - 1.0).abs() < 0.05 {
+            format!("1 {unit}")
+        } else {
+            format!("{n} {unit}s")
+        }
+    };
+    if days >= year_days {
+        let years = (days / year_days).floor();
+        let rest = (days - years * year_days).floor();
+        if years >= 10.0 || rest < 1.0 {
+            plural(years, "year")
+        } else {
+            format!("{}, {}", plural(years, "year"), plural(rest, "day"))
+        }
+    } else if days >= 1.0 {
+        plural((days * 10.0).round() / 10.0, "day")
+    } else if days * 24.0 >= 1.0 {
+        plural((days * 24.0).round(), "hour")
+    } else {
+        plural((days * 1440.0).round().max(1.0), "minute")
+    }
+}
+
+/// A moment, as the clock shows it: "Year 3 · Day 14" (days count from the start).
+pub fn format_game_date(seconds: f64, time: &crate::config::TimeConfig) -> String {
+    let day = time.day_length.max(1e-3) as f64;
+    let days = (seconds + 0.3 * day) / day;
+    let years = days / time.year_length.max(1e-3) as f64;
+    format!("Year {} · Day {}", years as u64 + 1, days as u64 + 1)
+}
+
 pub fn format_duration(seconds: f32) -> String {
     if seconds < 120.0 {
         format!("{seconds:.0} s")
@@ -863,6 +904,19 @@ mod tests {
     fn ancestor() -> (Genome, Config) {
         let config = Config::default();
         (Genome::parse(&config.population.ancestor).unwrap(), config)
+    }
+
+    #[test]
+    fn game_time_reads_in_years_days_and_hours() {
+        let t = crate::config::TimeConfig::default(); // 600 s days, 6-day years
+        assert_eq!(format_game_duration(25.0, &t), "1 hour");
+        assert_eq!(format_game_duration(300.0, &t), "12 hours");
+        assert_eq!(format_game_duration(900.0, &t), "1.5 days");
+        assert_eq!(format_game_duration(3600.0, &t), "1 year");
+        assert_eq!(format_game_duration(4800.0, &t), "1 year, 2 days");
+        assert_eq!(format_game_duration(36_000.0, &t), "10 years");
+        assert_eq!(format_game_date(0.0, &t), "Year 1 · Day 1");
+        assert_eq!(format_game_date(3600.0, &t), "Year 2 · Day 7");
     }
 
     #[test]
@@ -923,7 +977,11 @@ mod tests {
         let (shelled, config) = with_part(PartKind::Shell, 5, 0xFF, 0);
         let t = Traits::decode(&shelled, &config);
         // A ring of six full-size plates: about ±6 °C more.
-        assert!((t.temp_tol - bare - 6.0).abs() < 0.01, "{bare} -> {}", t.temp_tol);
+        assert!(
+            (t.temp_tol - bare - 6.0).abs() < 0.01,
+            "{bare} -> {}",
+            t.temp_tol
+        );
     }
 
     #[test]
