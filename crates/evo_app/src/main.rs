@@ -2,6 +2,7 @@
 
 mod camera;
 mod gallery;
+mod menu;
 mod render;
 mod sim;
 mod ui;
@@ -15,7 +16,7 @@ use clap::Parser;
 use evo_core::{Config, World};
 
 #[derive(Parser, Debug, Clone)]
-#[command(about = "Evolution simulator viewer")]
+#[command(about = "Microcosm: a living ocean, grown from a single microbe")]
 pub struct Args {
     /// Config file for a new world (implies `--new`), or, with `--load`, a config to apply to the
     /// loaded world. Default: configs/default.toml.
@@ -83,6 +84,18 @@ pub struct Args {
     pub map: Option<String>,
 }
 
+/// Where the app is: the menus (splash, new world, load) or a running world.
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AppState {
+    #[default]
+    Menu,
+    Running,
+}
+
+/// The command line, for starting worlds later (from the menu).
+#[derive(Resource, Clone)]
+pub struct Launch(pub Args);
+
 /// Viewer-wide options from the command line.
 #[derive(Resource, Clone)]
 pub struct ViewerOptions {
@@ -101,6 +114,89 @@ pub struct ViewerOptions {
 
 fn main() {
     let args = Args::parse();
+    // Any flag that names or shapes a world goes straight in; otherwise the menu comes first.
+    let direct = args.load.is_some()
+        || args.new
+        || args.config.is_some()
+        || args.seed.is_some()
+        || args.world_map.is_some()
+        || args.gallery
+        || args.stream
+        || !args.trigger.is_empty()
+        || args.view.is_some()
+        || args.follow.is_some()
+        || args.select
+        || args.probe.is_some()
+        || args.charts
+        || args.tree;
+    let mut world = direct.then(|| direct_world(&args));
+
+    let mut app = App::new();
+    // A world given on the command line must exist before the first state transition.
+    if let Some(world) = world.take() {
+        let mut state = sim::SimState::new(world, &args);
+        if args.gallery {
+            state.speed_index = 0;
+        }
+        app.insert_resource(state);
+    }
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Microcosm".into(),
+            resolution: WindowResolution::new(1600, 900),
+            present_mode: if args.no_vsync {
+                PresentMode::AutoNoVsync
+            } else {
+                PresentMode::AutoVsync
+            },
+            ..default()
+        }),
+        ..default()
+    }))
+    .add_plugins(EguiPlugin::default())
+    .insert_resource(ClearColor(Color::srgb(0.01, 0.02, 0.05)))
+    .insert_resource(Launch(args.clone()))
+    .insert_state(if world.is_some() {
+        AppState::Running
+    } else {
+        AppState::Menu
+    })
+    .insert_resource(ViewerOptions {
+        stream: args.stream,
+        screenshot: args.screenshot.clone(),
+        screenshot_delay: args.screenshot_delay,
+        view: args
+            .view
+            .as_ref()
+            .filter(|v| v.len() == 3)
+            .map(|v| (v[0], v[1], v[2]))
+            .or(args.gallery.then(|| gallery::view_for(&Config::default()))),
+        select: args.select,
+        charts: args.charts || args.tree,
+        tree: args.tree,
+        follow: args.follow.clone(),
+        follow_zoom: args.follow_zoom,
+        map: args.map.clone(),
+        probe: args
+            .probe
+            .as_ref()
+            .filter(|v| v.len() == 2)
+            .map(|v| (v[0], v[1])),
+    })
+    .add_plugins((
+        sim::SimPlugin,
+        camera::CameraPlugin,
+        render::RenderPlugin,
+        ui::UiPlugin,
+        menu::MenuPlugin,
+    ))
+    .add_systems(Update, screenshot_and_exit)
+    .run();
+}
+
+/// The world named by the command line: a save (`--load`, else the autosave unless `--new` or
+/// another new-world flag), the gallery, or a new world from the config.
+fn direct_world(args: &Args) -> World {
     // By default, pick up where the last session left off.
     let autosave = args.save_dir.join("autosave.bin");
     let resume = args.load.clone().or_else(|| {
@@ -156,64 +252,10 @@ fn main() {
             }
         }
     };
-
     for t in &args.trigger {
         world.trigger(*t);
     }
-
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Evolution".into(),
-                resolution: WindowResolution::new(1600, 900),
-                present_mode: if args.no_vsync {
-                    PresentMode::AutoNoVsync
-                } else {
-                    PresentMode::AutoVsync
-                },
-                ..default()
-            }),
-            ..default()
-        }))
-        .add_plugins(EguiPlugin::default())
-        .insert_resource(ClearColor(Color::srgb(0.01, 0.02, 0.05)))
-        .insert_resource({
-            let mut state = sim::SimState::new(world, &args);
-            if args.gallery {
-                state.speed_index = 0;
-            }
-            state
-        })
-        .insert_resource(ViewerOptions {
-            stream: args.stream,
-            screenshot: args.screenshot.clone(),
-            screenshot_delay: args.screenshot_delay,
-            view: args
-                .view
-                .as_ref()
-                .filter(|v| v.len() == 3)
-                .map(|v| (v[0], v[1], v[2]))
-                .or(args.gallery.then(|| gallery::view_for(&Config::default()))),
-            select: args.select,
-            charts: args.charts || args.tree,
-            tree: args.tree,
-            follow: args.follow.clone(),
-            follow_zoom: args.follow_zoom,
-            map: args.map.clone(),
-            probe: args
-                .probe
-                .as_ref()
-                .filter(|v| v.len() == 2)
-                .map(|v| (v[0], v[1])),
-        })
-        .add_plugins((
-            sim::SimPlugin,
-            camera::CameraPlugin,
-            render::RenderPlugin,
-            ui::UiPlugin,
-        ))
-        .add_systems(Update, screenshot_and_exit)
-        .run();
+    world
 }
 
 /// `--screenshot`: capture the window once after a delay, then quit.

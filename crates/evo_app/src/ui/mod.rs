@@ -65,6 +65,8 @@ pub struct UiState {
     fps: f64,
     /// The egui style has been set up (quicker tooltips).
     styled: bool,
+    /// The Menu button was pressed: save and go back to the menus.
+    to_menu: bool,
 }
 
 impl Default for UiState {
@@ -82,6 +84,7 @@ impl Default for UiState {
             charts: charts::ChartState::default(),
             fps: 0.0,
             styled: false,
+            to_menu: false,
         }
     }
 }
@@ -92,8 +95,11 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UiState>()
             .add_systems(Startup, apply_stream_option)
-            .add_systems(Update, ui_keys)
-            .add_systems(EguiPrimaryContextPass, draw_ui);
+            .add_systems(Update, ui_keys.run_if(in_state(crate::AppState::Running)))
+            .add_systems(
+                EguiPrimaryContextPass,
+                draw_ui.run_if(in_state(crate::AppState::Running)),
+            );
     }
 }
 
@@ -205,8 +211,13 @@ fn draw_ui(
     mut selection: ResMut<Selection>,
     mut cam: ResMut<CameraState>,
     time: Res<Time<Real>>,
+    mut next: ResMut<NextState<crate::AppState>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
+    if std::mem::take(&mut ui_state.to_menu) {
+        sim.save("autosave.bin");
+        next.set(crate::AppState::Menu);
+    }
     if !ui_state.styled {
         // Tooltips appear almost at once (the default waits half a second).
         ctx.all_styles_mut(|style| {
@@ -368,6 +379,13 @@ fn top_bar(
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button("Menu")
+                    .on_hover_text("Save, and go back to the main menu")
+                    .clicked()
+                {
+                    ui_state.to_menu = true;
+                }
                 if ui.button("Help").clicked() {
                     ui_state.show_help = !ui_state.show_help;
                 }

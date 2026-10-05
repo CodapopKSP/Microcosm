@@ -1,4 +1,4 @@
-# Evolution Simulator — default configuration.
+# Microcosm — default configuration.
 #
 # Every key is optional: anything omitted takes the built-in default (which is
 # exactly what this file contains). Rules are explained in docs/DESIGN.md.
@@ -249,7 +249,9 @@ established = 20         # members needed before a species is named and listed
 # The ancestor: a tiny, floating, green photosynthesizer with no parts, so it can't move.
 ancestor = "B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 N:80808080808080808000 P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0"
 initial = 2000
+spawn_min_depth = 0.0    # life starts (and recolonizes) between these depths...
 spawn_depth = 300.0
+spawn_x = [0.0, 1.0]     # ...across this part of the ocean's width (0 = left edge, 1 = right)
 min_population = 100     # below this, the seed bank recolonizes
 reseed_count = 300
 max_population = 250000  # safety cap on births

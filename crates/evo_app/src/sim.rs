@@ -57,6 +57,12 @@ impl SimState {
         }
     }
 
+    /// Never saves (the menu's backdrop world).
+    pub fn without_autosave(mut self) -> Self {
+        self.autosave_every = None;
+        self
+    }
+
     pub fn speed(&self) -> f64 {
         SPEEDS[self.speed_index]
     }
@@ -108,8 +114,22 @@ pub struct SimPlugin;
 impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Selection>()
-            .add_systems(Update, (speed_keys, run_simulation).chain().in_set(SimStep))
-            .add_systems(Last, save_on_exit);
+            .add_systems(
+                Update,
+                (
+                    speed_keys.run_if(in_state(crate::AppState::Running)),
+                    run_simulation.run_if(resource_exists::<SimState>),
+                )
+                    .chain()
+                    .in_set(SimStep),
+            )
+            .add_systems(Last, save_on_exit)
+            .add_systems(
+                OnExit(crate::AppState::Running),
+                |mut commands: Commands| {
+                    commands.remove_resource::<SimState>();
+                },
+            );
     }
 }
 
@@ -206,9 +226,14 @@ fn speed_keys(
 /// Save when the app is closing (window closed or quit), unless autosave is off.
 fn save_on_exit(
     mut exits: MessageReader<AppExit>,
-    mut state: ResMut<SimState>,
+    state: Option<ResMut<SimState>>,
     options: Res<crate::ViewerOptions>,
+    app_state: Res<State<crate::AppState>>,
 ) {
+    let Some(mut state) = state else { return };
+    if *app_state.get() != crate::AppState::Running {
+        return;
+    }
     if exits.read().next().is_some()
         && state.autosave_every.is_some()
         && options.screenshot.is_none()

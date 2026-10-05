@@ -1,6 +1,6 @@
 [package]
 name = "evo_core"
-description = "Simulation core for the evolution simulator (no rendering dependencies)"
+description = "Microcosm: the simulation core (no rendering dependencies)"
 version.workspace = true
 edition.workspace = true
 

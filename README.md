@@ -1,4 +1,4 @@
-# Evolution
+# Microcosm
 
 A side-on ocean where life evolves on its own, built to be watched (for example, running on a stream for weeks). The world starts with a single kind of tiny floating green microbe with no body parts. Everything else has to evolve: flagella, fins, legs, tentacles, fronds, eyes, jaws, shells and the rest of the body plan; scavenging, predation and chemosynthesis at hydrothermal vents; breathing oxygen or fermenting, toxins, and large bodies. The water has real chemistry: photosynthesis releases oxygen, breathing and rotting use it, and nutrients cycle through bodies. Species get names, founders and family trees. They rise, spread, and go extinct.
 
@@ -27,10 +27,12 @@ Click any organism to see what each gene does.
 
 ```bash
 # Viewer (release mode matters: the sim is much slower unoptimized).
-# Resumes saves/autosave.bin if it exists; otherwise starts a new world.
+# Opens the main menu: continue the autosave, set up a new world (map, seed, starting
+# population, where life starts, the ancestor's genome), or load any save. The Menu
+# button in the game saves and comes back here.
 cargo run --release
 
-# Start a fresh world (or: --config my.toml, --seed 7, --world-map small)
+# Skip the menu: start a fresh world (or: --config my.toml, --seed 7, --world-map small)
 cargo run --release -- --new
 
 # Load a specific save

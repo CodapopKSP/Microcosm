@@ -1069,8 +1069,12 @@ pub struct PopulationConfig {
     pub ancestor: String,
     /// Organisms spawned at the start.
     pub initial: u32,
-    /// Initial organisms spawn within this depth below the surface.
+    /// Where life starts (and the seed bank recolonizes): between these depths below the
+    /// surface…
+    pub spawn_min_depth: f32,
     pub spawn_depth: f32,
+    /// …and between these fractions of the ocean's width (0 = left edge, 1 = right edge).
+    pub spawn_x: [f32; 2],
     /// If the population falls below this, the seed bank recolonizes.
     pub min_population: u32,
     /// Organisms added by one recolonization.
@@ -1093,7 +1097,9 @@ impl Default for PopulationConfig {
                        P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0"
                 .into(),
             initial: 2000,
+            spawn_min_depth: 0.0,
             spawn_depth: 300.0,
+            spawn_x: [0.0, 1.0],
             min_population: 100,
             reseed_count: 300,
             max_population: 250_000,

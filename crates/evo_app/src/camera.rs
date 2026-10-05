@@ -32,6 +32,21 @@ pub struct CameraState {
 }
 
 impl CameraState {
+    /// A still camera on `center` at `zoom` (the menu's backdrop).
+    pub fn fixed(center: Vec2, zoom: f32) -> Self {
+        Self {
+            center,
+            zoom,
+            target_center: center,
+            target_zoom: zoom,
+            director: false,
+            director_timer: 0.0,
+            drag_origin: None,
+            right_origin: None,
+            seen_events: 0,
+        }
+    }
+
     pub fn focus(&mut self, center: Vec2, zoom: Option<f32>) {
         self.target_center = center;
         if let Some(z) = zoom {
@@ -45,12 +60,24 @@ pub struct CameraPlugin;
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_camera)
-            .add_systems(PostStartup, open_probe)
+            .add_systems(
+                OnEnter(crate::AppState::Running),
+                (start_camera, open_probe).chain(),
+            )
             .add_systems(
                 Update,
                 (camera_input, director, follow_selection, apply_camera)
                     .chain()
-                    .after(crate::sim::SimStep),
+                    .after(crate::sim::SimStep)
+                    .run_if(in_state(crate::AppState::Running)),
+            )
+            .add_systems(
+                Update,
+                apply_camera
+                    .after(crate::sim::SimStep)
+                    .run_if(in_state(crate::AppState::Menu))
+                    .run_if(resource_exists::<CameraState>)
+                    .run_if(resource_exists::<SimState>),
             );
     }
 }
@@ -62,7 +89,28 @@ fn open_probe(options: Res<crate::ViewerOptions>, mut selection: ResMut<Selectio
     }
 }
 
-fn spawn_camera(mut commands: Commands, state: Res<SimState>, options: Res<crate::ViewerOptions>) {
+/// The one camera, for the whole app (the menus draw on it too).
+fn spawn_camera(mut commands: Commands) {
+    commands.spawn((
+        Camera2d,
+        MainCamera,
+        Hdr,
+        Bloom {
+            intensity: 0.18,
+            ..Bloom::NATURAL
+        },
+        Transform::from_xyz(0.0, 0.0, 100.0),
+    ));
+}
+
+/// Point the camera at a world that has just started.
+fn start_camera(
+    mut commands: Commands,
+    state: Res<SimState>,
+    options: Res<crate::ViewerOptions>,
+    mut cameras: Query<&mut Transform, With<MainCamera>>,
+) {
+    commands.insert_resource(Selection::default());
     let (w, h) = (
         state.world.config.world.width,
         state.world.config.world.height,
@@ -135,16 +183,9 @@ fn spawn_camera(mut commands: Commands, state: Res<SimState>, options: Res<crate
         right_origin: None,
         seen_events: state.world.events.count,
     });
-    commands.spawn((
-        Camera2d,
-        MainCamera,
-        Hdr,
-        Bloom {
-            intensity: 0.18,
-            ..Bloom::NATURAL
-        },
-        Transform::from_xyz(center.x, center.y, 100.0),
-    ));
+    for mut t in &mut cameras {
+        t.translation = Vec3::new(center.x, center.y, 100.0);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

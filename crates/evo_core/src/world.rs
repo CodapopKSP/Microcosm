@@ -1416,9 +1416,12 @@ impl World {
             let mut pos = None;
             for _ in 0..50 {
                 // In the ocean only: the basin beyond the mountain starts empty.
+                let pc = &cfg.population;
+                let (x0, x1) = (pc.spawn_x[0].min(pc.spawn_x[1]), pc.spawn_x[0].max(pc.spawn_x[1]));
+                let depth0 = pc.spawn_min_depth.max(r);
                 let p = Vec2::new(
-                    rng.range(0.0, cfg.ocean_width()),
-                    h - rng.range(r, cfg.population.spawn_depth),
+                    rng.range(x0.clamp(0.0, 1.0), x1.clamp(0.0, 1.0)) * cfg.ocean_width(),
+                    h - rng.range(depth0, pc.spawn_depth.max(depth0 + 1.0)),
                 );
                 if self.terrain.is_free(p, r) {
                     pos = Some(p);

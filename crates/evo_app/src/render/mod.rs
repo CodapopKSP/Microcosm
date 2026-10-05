@@ -187,11 +187,16 @@ impl Plugin for RenderPlugin {
             Material2dPlugin::<OrganismMaterial>::default(),
             Material2dPlugin::<BackgroundMaterial>::default(),
         ))
-        .add_systems(Startup, setup)
+        .add_systems(
+            OnEnter(crate::AppState::Running),
+            setup.in_set(WorldViewSetup),
+        )
+        .add_systems(OnEnter(crate::AppState::Menu), setup.in_set(WorldViewSetup))
         .add_systems(
             PostUpdate,
             (update_background, update_organisms, draw_overlays)
-                .before(bevy::transform::TransformSystems::Propagate),
+                .before(bevy::transform::TransformSystems::Propagate)
+                .run_if(resource_exists::<SimState>),
         );
     }
 }
@@ -212,8 +217,13 @@ fn empty_image(width: u32, height: u32, format: TextureFormat, bytes_per_pixel: 
     image
 }
 
+/// Builds the view of the current world (the game's, or the menu's backdrop).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WorldViewSetup;
+
 fn setup(
     mut commands: Commands,
+    app_state: Res<State<crate::AppState>>,
     state: Res<SimState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
@@ -262,6 +272,7 @@ fn setup(
         Mesh2d(meshes.add(Rectangle::new(w + margin * 2.0, h + margin * 2.0))),
         MeshMaterial2d(background_material.clone()),
         Transform::from_xyz(w * 0.5, h * 0.5, 0.0),
+        DespawnOnExit(*app_state.get()),
     ));
 
     let organism_mesh = meshes.add(Mesh::new(
@@ -274,6 +285,7 @@ fn setup(
         MeshMaterial2d(organism_material.clone()),
         Transform::from_xyz(0.0, 0.0, 1.0),
         NoFrustumCulling,
+        DespawnOnExit(*app_state.get()),
     ));
 
     commands.insert_resource(RenderHandles {
