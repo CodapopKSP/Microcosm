@@ -1,0 +1,35 @@
+# The ocean map: open ocean with a trench, rock outcrops and caves, a shallow shelf with a
+# permanent vent in a cave and another down the cliff (joined by tunnels), and past the ocean a
+# mountain cutting off a small basin.
+#
+# A map holds only the world size and the terrain. Configs pick one with `[world] map = "..."`
+# (or `--world-map NAME` on the command line), and any [terrain] keys in a config override the
+# map's. Every key is optional; missing ones take the built-in defaults, which are this map.
+description = "Open ocean, shelf vents, mountain and cut-off basin"
+
+[world]
+width = 20400.0          # 16000 of ocean, then the mountain and the cut-off basin
+height = 6000.0          # the water surface is at the top
+
+[terrain]
+generator = "ocean"      # how the terrain is built (see TerrainGenerator in config.rs)
+seed = 1                 # the terrain's own seed: this map is the same whatever the world seed
+cell = 8.0
+floor_height = 1400.0    # mean seafloor height above the bottom
+floor_roughness = 350.0
+shelf_start = 0.78       # shallow shelf from this fraction of the width to the right edge
+shelf_depth = 900.0      # shelf depth below the surface (sunlit seafloor)
+trench_center = 0.3
+trench_width = 0.06
+trench_depth = 1100.0
+rocks = 16               # pillars, ledges, arches, boulder fields
+rock_size = 260.0
+caves = 7                # hollow rock chambers with a narrow entrance (dark inside)
+cave_size = 320.0
+mountain_width = 2000.0  # past the ocean's right edge a mountain rises above sea level...
+mountain_height = 380.0  # ...this far, cutting off a basin of water beyond it
+basin_width = 2400.0
+basin_depth = 1100.0
+shelf_vents = true       # a permanent vent in a cave on the shelf (roof open), one down the cliff, and tunnels between
+vent_cave_x = 0.843      # the shelf vent goes in the cave nearest this point (a fraction of the ocean's width)
+cliff_vent_depth = 2250.0  # on a small ledge, with the cliff bulging out below it

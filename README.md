@@ -1,137 +1,89 @@
-# Evolution Sim
+# Evolution
 
-Evolution Sim is a 2D evolution sandbox built on [Bevy](https://bevyengine.org/). Entities have DNA, metabolize energy, move, reproduce with mutation, and are shaped by an environment with light, hazards, and (later) vents and resource fields.
+A side-on ocean where life evolves on its own, built to be watched (for example, running on a stream for weeks). The world starts with a single kind of tiny floating green microbe with no body parts. Everything else has to evolve: flagella, fins, legs, tentacles, fronds, eyes, jaws, shells and the rest of the body plan; scavenging, predation and chemosynthesis at hydrothermal vents; breathing oxygen or fermenting, toxins, and large bodies. The water has real chemistry: photosynthesis releases oxygen, breathing and rotting use it, and nutrients cycle through bodies. Species get names, founders and family trees. They rise, spread, and go extinct.
 
-The simulator uses **genome v2 (EVO2)** only — see [docs/Genome_Definition.md](docs/Genome_Definition.md): dual vitality caps, photo triad, heading-based movement, sensor rays, pursue/avoid behavior, feeding (minerals/corpses/soup), and reproduction endowment. v1 (`EVO1`) was removed; archived specs are in [docs/archive/](docs/archive/).
+Every organism has a **60-byte genome in nine lettered chromosomes**, one byte per gene, readable by a human:
 
-Phases 1–5 features (hazards, vents, metrics, headless runs) are wired for both encodings where applicable.
+```
+B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 N:80808080808080808000
+P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0
+```
+
+Chromosome **P** holds up to eight body parts (type and symmetry, size, placement). Parts get copied, lost, and change into related kinds, so body plans evolve.
+
+Click any organism to see what each gene does.
+
+- [docs/VISION.md](docs/VISION.md): goals and principles
+- [docs/DESIGN.md](docs/DESIGN.md): the rules (world, genome, ecology, behavior, species)
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): code layout, tick pipeline, performance
+- [docs/IDEAS.md](docs/IDEAS.md): future ideas, parked until the current systems are balanced
 
 ## Requirements
 
-- Rust toolchain ([rustup](https://rustup.rs/))
-- Linux (Pop/Ubuntu): `sudo apt install libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev pkg-config`
-
-This PoC uses a slim Bevy feature set (no audio) so it builds without ALSA if you skip that package.
+- Rust (stable, 1.95+)
+- Linux: `sudo apt install libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev pkg-config`
 
 ## Run
 
-### Visual sim
+```bash
+# Viewer (release mode matters: the sim is much slower unoptimized).
+# Resumes saves/autosave.bin if it exists; otherwise starts a new world.
+cargo run --release
+
+# Start a fresh world (or: --config my.toml, --seed 7, --world-map small)
+cargo run --release -- --new
+
+# Load a specific save
+cargo run --release -- --load saves/quicksave.bin
+
+# Saves from before body parts (genome v2) can't be loaded; start a new world.
+# Saves keep their own config. To apply your edited config to a saved world:
+cargo run --release -- --load saves/autosave.bin --config configs/default.toml
+
+# Stream mode: UI hidden, auto camera
+cargo run --release -- --stream
+```
+
+### Controls
+
+| Input | Action |
+|-------|--------|
+| Drag / WASD / arrows | Pan |
+| Scroll | Zoom toward the cursor |
+| Home | Whole world |
+| Click | Inspect and follow an organism (F toggles follow, Esc clears) |
+| Space | Pause / resume |
+| 1–7, +/- | Speed (½× … 64×) |
+| Tab | Hide the UI (stream view) |
+| C | Auto camera |
+| L / G / E / T / H | Species list / charts (population, family tree) / event history / event ticker / help |
+| M | Chemistry map: oxygen, nutrients, toxin |
+| F5 | Quicksave (`saves/quicksave.bin`). The world also autosaves every 10 minutes and on exit; the previous save is kept as `*.prev.bin` |
+| Ctrl+1–4 | Trigger a plague, upwelling, meteor, or rock wall right now |
+
+### Art gallery
+
+`cargo run --release -- --gallery` opens a paused world with rows of organisms, each row sweeping one gene from `00` to `FF`: the size of each of the fifteen body parts, fronds riding on swaying tentacles, elongation, segments, mouths, and the chemistry genes that show on the body. The last rows freeze the budding (small bud, fission), dying, swallowed and bitten animations at nine stages each. Use it to check how things look.
+
+### Headless
+
+Run the simulation without a window. This is useful for tuning, benchmarks, and fast-forwarding a world to load in the viewer later.
 
 ```bash
-cargo run
-# or explicitly:
-cargo run -- --config configs/default.toml
+cargo run --release -p evo_core --bin evo_headless -- --hours 2 --report 300 --diag --save saves/two_hours.bin
+cargo run --release -- --load saves/two_hours.bin
 ```
 
-Loads `configs/default.toml` from the project directory unless `--config` points elsewhere.
+`--diag` adds energy-flow diagnostics and a mean-genome summary. `--metrics out.jsonl` writes the statistics time series.
 
-The first compile can take several minutes while Bevy builds. The window size, population count, and speeds come from the config file. Startup prints whether `master_seed` is set (see `[run]` in the TOML).
+## Configuration
 
-**Debug overlays (visual mode):**
+All tunable numbers live in [`configs/default.toml`](configs/default.toml), with comments. Copy it, edit it, and pass it with `--config`. Every key is optional.
 
-- **L** — toggle light-field background gradient
-- **Click** an agent — light ring + energy bar vs `repro_threshold`
-- **Esc** — clear selection
+The world's size and terrain live in map files in [`configs/maps/`](configs/maps/). A config picks one with `[world] map = "ocean"`, and `--world-map NAME` overrides that. Each map has its own terrain seed, so the map is the same for every world seed; any `[terrain]` keys in a config override the map's. To make a new map, copy `ocean.toml`, change it and its `seed`, and select it by name.
 
-### Config
-
-- Default (v2): [`configs/default.toml`](configs/default.toml)
-- v2 template / labs: [`configs/genome_v2.example.toml`](configs/genome_v2.example.toml), [`configs/mineral_vent_v2.toml`](configs/mineral_vent_v2.toml)
-- Invalid TOML or unsupported `genetics.genome_version` exits with a readable error before the window opens.
-- Comment out `master_seed` under `[run]` for nondeterministic RNG.
-
-#### Energy model (Phase 2)
-
-Default uses **Model A** local irradiance:
-
-```toml
-[environment]
-energy_model = "local"
-solar_constant = 2.8
-light_mode = "gradient_y"
-gradient_min = 0.15
-gradient_max = 1.0
-gradient_bright_at = "top"
-crowding_blocks_photosynthesis = false
-```
-
-Per-tick photosynthetic gain: `photo_strength * light(pos) * solar_constant`. World influx does **not** scale with population count.
-
-**Migrating from Phase 1 flat grant:**
-
-| Phase 1 | Phase 2 default |
-|---------|-----------------|
-| `flat_energy_grant_per_tick = 0.8` (testing) | `flat_energy_grant_per_tick = 0.0` (ignored under `local`) |
-| No `[environment]` | `solar_constant` + `light_mode` tune bright/shade viability |
-| — | `energy_model = "legacy_flat"` restores flat grant for old regression configs |
-
-Tune `solar_constant`, `gradient_min` / `gradient_max`, and `k_photo` together so ancestors thrive in mid–bright light and high-photo mutants pay for shade (see [PHASE_2.md](docs/PHASE_2.md)).
-
-#### Hazards and repair (Phase 4)
-
-Circular hazard bands apply damage each tick while agents overlap. Entity–entity overlap does **not** damage HP (revision 2026-06). v2 `armor` mitigates hazard damage and scales metabolism/speed tradeoffs. Repair spends energy at `repair_energy_per_hp`.
-
-```toml
-[[environment.hazards]]
-center = [300.0, 450.0]
-radius = 20.0
-damage_per_tick = 0.00833
-
-[economy]
-repair_policy = "core_first"
-repair_energy_per_hp = 1.0
-spawn_energy = 50.0          # generation-0 only
-repro_cooldown_ticks = 192    # ~3.2 s anti-spam (global)
-
-[genetics.mutation_v2]
-passes_min = 0
-passes_max = 4
-p_large_step = 0.10
-```
-
-v2 color is cosmetic (no greenness photo niche). See [Genome_Definition.md](docs/Genome_Definition.md) and [PHASE_4.md](docs/PHASE_4.md) for hazard/repair history.
-
-### Headless batch run (Phase 3)
+## Tests
 
 ```bash
-# No window; runs until [run].max_ticks, writes JSONL to [run].metrics_path
-cargo run -- --headless --config configs/default.toml
-
-# Override master_seed after TOML load (determinism / A-B tests)
-cargo run -- --headless --config configs/default.toml --seed 99
+cargo test --release -p evo_core
 ```
-
-Requires `max_ticks > 0` and a set `master_seed` for reproducible metrics. See [SIMULATION.md](docs/SIMULATION.md) for the tick pipeline and metrics schema.
-
-## Documentation
-
-Design and planning docs live in `docs/`:
-
-- [docs/VISION.md](docs/VISION.md) — Goals, non-goals, design principles, glossary
-- [docs/SIMULATION.md](docs/SIMULATION.md) — Time model, randomness, config, headless vs visual
-- [docs/GENOME.md](docs/GENOME.md) — Genome encoding, loci, mutations, morphology
-- [docs/ENERGY_AND_ENVIRONMENT.md](docs/ENERGY_AND_ENVIRONMENT.md) — Energy models, light, vents, hazards, soup
-- [docs/ENTITIES.md](docs/ENTITIES.md) — Components and lifecycle
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — Crate layout and data flow
-- [docs/ROADMAP.md](docs/ROADMAP.md) — Phased implementation plan
-- [docs/PHASE_1.md](docs/PHASE_1.md) — Phase 1 checklist and acceptance criteria
-- [docs/PHASE_2.md](docs/PHASE_2.md) — Phase 2 light field and Model A gain
-- [docs/PHASE_3.md](docs/PHASE_3.md) — Headless CLI, metrics, age metabolism
-- [docs/PHASE_4.md](docs/PHASE_4.md) — Hazards, armor, repair (collision damage superseded in v2)
-- [docs/Genome_Definition.md](docs/Genome_Definition.md) — Canonical v2 genetics + mutation spec
-
-### Tests
-
-```bash
-cargo test
-```
-
-Phase acceptance highlights:
-
-```bash
-cargo test acceptance::
-cargo test sim::light::
-cargo test metabolism::
-```
-
-These documents describe where the project is going; later phases may get ahead of the current implementation.

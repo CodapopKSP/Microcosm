@@ -1,221 +1,287 @@
-# Evolution Sim — default configuration (EVO2 / genome v2)
-# Canonical traits: docs/Genome_Definition.md
+# Evolution Simulator — default configuration.
+#
+# Every key is optional: anything omitted takes the built-in default (which is
+# exactly what this file contains). Rules are explained in docs/DESIGN.md.
+# Units: distances in world units, time in sim seconds, energy in energy units.
+
 [world]
-width = 3000.0
-height = 1500.0
-boundary = "bounce"
-initial_population = 5
-default_agent_radius = 12.0
-min_speed = 10.0
-max_speed = 255.0
+seed = 1                 # life, events, random vents and currents: same seed + config => same run
+map = "ocean"            # world size and terrain from configs/maps/<map>.toml (same for every seed)
 
-# Angled terrain obstacles (center, size, rotation in degrees, optional color).
-# color: [r, g, b, a] in 0.0–1.0, or "#rrggbb" / "#rrggbbaa" hex (default dark stone).
-[[world.structures]]
-center = [-1150.0, 250.0]
-width = 70.0
-height = 520.0
-angle_deg = 28.0
-color = "#5c4a3a"
+[time]
+dt = 0.0333333333        # sim seconds per tick; 1x speed = 1/dt ticks per second
+day_length = 600.0       # seconds per day/night cycle
+year_length = 6.0        # days per year
 
-[[world.structures]]
-center = [-950.0, 200.0]
-width = 260.0
-height = 55.0
-angle_deg = 18.0
-color = "#5c4a3a"
+[light]
+cell = 16.0
+surface_intensity = 0.1  # energy/s per unit width at the surface at noon
+night_level = 0.2       # midnight light as a fraction of noon
+season_amplitude = 0.3
+half_depth = 400.0       # light halves every this many units of depth
+body_absorptance = 0.1   # shade cast by any body
+pigment_absorptance = 0.8
+photo_yield = 1.0
 
-[[world.structures]]
-center = [1180.0, -180.0]
-width = 90.0
-height = 440.0
-angle_deg = -34.0
-color = "#5c4a3a"
+[temperature]
+cell = 64.0
+surface = 20.0           # °C
+season_amplitude = 6.0
+deep = 4.0
+thermocline_depth = 700.0
+climate_amplitude = 8.0  # slow random climate drift, ±°C
+climate_timescale = 40.0 # days
+vent_heat = 45.0
+vent_heat_radius = 260.0
+update_interval = 1.0
 
+[minerals]
+cell = 32.0
+diffusion = 100.0
+decay = 0.004
+plume_rise = 4.0         # minerals rise in vent plumes
+plume_width = 96.0
 
-[[world.structures]]
-center = [820.0, 700.0]
-width = 220.0
-height = 48.0
-angle_deg = -22.0
-color = "#5c4a3a"
+[detritus]
+cell = 32.0
+sink_speed = 3.0         # marine snow (slow, so the water column has food)
+decay = 0.0015
+to_minerals = 0.5        # decomposed detritus released as minerals
+diffusion = 100.0
 
-[[world.structures]]
-center = [350.0, 320.0]
-width = 180.0
-height = 420.0
-angle_deg = 55.0
-color = "#5c4a3a"
+[vents]
+count = 3                # random vents, besides the permanent ones (which count as shallow)
+output = 30.0            # mineral energy/s at full strength
+radius = 48.0
+halo = 0.35              # share of a vent's minerals seeping out over a wide area around its base
+halo_radius = 240.0
+lifetime_min = 2.0       # hours
+lifetime_max = 8.0
+min_depth = 700.0        # vents only open at least this deep
+shallow = 2              # vents kept shallow (shelf and upper slope): stepping stones to the deep
+shallow_max_depth = 1800.0
+deep_min_depth = 3000.0  # the rest open at least this deep
 
-[[world.structures]]
-center = [-350.0, 0.0]
-width = 140.0
-height = 36.0
-angle_deg = 40.0
-color = "#5c4a3a"
+# How gene bytes become traits (docs/DESIGN.md §2).
+[genes]
+min_radius = 1.0
+size_doubling = 32.0     # size gene steps per doubling of radius
+speed_scale = 20.0       # max speed = swimming strength (from parts) x this x sqrt(radius)
+lifespan_base = 300.0
+longevity_max = 4.0
+reserves_min = 0.3
+reserves_max = 3.0
+toughness_min = 0.3
+toughness_max = 2.0
+regen_min = 0.002
+regen_max = 0.05
+turn_min = 0.3
+turn_max = 6.0
+sense_cap = 1200.0
+temp_max = 40.0
+tolerance_min = 1.0
+tolerance_max = 15.0
+segment_cost = 0.1          # extra body-building cost per additional segment
+generalist_penalty = 0.4   # each diet loses this x the investment in the others
+photo_scavenge_penalty = 0.2  # photosynthesis and scavenging also lose this x each other's gene
 
-[[world.structures]]
-center = [450.0, -620.0]
-width = 420.0
-height = 42.0
-angle_deg = 90.0
-color = "#5c4a3a"
+# Body parts (P chromosome). Per-kind numbers live in parts.rs; these are the shared knobs.
+[parts]
+small_swimmer_radius = 8.0   # flagella and cilia lose most of their push above this radius
+large_swimmer_radius = 6.0   # fins and flukes become efficient around this radius
+crawl_speed = 12.0           # walking speed on rock at full leg strength (x sqrt(radius))
+eye_range = 40.0             # sight range of a full-size eye, in body radii
+smell_range = 4.0            # smell range full antennae add all round, in body radii
+antenna_range = 30.0         # how far a full-size antenna smells out along its cone, in body radii
+tentacle_reach = 1.0         # a tentacle grasps within this fraction of its length of its base
+frond_span = 0.45            # extra light-catching width per unit of frond length
+frond_uptake = 0.3           # extra nutrient-uptake surface per unit of frond length
+stalk_bonus = 1.3            # parts on a stalk's tip work this much better
+lure_brightness = 0.3        # full lure light, as a fraction of surface noon light
+lure_radius = 160.0          # glow radius of a full lure
+contact_margin = 2.0         # distance from rock that still counts as touching
+shell_insulation = 1.0       # each full-size shell plate widens the tolerated temperatures by +-1 C
+base_smell = 4.0             # everyone smells the water this far around (body radii): temperature, minerals, oxygen, detritus
+eye_dark = 0.15              # eyes need light: in darkness they see this fraction of their range
+eye_light = 0.1              # full sight from this light level (fraction of surface noon)
 
-[world.physics]
-radius_threshold = 10.0
-brownian_speed = 10.0
-gravity_speed = 10.0
-crowding_enabled = true
-crowding_interval_ticks = 120
-crowding_interval_phase_ticks = 0
+# Running cost of each capability at full strength, as a fraction of basal metabolism.
+[upkeep]
+buoyancy = 0.3
+reserves = 0.3
+longevity = 0.4
+photo = 0.3
+chemo = 0.3
+scavenge = 0.3
+hunt = 0.3
+regen = 0.2
+toughness = 0.3
+tolerance = 0.4          # temperature tolerance
+uptake = 0.2
+fixation = 0.2
+toxin = 0.3
+resistance = 0.3
+segments = 0.05          # per body segment beyond the first
+parts = 1.5              # multiplier on each part's own upkeep
 
-[performance]
-max_entities = 5000
-failsafe_policy = "despawn_lowest_energy"
-failsafe_cull_count = 3000
-corpse_max = 1000
-corpse_cull_count = 500
+# What organisms take from and give to the water. Oxygen and CO2 are measured so that
+# 1.0 = water in equilibrium with today's air.
+[chemistry]
+oxygen_per_energy = 2.0     # O2 made by photosynthesis / used by respiration, per unit of energy
+co2_per_energy = 2.0
+oxygen_half = 0.25          # below this oxygen level, aerobic respiration falters
+ferment_penalty = 0.6       # fermenting costs this much more than breathing
+ferment_floor = 0.25        # fermentation capacity every organism has
+ferment_waste = 0.5         # share of fermentation's extra cost leaked as organic waste
+suffocation_damage = 0.2    # fraction of max HP per second at a total shortfall
+oxygen_toxicity = 0.05      # damage to strict fermenters per unit of oxygen above 0.5
+co2_half = 0.3              # CO2 level where oxygen-producing photosynthesis slows
+sulfur_minerals = 0.3       # minerals used per energy of sulfur-based photosynthesis
+sulfur_half = 0.05          # mineral concentration for half-speed sulfur photosynthesis
+nutrient_per_mass = 1.0     # nutrients needed per unit of body mass
+nutrient_store = 1.0        # nutrient store per unit of body mass
+uptake_rate = 1.0           # rate x gene x radius x surface x concentration
+anchor_uptake = 3.0         # uptake multiplier while anchored by a holdfast
+fixation_rate = 0.01        # nutrients fixed per second per unit of mass
+fixation_cost = 0.5         # energy per unit of nutrient fixed
+toxin_rate = 0.05           # toxin leaked per second = rate x gene x radius
+toxin_damage = 2.0          # fraction of HP per second per unit of concentration (/(1 + radius/8))
+toxin_decay = 0.02          # fraction of toxin broken down per second
+poison_damage = 0.8         # damage to a hunter per unit of toxic prey eaten
+diffusion = 600.0
+ventilation = 0.0003        # water relaxes toward its usual make-up (unmodeled circulation)
+nutrient_surface = 0.05
+nutrient_deep = 0.5
+nutricline_depth = 1200.0
+deep_oxygen = 0.7           # deep water holds this much oxygen relative to the surface
+vent_co2 = 4.0              # per second at full strength
+vent_nutrients = 2.0
+vent_oxygen_sink = 0.05     # vents release oxygen-free water
+anoxic_decay = 0.5          # decomposition without oxygen is slower...
+anoxic_minerals = 0.9       # ...and releases more minerals (sulfides)
+decomposition_oxygen = 1.0  # oxygen used by rotting marine snow (x oxygen_per_energy)
+upwelling_nutrients = 0.5   # nutrients per unit of upwelled minerals
 
-[genetics]
-genome_version = 2
-core_length = 39
-max_genome_bytes = 512
-max_pursue_slots = 1
-max_avoid_slots = 1
-# EVO2 + 24-byte core + 1 pursue + 1 avoid slot (6 B each); I = 01 01
-ancestor_hex = "45564f3200ff05000f0000000080ff8000000000f00f0000000101000000000000000000000000"
-[genetics.mutation_v2]
-passes_min = 4
-passes_max = 8
-p_large_step = 0.50
-large_step_min = 5
-large_step_max = 10
-body_radius_step_multiplier = 30.0
+# The air: two global levels (1.0 = today) that the ocean surface trades with.
+[atmosphere]
+surface_exchange = 0.02     # fraction per second surface water moves toward equilibrium
+size = 40.0                 # bigger = the air changes more slowly
+greenhouse = 3.0            # degrees C of warming per doubling of CO2
+initial_oxygen = 1.0        # try 0.05 for an anoxic early Earth
+initial_co2 = 1.0
 
-[genetics.decode_v2]
-nibble_levels = 16
-channel_max = 255.0
-radius_at_zero = 9.0
-radius_at_max = 800.00
-energy_bonus_at_max = 6553.5
-metabolism_bonus_at_max = 1.0
-stroke_max = 25.5
-metabolism_pct_at_max = 0.01
-speed_penalty_at_max = 0.065535
-heal_base_hp_per_sec = 1.0
-heal_speed_mult_at_max = 3.27675
-heal_cost_mult_at_max = 13.107
-energy_cap_frac_at_byte0 = 0.99
-energy_cap_frac_at_byte255 = 0.01
-vitality_budget_from_radius = true
-byte_scale = 255.0
-turn_chance_max_per_sec = 0.30
-turn_degrees_max = 180.0
-max_speed_at_max_byte = 255.0
-movement_cost_reduction_at_max = 0.052
-photo_rate_per_sec_per_radius = 0.1
-sensor_distance_at_high_nibble_f = 610.0
-sensor_width_deg_at_low_nibble_f = 35.0
-sensor_ray_count = 8
+[metabolism]
+basal = 0.003             # × mass^0.75 × upkeep, energy/s
+move_cost = 3.0          # full-throttle swimming cost, × basal
+build_cost = 1.25        # energy per unit of body mass built
+body_energy = 1.0        # energy per unit of body mass eaten
+growth_rate = 0.05       # max growth per second, fraction of mass
+growth_buffer = 0.5      # juveniles keep this much of their reserves
+regen_cost = 1.5         # energy per HP healed
+starvation_damage = 1.0
+temp_stress_cost = 0.5
+temp_damage = 0.05
+old_age_death_rate = 0.2
 
-[genetics.triad]
-coupling_mode = "max_other"
-coupling_strength = 1.0
+[feeding]
+chemo_rate = 20.0           # mineral uptake per second = rate × capability × radius × concentration
+chemo_yield = 1.0
+scavenge_rate = 12.0
+filter_rate = 0.05
+carcass_rate = 0.5
+assimilation = 0.8
+engulf_ratio = 0.6       # prey at most this fraction of the hunter's radius is swallowed whole
+engulf_rate = 3.0
+kin_hunger = 0.5         # hunters spare their own species unless this hungry (0 fed .. 1 starving)
+min_hunt = 0.05          # hunting capability below this does nothing (trace genes don't bite)
+body_contact = 0.3       # eating through the body away from the mouth works this well
+tentacle_pull = 12.0     # speed tentacles drag what they hold to the mouth (x sqrt(radius))
+bite_rate = 0.3
+armor_protection = 0.75
+spike_damage = 0.6
+hunger_min = 0.3
+hunger_max = 1.7
 
-[genetics.behavior]
-fuzzy_nibble_delta = 1
-avoid_flee_heading_offset_deg = 180.0
-sensor_upkeep_per_eye_per_tick = 0.0015
-sensor_upkeep_strength_scale = 0.2
-sensor_ray_interval_ticks = 60
-sensor_ray_phase_ticks = 0
+[physics]
+buoyancy_speed = 3.0
+brownian = 8.0
+response = 20.0
+push_stiffness = 0.5
+armor_speed_penalty = 0.3
+part_density = 1.5       # sinking per unit of part mass
+carcass_sink = 2.0
+carcass_min_radius = 0.0 # every corpse leaves a carcass (small ones decompose within a minute)
+carcass_decay = 0.01
 
-[economy]
-metabolism_floor = 0.001
-spawn_energy = 400.0
-flat_energy_grant_per_tick = 0.0
-core_max_hp = 100.0
-repro_cooldown_ticks = 500
-# Cooldown at repro_cooldown_reference_radius; scaled by (radius / reference)^exponent.
-repro_cooldown_reference_radius = 10.0
-# >1 steepens size effect (2.0 → half radius ≈ quarter cooldown, double radius ≈ 4× cooldown).
-repro_cooldown_radius_exponent = 2.0
-repro_cooldown_min_ticks = 1
-# 0 = no upper cap; set e.g. 10000 to limit huge organisms.
-repro_cooldown_max_ticks = 0
-repro_safety_margin = 0.25
-p_death_on_repro_base = 0.12
-p_damage_on_repro_base = 0.35
-repro_damage_fraction_of_max_hp = 0.12
-repro_payment_order = "energy_first"
-repair_energy_per_hp = 1.0
-repair_hp_per_tick_at_rate_1 = 50.0
-repair_policy = "core_first"
-move_energy_units_per_radius = 5.0
-age_metabolism_cap_multiplier = 3.0
-age_metabolism_cap_ticks = 18000.0
-age_metabolism_ref_ticks = 3600.0
+# Curl-noise currents: slow gyres everywhere, eddies stirring the sunlit surface layer.
+[currents]
+gyre_scale = 3000.0
+gyre_speed = 3.0
+gyre_period = 900.0
+eddy_scale = 450.0
+eddy_speed = 8.0
+eddy_period = 180.0
+mixing_depth = 450.0
 
-[environment]
-energy_model = "local"
-solar_constant = 0.5
-light_mode = "gradient_y"
-gradient_axis = "y"
-gradient_min = 0.0
-gradient_max = 1.0
-# World Y where light = gradient_min. Omitted ⇒ world edge opposite gradient_bright_at (-height/2 here).
-gradient_min_y = 0.0
-gradient_bright_at = "top"
-minerals_enabled = true
-corpses_enabled = true
+[reproduction]
+newborn_reserves = 0.5
+cooldown = 2.0
 
-[environment.dynamic_hazards]
+[mutation]
+rate = 0.03              # chance per gene per offspring
+reroll = 0.05            # fraction of mutations that re-roll the gene
+step_scale = 2.0         # multiplier on mutation step sizes (±1, 2, 4, 8)
+part_type_rate_multiplier = 0.3  # part types change less often (type shifts are big steps)
+color_rate_multiplier = 3.0  # color genes mutate faster, so lineages visibly diverge
+part_duplicate = 0.003   # chance per offspring that a part is copied into an empty slot
+part_delete = 0.004      # chance per offspring that a part is lost
+part_new = 0.005         # chance per offspring that a new part grows in an empty slot
+diet_shift = 0.005       # chance per offspring that 30-60% of one diet gene jumps to another
+
+[species]
+threshold = 0.035         # genetic distance from the founder that starts a new species
+genus_threshold = 0.07
+color_weight = 0.25
+gene_cap = 0.3           # most any single gene adds to distance (so one jump isn't a species)
+established = 20         # members needed before a species is named and listed
+
+[population]
+# The ancestor: a tiny, floating, green photosynthesizer with no parts, so it can't move.
+ancestor = "B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 N:80808080808080808000 P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0"
+initial = 2000
+spawn_depth = 300.0
+min_population = 100     # below this, the seed bank recolonizes
+reseed_count = 300
+max_population = 250000  # safety cap on births
+# Optional second founding lineage at the vents, in chromosome notation (empty = none, so
+# life has to find its own way down). Example: an anchored, fermenting vent chemosynthesizer:
+# "B:207060300000 C:10C040 D:00FF0000 G:400080000000 H:2030 N:80808080808080808000 P:086010 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:FFFF"
+vent_ancestor = ""
+vent_initial = 40        # around each vent at the start (if there is a vent ancestor)
+vent_seed = 20           # settle at a new vent when no vent life lives nearby
+
+# Random world events. "_every" values are mean sim hours between occurrences (0 = never).
+[events]
 enabled = true
-# Upper band near bright top (world Y; map top ≈ +750 for height 1500).
-band_y_min = 0.0
-band_y_max = 700.0
-radius = 50.0
-damage_per_tick = 0.025
-chem_flux = 0.0
-max_active = 15
-spawn_interval_ticks = 500
-lifetime_min_ticks = 4000
-lifetime_max_ticks = 6000
+plague_every = 8.0
+plague_min_share = 0.35      # only strikes a species with at least this share of all life
+plague_duration = 600.0      # seconds
+plague_kill_rate = 0.002     # chance per second for each member to die
+upwelling_every = 1.5
+upwelling_duration = 1800.0
+upwelling_rate = 40.0        # mineral energy/s brought to the surface
+upwelling_width = 1500.0
+impact_every = 48.0
+impact_radius = 700.0
+impact_winter = 0.7          # fraction of sunlight blocked at the worst
+impact_winter_days = 4.0
+impact_minerals = 5000.0
+barrier_every = 30.0
+barrier_duration = 20.0      # hours at full height
+barrier_rise = 0.1           # hours to rise (and to sink)
+barrier_width = 200.0
 
-# Chemosynthetic vents in the dark lower band (world Y; map bottom ≈ -750 for height 1500).
-[[environment.vents]]
-center = [-900.0, -600.0]
-radius = 120.0
-vent_flux = 0.1
-
-[[environment.vents]]
-center = [0.0, -650.0]
-radius = 150.0
-vent_flux = 0.1
-
-[[environment.vents]]
-center = [900.0, -600.0]
-radius = 120.0
-vent_flux = 0.1
-
-[environment.feeding]
-minerals_vent_flux_scale = 1.0
-minerals_uptake_per_tick = 10.0
-biomass_uptake_per_radius_per_sec = 50.0
-biomass_feeding_interval_ticks = 60
-biomass_feeding_phase_ticks = 30
-corpse_ttl_ticks = 3600
-corpse_energy_fraction_of_max_health = 0.25
-soup_enabled = false
-soup_regen_per_tick = 0.0005
-soup_max_concentration = 1.0
-soup_initial_concentration = 0.0
-soup_uptake_rate = 0.04
-
-[run]
-master_seed = 42
-max_ticks = 360000
-logic_interval_ticks = 6
-logic_interval_phase_ticks = 0
-snapshot_interval = 60
-metrics_path = "metrics.jsonl"
+[stats]
+sample_interval = 10.0
+max_samples = 4000
+max_events = 500
