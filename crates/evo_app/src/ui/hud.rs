@@ -9,19 +9,21 @@ use super::{MapMode, UiState};
 use crate::camera::CameraState;
 use crate::sim::{SPEEDS, Selection, SimState};
 
-const TEXT: Color32 = Color32::from_rgb(222, 238, 236);
-const MUTED: Color32 = Color32::from_rgb(150, 180, 182);
-const ACCENT: Color32 = Color32::from_rgb(150, 240, 210);
-const DIM: Color32 = Color32::from_rgb(70, 88, 92);
-const WARN: Color32 = Color32::from_rgb(240, 185, 90);
+pub(super) const TEXT: Color32 = Color32::from_rgb(222, 238, 236);
+pub(super) const MUTED: Color32 = Color32::from_rgb(150, 180, 182);
+pub(super) const ACCENT: Color32 = Color32::from_rgb(150, 240, 210);
+pub(super) const DIM: Color32 = Color32::from_rgb(70, 88, 92);
+pub(super) const WARN: Color32 = Color32::from_rgb(240, 185, 90);
 const SUN: Color32 = Color32::from_rgb(255, 214, 110);
 const MOON: Color32 = Color32::from_rgb(190, 205, 235);
 const WARM: Color32 = Color32::from_rgb(240, 130, 100);
 const BUBBLE: Color32 = Color32::from_rgb(130, 200, 245);
-const CARD_FILL: Color32 = Color32::from_rgba_premultiplied(10, 18, 24, 220);
+pub(super) const CARD_FILL: Color32 = Color32::from_rgb(12, 21, 27);
 /// Gap between the HUD and the edges of the view, and between cards.
-const GAP: f32 = 10.0;
-const BUTTON_RADIUS: f32 = 19.0;
+pub(super) const GAP: f32 = 10.0;
+pub(super) const BUTTON_RADIUS: f32 = 19.0;
+/// Width the round buttons take down the right edge.
+pub(super) const TOOLBAR_WIDTH: f32 = 2.0 * BUTTON_RADIUS + 2.0 * GAP;
 
 /// The HUD's card style (also used by the event ticker).
 pub(super) fn card() -> egui::Frame {
@@ -119,7 +121,7 @@ fn icon_bubbles(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
 }
 
 /// A few round cells (organisms, the species list).
-fn icon_cells(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
+pub(super) fn icon_cells(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     for (d, r) in [
         (vec2(-0.38, 0.28), 0.36),
         (vec2(0.4, 0.3), 0.3),
@@ -176,7 +178,7 @@ fn icon_clock(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
 }
 
 /// A closed notebook with an elastic band (the field notebook).
-fn icon_book(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
+pub(super) fn icon_book(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     let cover = Rect::from_center_size(c, vec2(s * 1.5, s * 1.9));
     let stroke = Stroke::new(1.5, color);
     p.rect_filled(cover, 2.5, color.gamma_multiply(0.25));
@@ -248,7 +250,7 @@ fn icon_menu(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     }
 }
 
-fn icon_text(p: &egui::Painter, c: Pos2, s: f32, color: Color32, text: &str) {
+pub(super) fn icon_text(p: &egui::Painter, c: Pos2, s: f32, color: Color32, text: &str) {
     p.text(
         c,
         egui::Align2::CENTER_CENTER,
@@ -278,7 +280,7 @@ fn icon_play(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
 }
 
 /// A round button with a painted icon. `on` = its panel is open.
-fn round_button(
+pub(super) fn round_button(
     ui: &mut egui::Ui,
     on: bool,
     radius: f32,
@@ -290,8 +292,8 @@ fn round_button(
     let c = rect.center();
     let hovered = response.hovered();
     let fill = match (on, hovered) {
-        (true, _) => Color32::from_rgba_unmultiplied(40, 92, 82, 235),
-        (false, true) => Color32::from_rgba_unmultiplied(34, 52, 60, 235),
+        (true, _) => Color32::from_rgb(38, 86, 77),
+        (false, true) => Color32::from_rgb(32, 49, 56),
         (false, false) => CARD_FILL,
     };
     p.circle_filled(c + vec2(0.0, 2.0), radius, Color32::from_black_alpha(70));
@@ -598,34 +600,43 @@ const MAP_MODES: [(MapMode, &str); 6] = [
     (MapMode::Toxin, "Toxin"),
 ];
 
-/// Everything floating over the world view `view` (the screen minus side panels).
+/// Everything floating over the world view `view` (the screen minus side panels). The cards
+/// keep to `content`: the view minus the toolbar column and the inspector, when it's open.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     ctx: &egui::Context,
     view: Rect,
+    content: Rect,
     ui_state: &mut UiState,
     sim: &mut SimState,
     cam: &mut CameraState,
     selection: &mut Selection,
 ) {
-    // Top left: clock and speed, weather, life.
-    let top_left = view.left_top() + vec2(GAP, GAP);
+    // Top left: clock and speed, weather, life. A card that doesn't fit beside the previous
+    // one (narrow window, side panels open) goes on the next row.
+    let top_left = content.left_top() + vec2(GAP, GAP);
+    let right_edge = content.right();
+    let next_pos = |id: &str, prev: Rect, row_bottom: f32| -> Pos2 {
+        let width = ctx
+            .memory(|m| m.area_rect(egui::Id::new(id)))
+            .map_or(0.0, |r| r.width());
+        if prev.right() + GAP + width > right_edge {
+            Pos2::new(top_left.x, row_bottom + GAP)
+        } else {
+            Pos2::new(prev.right() + GAP, prev.top())
+        }
+    };
     let clock = show_card(ctx, "hud_clock", top_left, egui::Align2::LEFT_TOP, |ui| {
         clock_card(ui, sim)
     });
-    let weather = show_card(
-        ctx,
-        "hud_weather",
-        Pos2::new(clock.right() + GAP, clock.top()),
-        egui::Align2::LEFT_TOP,
-        |ui| weather_card(ui, &sim.world),
-    );
-    let life = show_card(
-        ctx,
-        "hud_life",
-        Pos2::new(weather.right() + GAP, clock.top()),
-        egui::Align2::LEFT_TOP,
-        |ui| life_card(ui, &sim.world),
-    );
+    let at = next_pos("hud_weather", clock, clock.bottom());
+    let weather = show_card(ctx, "hud_weather", at, egui::Align2::LEFT_TOP, |ui| {
+        weather_card(ui, &sim.world)
+    });
+    let at = next_pos("hud_life", weather, clock.bottom().max(weather.bottom()));
+    let life = show_card(ctx, "hud_life", at, egui::Align2::LEFT_TOP, |ui| {
+        life_card(ui, &sim.world)
+    });
     let mut below = clock.bottom().max(weather.bottom()).max(life.bottom()) + GAP;
 
     if !sim.world.happenings.active.is_empty() {
@@ -633,7 +644,7 @@ pub fn draw(
         let rect = egui::Area::new(egui::Id::new("hud_now"))
             .fixed_pos(Pos2::new(top_left.x, below))
             .show(ctx, |ui| {
-                ui.set_max_width((view.width() - 2.0 * GAP - 60.0).max(200.0));
+                ui.set_max_width((right_edge - top_left.x - GAP).max(200.0));
                 card().show(ui, |ui| now_card(ui, &sim.world, &mut goto));
             })
             .response
@@ -666,7 +677,7 @@ pub fn draw(
 
     // Bottom right: performance, and the last save.
     egui::Area::new(egui::Id::new("hud_perf"))
-        .fixed_pos(view.right_bottom() + vec2(-GAP, -6.0))
+        .fixed_pos(content.right_bottom() + vec2(0.0, -6.0))
         .pivot(egui::Align2::RIGHT_BOTTOM)
         .interactable(false)
         .show(ctx, |ui| {

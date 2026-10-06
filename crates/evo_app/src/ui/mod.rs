@@ -6,12 +6,13 @@ mod inspector;
 mod notebook;
 mod probe;
 mod sketch;
+mod species;
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use evo_core::World;
 use evo_core::stats::EventKind;
-use evo_core::traits::{format_game_date, format_game_duration};
+use evo_core::traits::format_game_date;
 
 use crate::camera::CameraState;
 use crate::sim::{Selection, SimState};
@@ -63,6 +64,7 @@ pub struct UiState {
     pub show_history: bool,
     pub show_notebook: bool,
     notebook: notebook::NotebookState,
+    inspector_tab: inspector::Tab,
     /// A short message in the corner (e.g. "recorded in the notebook") and when it appeared.
     pub toast: Option<(String, std::time::Instant)>,
     history_filter: [bool; 5],
@@ -91,6 +93,7 @@ impl Default for UiState {
             show_history: false,
             show_notebook: false,
             notebook: Default::default(),
+            inspector_tab: Default::default(),
             toast: None,
             history_filter: [true; 5],
             show_senses: true,
@@ -257,30 +260,6 @@ fn draw_ui(
         return Ok(());
     }
 
-    // egui 0.36 panels live inside a root Ui covering the screen.
-    let mut root = egui::Ui::new(
-        ctx.clone(),
-        egui::Id::new("evo_root"),
-        egui::UiBuilder::new(),
-    );
-    if ui_state.show_species {
-        species_panel(&mut root, &sim.world, &mut selection, &mut cam);
-    }
-
-    let mut record = None;
-    if let Some(id) = selection.organism {
-        egui::Panel::right("inspector")
-            .resizable(true)
-            .default_size(400.0)
-            .show(&mut root, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if inspector::draw(ui, &sim.world, id, &mut selection) {
-                        record = Some(id);
-                    }
-                });
-            });
-    }
-
     if let Some(pos) = selection.probe {
         let mut open = true;
         egui::Window::new("Water here")
@@ -294,17 +273,69 @@ fn draw_ui(
         }
     }
 
-    // The world view: what the side panels leave.
-    let view = root.available_rect_before_wrap();
+    // The world view. The species card runs down the left, the inspector card sits beside the
+    // toolbar on the right, and the other cards keep to what's between them (`content`).
+    let view = ctx.content_rect();
+    let species_rect = ui_state.show_species.then(|| {
+        egui::Rect::from_min_max(
+            view.left_top() + egui::vec2(hud::GAP, hud::GAP),
+            egui::pos2(view.left() + hud::GAP + species::WIDTH, view.bottom() - hud::GAP),
+        )
+    });
     let screen = ctx.content_rect();
+    let inspector_rect = selection.organism.map(|_| {
+        egui::Rect::from_min_max(
+            egui::pos2(
+                view.right() - hud::TOOLBAR_WIDTH - inspector::WIDTH,
+                view.top() + hud::GAP,
+            ),
+            egui::pos2(view.right() - hud::TOOLBAR_WIDTH, view.bottom() - hud::GAP),
+        )
+    });
+    let content = egui::Rect::from_min_max(
+        egui::pos2(species_rect.map_or(view.left(), |r| r.right()), view.top()),
+        egui::pos2(
+            inspector_rect.map_or(view.right() - hud::TOOLBAR_WIDTH, |r| r.left() - hud::GAP),
+            view.bottom(),
+        ),
+    );
     cam.covered = [
-        (view.left() - screen.left()).max(0.0),
-        (screen.right() - view.right()).max(0.0),
+        (content.left() - screen.left()).max(0.0),
+        if inspector_rect.is_some() {
+            (screen.right() - content.right()).max(0.0)
+        } else {
+            (screen.right() - view.right()).max(0.0)
+        },
     ];
-    hud::draw(ctx, view, &mut ui_state, &mut sim, &mut cam, &mut selection);
+    hud::draw(ctx, view, content, &mut ui_state, &mut sim, &mut cam, &mut selection);
+    if let Some(rect) = species_rect
+        && !species::show(ctx, rect, &sim.world, &mut selection, &mut cam)
+    {
+        ui_state.show_species = false;
+    }
+
+    let mut record = None;
+    if let (Some(id), Some(rect)) = (selection.organism, inspector_rect) {
+        match inspector::show(ctx, rect, &sim.world, id, &mut selection, &mut ui_state.inspector_tab) {
+            Some(inspector::Action::Record) => record = Some(id),
+            Some(inspector::Action::OpenNotebook) => {
+                if let Some(i) = sim
+                    .world
+                    .notebook
+                    .entries
+                    .iter()
+                    .position(|e| e.specimens.iter().any(|s| s.organism == id))
+                {
+                    ui_state.notebook.show_entry(i);
+                }
+                ui_state.show_notebook = true;
+            }
+            None => {}
+        }
+    }
 
     if ui_state.show_events && !sim.world.events.entries.is_empty() {
-        event_ticker(ctx, view, &sim.world, &mut selection, &mut cam);
+        event_ticker(ctx, content, &sim.world, &mut selection, &mut cam);
     }
 
     if ui_state.show_charts {
@@ -378,87 +409,6 @@ fn draw_ui(
         ui_state.show_help = open;
     }
     Ok(())
-}
-
-fn species_panel(
-    root: &mut egui::Ui,
-    world: &World,
-    selection: &mut Selection,
-    cam: &mut CameraState,
-) {
-    egui::Panel::left("species")
-        .resizable(true)
-        .default_size(270.0)
-        .show(root, |ui| {
-            ui.heading("Species");
-            let mut living: Vec<_> = world.species.living().collect();
-            living.sort_by_key(|s| std::cmp::Reverse(s.population));
-            let total = world
-                .species
-                .species
-                .values()
-                .filter(|s| s.established)
-                .count();
-            ui.label(
-                egui::RichText::new(format!("{} living · {} ever named", living.len(), total))
-                    .weak(),
-            );
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for s in living.iter().take(200) {
-                    let selected = selection.species == Some(s.id);
-                    ui.horizontal(|ui| {
-                        swatch(ui, s.color, 12.0);
-                        // Main diet of the species (from its founder).
-                        let t = evo_core::Traits::decode(&s.founder, &world.config);
-                        let (rect, r) =
-                            ui.allocate_exact_size(egui::vec2(6.0, 12.0), egui::Sense::hover());
-                        ui.painter()
-                            .rect_filled(rect, 1.0, diet_color(t.main_diet()));
-                        r.on_hover_text(DIET_NAMES[t.main_diet()]);
-                        let text = egui::RichText::new(&s.name);
-                        let response = ui.selectable_label(selected, text);
-                        if response.clicked() {
-                            selection.species = if selected { None } else { Some(s.id) };
-                        }
-                        if response.double_clicked() {
-                            // Jump to a member.
-                            if let Some(o) = world.organisms.iter().find(|o| o.species == s.id) {
-                                selection.organism = Some(o.id);
-                                selection.follow = true;
-                                cam.focus(
-                                    Vec2::new(o.pos.x, o.pos.y),
-                                    Some((o.radius / 10.0).clamp(0.2, 3.0)),
-                                );
-                            }
-                        }
-                        response.on_hover_ui(|ui| {
-                            let age = (world.tick - s.founded) as f32 * world.config.time.dt;
-                            ui.label(format!(
-                                "Founded {} ago",
-                                format_game_duration(age, &world.config.time)
-                            ));
-                            if let Some(p) = s.parent {
-                                ui.label(format!("Descended from {}", world.species.name(p)));
-                            }
-                            ui.label(format!("Peak population {}", s.peak));
-                            ui.label(
-                                egui::RichText::new(s.founder.to_string())
-                                    .monospace()
-                                    .small(),
-                            );
-                            ui.label(
-                                egui::RichText::new("Click to highlight, double-click to find one")
-                                    .weak(),
-                            );
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(s.population.to_string());
-                        });
-                    });
-                }
-            });
-        });
 }
 
 fn event_ticker(
