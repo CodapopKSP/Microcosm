@@ -284,6 +284,9 @@ pub struct World {
     #[serde(default)]
     pub vent_species: Option<u32>,
     pub next_id: u64,
+    /// Species the viewer recorded in the field notebook (doesn't affect the simulation).
+    #[serde(default)]
+    pub notebook: crate::notebook::Notebook,
     rng: Rng,
     #[serde(skip)]
     scratch: Option<Scratch>,
@@ -1301,6 +1304,7 @@ impl World {
             vent_ancestor,
             vent_species,
             next_id: 1,
+            notebook: Default::default(),
             rng,
             scratch: None,
             timings: Timings::default(),

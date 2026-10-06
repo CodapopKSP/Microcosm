@@ -27,6 +27,7 @@ The core has **no rendering dependencies**. Headless runs (tuning, benchmarks, l
 | `grid.rs` | Multi-level spatial hash for neighbor queries across a wide range of body sizes |
 | `species.rs` | Species and genera: founding by genetic distance, names, populations, extinctions |
 | `stats.rs` | Time series samples, event log |
+| `notebook.rs` | The field notebook: species the viewer recorded and their specimens' genomes (saved with the world, no effect on the simulation) |
 | `rng.rs` | Small deterministic PRNG (wyrand) |
 
 ## The tick
@@ -63,7 +64,7 @@ The main techniques:
 | `camera.rs` | Pan/zoom/follow, click-to-select, the auto-camera "director" for streaming |
 | `render/` | One dynamic mesh with a quad per visible body and one oriented quad per body part, shaded procedurally in `organism.wgsl` (each part kind has its own art that grows more elaborate with its size). Parts are laid out once per genome and cached, and only drawn once a body is a few pixels across. A world-sized quad with `background.wgsl` draws water, light, shadows, rock, vents, marine snow, dead zones, red tides and oxygen bubbles from field textures, plus the chemistry map (M). HDR + bloom. |
 | (effects) | `World::fx` holds short-lived visual events from the last few seconds (gulps, bites, carcass bites, impact shockwaves); the renderer draws them as extra quads. Organisms also carry `ate_tick`/`hurt_tick` for feeding and hurt flashes. |
-| `ui/` | egui: top bar, organism inspector (chromosomes), species list, charts, event ticker, stream overlay |
+| `ui/` | egui: HUD (clock and speed, weather, life, round panel buttons), organism inspector (chromosomes), species list, charts, event ticker, field notebook (`notebook.rs`, with pencil sketches of organisms drawn part by part in `sketch.rs`, handwritten in the Kalam font from `assets/fonts`), stream overlay |
 
 The viewer interpolates organism positions between ticks, so motion stays smooth at any speed.
 

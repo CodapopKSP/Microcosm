@@ -11,6 +11,7 @@ pub mod events;
 pub mod field;
 pub mod genome;
 pub mod grid;
+pub mod notebook;
 pub mod organism;
 pub mod parts;
 pub mod rng;

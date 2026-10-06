@@ -3,7 +3,9 @@
 mod charts;
 mod hud;
 mod inspector;
+mod notebook;
 mod probe;
+mod sketch;
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
@@ -59,6 +61,10 @@ pub struct UiState {
     pub show_help: bool,
     pub show_events: bool,
     pub show_history: bool,
+    pub show_notebook: bool,
+    notebook: notebook::NotebookState,
+    /// A short message in the corner (e.g. "recorded in the notebook") and when it appeared.
+    pub toast: Option<(String, std::time::Instant)>,
     history_filter: [bool; 5],
     pub show_senses: bool,
     pub map_mode: MapMode,
@@ -66,8 +72,10 @@ pub struct UiState {
     map_menu: bool,
     charts: charts::ChartState,
     fps: f64,
-    /// The egui style has been set up (quicker tooltips).
+    /// The egui style has been set up (quicker tooltips, the handwriting font).
     styled: bool,
+    /// The handwriting font is usable (fonts take effect the frame after they're set).
+    fonts_ready: bool,
     /// The Menu button was pressed: save and go back to the menus.
     to_menu: bool,
 }
@@ -81,6 +89,9 @@ impl Default for UiState {
             show_help: false,
             show_events: true,
             show_history: false,
+            show_notebook: false,
+            notebook: Default::default(),
+            toast: None,
             history_filter: [true; 5],
             show_senses: true,
             map_mode: MapMode::None,
@@ -88,6 +99,7 @@ impl Default for UiState {
             charts: charts::ChartState::default(),
             fps: 0.0,
             styled: false,
+            fonts_ready: false,
             to_menu: false,
         }
     }
@@ -153,6 +165,9 @@ fn ui_keys(
     }
     if keys.just_pressed(KeyCode::KeyT) {
         ui.show_events = !ui.show_events;
+    }
+    if keys.just_pressed(KeyCode::KeyN) {
+        ui.show_notebook = !ui.show_notebook;
     }
 }
 
@@ -221,12 +236,14 @@ fn draw_ui(
         sim.save("autosave.bin");
         next.set(crate::AppState::Menu);
     }
+    ui_state.fonts_ready = ui_state.styled;
     if !ui_state.styled {
         // Tooltips appear almost at once (the default waits half a second).
         ctx.all_styles_mut(|style| {
             style.interaction.tooltip_delay = 0.05;
             style.interaction.show_tooltips_only_when_still = false;
         });
+        notebook::install_fonts(ctx);
         ui_state.styled = true;
     }
     let dt = time.delta_secs_f64();
@@ -250,13 +267,16 @@ fn draw_ui(
         species_panel(&mut root, &sim.world, &mut selection, &mut cam);
     }
 
+    let mut record = None;
     if let Some(id) = selection.organism {
         egui::Panel::right("inspector")
             .resizable(true)
             .default_size(400.0)
             .show(&mut root, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    inspector::draw(ui, &sim.world, id, &mut selection);
+                    if inspector::draw(ui, &sim.world, id, &mut selection) {
+                        record = Some(id);
+                    }
                 });
             });
     }
@@ -312,6 +332,38 @@ fn draw_ui(
             });
         ui_state.history_filter = filter;
         ui_state.show_history = open;
+    }
+
+    if let Some(id) = record {
+        use evo_core::notebook::Recorded;
+        let result = sim.world.record_specimen(id);
+        let notebook = &sim.world.notebook;
+        if let Some(i) = notebook
+            .entries
+            .iter()
+            .position(|e| e.specimens.iter().any(|s| s.organism == id))
+        {
+            let name = &notebook.entries[i].name;
+            let msg = match result {
+                Recorded::NewEntry => Some(format!("New notebook entry: {name} (N to open)")),
+                Recorded::Specimen => Some(format!("Another {name} sketched in the notebook")),
+                _ => None,
+            };
+            if let Some(msg) = msg {
+                ui_state.toast = Some((msg, std::time::Instant::now()));
+            }
+            ui_state.notebook.show_entry(i);
+        }
+    }
+
+    if ui_state.show_notebook && ui_state.fonts_ready {
+        let mut open = true;
+        if let Some(notebook::Action::TearOut(species)) =
+            notebook::draw(ctx, &sim.world, &mut ui_state.notebook, &mut open)
+        {
+            sim.world.notebook.remove(species);
+        }
+        ui_state.show_notebook = open;
     }
 
     if ui_state.show_help {
@@ -757,6 +809,7 @@ fn help(ui: &mut egui::Ui) {
         help_row(ui, &[K("L")], "Species list");
         help_row(ui, &[K("G")], "Charts and family tree");
         help_row(ui, &[K("E")], "History");
+        help_row(ui, &[K("N")], "Field notebook");
         help_row(ui, &[K("T")], "Event ticker");
         help_row(
             ui,

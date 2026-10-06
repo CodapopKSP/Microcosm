@@ -25,7 +25,9 @@ fn bar(ui: &mut egui::Ui, label: &str, fraction: f32, text: String, color: egui:
     });
 }
 
-pub fn draw(ui: &mut egui::Ui, world: &World, id: u64, selection: &mut Selection) {
+/// Returns true when "Record in Field Notebook" was pressed.
+pub fn draw(ui: &mut egui::Ui, world: &World, id: u64, selection: &mut Selection) -> bool {
+    let mut record = false;
     let Some(o) = world.find(id) else {
         ui.heading("Gone");
         ui.label("This organism has died.");
@@ -33,7 +35,7 @@ pub fn draw(ui: &mut egui::Ui, world: &World, id: u64, selection: &mut Selection
             selection.organism = None;
             selection.follow = false;
         }
-        return;
+        return false;
     };
     let t = &o.traits;
     let species = world.species.get(o.species);
@@ -75,6 +77,17 @@ pub fn draw(ui: &mut egui::Ui, world: &World, id: u64, selection: &mut Selection
             selection.follow = false;
         }
     });
+    ui.add_space(2.0);
+    if world.notebook.has_organism(id) {
+        ui.label(egui::RichText::new("Sketched in your Field Notebook").weak().italics());
+    } else if ui
+        .button("Record in Field Notebook")
+        .on_hover_text("Sketch this organism and note down its species (N opens the notebook)")
+        .clicked()
+    {
+        record = true;
+    }
+    ui.add_space(2.0);
     ui.label(format!(
         "{} · {} · {}",
         o.activity.label(),
@@ -261,6 +274,7 @@ pub fn draw(ui: &mut egui::Ui, world: &World, id: u64, selection: &mut Selection
                     });
             });
     }
+    record
 }
 
 /// Body shape, parts, and what they add up to.

@@ -175,6 +175,24 @@ fn icon_clock(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     p.circle_filled(c, 1.6, color);
 }
 
+/// A closed notebook with an elastic band (the field notebook).
+fn icon_book(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
+    let cover = Rect::from_center_size(c, vec2(s * 1.5, s * 1.9));
+    let stroke = Stroke::new(1.5, color);
+    p.rect_filled(cover, 2.5, color.gamma_multiply(0.25));
+    p.rect_stroke(cover, 2.5, stroke, egui::StrokeKind::Middle);
+    // Spine.
+    let spine = Rect::from_min_max(cover.min, Pos2::new(cover.left() + s * 0.35, cover.bottom()));
+    p.rect_filled(spine, 2.0, color);
+    // Elastic band and a pencil line on the cover.
+    let x = cover.right() - s * 0.35;
+    p.line_segment([Pos2::new(x, cover.top()), Pos2::new(x, cover.bottom())], Stroke::new(1.2, color));
+    p.line_segment(
+        [cover.center() + vec2(-s * 0.15, -s * 0.3), cover.center() + vec2(s * 0.25, -s * 0.3)],
+        Stroke::new(1.2, color),
+    );
+}
+
 /// Lines with bullets (the event ticker).
 fn icon_feed(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     for i in 0..3 {
@@ -654,6 +672,11 @@ pub fn draw(
         .show(ctx, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
+                if let Some((msg, at)) = &ui_state.toast
+                    && at.elapsed().as_secs_f32() < 4.0
+                {
+                    ui.label(egui::RichText::new(msg).color(ACCENT));
+                }
                 if let Some((msg, at)) = &sim.last_save_message
                     && at.elapsed().as_secs_f32() < 4.0
                 {
@@ -698,6 +721,12 @@ fn toolbar(ctx: &egui::Context, view: Rect, ui_state: &mut UiState, cam: &mut Ca
                     .clicked()
                 {
                     ui_state.show_history = !ui_state.show_history;
+                }
+                if round_button(ui, ui_state.show_notebook, r, icon_book)
+                    .on_hover_text("Field notebook (N)")
+                    .clicked()
+                {
+                    ui_state.show_notebook = !ui_state.show_notebook;
                 }
                 if round_button(ui, ui_state.show_events, r, icon_feed)
                     .on_hover_text("Event ticker (T)")
