@@ -235,6 +235,7 @@ fn draw_ui(
     }
 
     if !ui_state.show_ui {
+        cam.covered = [0.0; 2];
         stream_overlay(ctx, &sim, &selection);
         return Ok(());
     }
@@ -275,6 +276,11 @@ fn draw_ui(
 
     // The world view: what the side panels leave.
     let view = root.available_rect_before_wrap();
+    let screen = ctx.content_rect();
+    cam.covered = [
+        (view.left() - screen.left()).max(0.0),
+        (screen.right() - view.right()).max(0.0),
+    ];
     hud::draw(ctx, view, &mut ui_state, &mut sim, &mut cam, &mut selection);
 
     if ui_state.show_events && !sim.world.events.entries.is_empty() {

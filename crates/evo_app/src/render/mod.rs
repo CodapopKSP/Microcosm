@@ -119,6 +119,10 @@ pub struct BackgroundUniform {
     pub land: Vec4,
     /// Its height at each sample (4 per entry), taken from the terrain.
     pub land_profile: [Vec4; LAND_SAMPLES / 4],
+    /// Year phase (0 = start of spring), surface ice (0..1), moon phase (0..1, 0 = full), 0
+    pub sky: Vec4,
+    /// The sun's and moon's path: center x, half its width, its height above the surface, 0
+    pub orbit: Vec4,
 }
 
 /// Height samples of the mountain's outline passed to the background shader.
@@ -452,6 +456,15 @@ fn update_background(
         );
         let air = &world.env.atmosphere;
         u.air = Vec4::new(air.oxygen, air.co2, 0.0, 0.0);
+        u.sky = Vec4::new(
+            clock.year_phase,
+            surface_ice(clock, cfg),
+            ((clock.day as f32 + clock.day_phase) / MOON_DAYS).fract(),
+            0.0,
+        );
+        // Rising out of the sea partway across the ocean and setting further along.
+        let ocean = cfg.ocean_width();
+        u.orbit = Vec4::new(ocean * 0.5, ocean * 0.22, SUN_HEIGHT, 0.0);
         let tc = &cfg.terrain;
         let (peak_x, half) = evo_core::terrain::mountain(tc, cfg.ocean_width());
         let start = peak_x - half;
@@ -467,6 +480,31 @@ fn update_background(
             *entry = Vec4::new(at(0), at(1), at(2), at(3));
         }
     }
+}
+
+/// Highest the sun and moon climb above the surface, in world units (the camera shows up to
+/// 1600 of sky, and the HUD covers the top of it).
+const SUN_HEIGHT: f32 = 800.0;
+
+/// Days from one full moon to the next.
+const MOON_DAYS: f32 = 8.0;
+
+/// How much of the surface is iced over (0..1), for the look only: floes form in late autumn,
+/// cover the most in midwinter and melt in early spring. A warmer climate makes less ice, a
+/// colder one more.
+fn surface_ice(clock: &evo_core::environment::Clock, cfg: &evo_core::Config) -> f32 {
+    // Midwinter is 7/8 of the way through the year (seasons are quarters, from spring).
+    let d = (clock.year_phase - 0.875 + 0.5).rem_euclid(1.0) - 0.5;
+    let season = 1.0 - smoothstep(0.04, 0.2, d.abs());
+    // Compare with how warm this time of year normally is.
+    let warmer = clock.climate + clock.greenhouse;
+    let climate = (1.0 - warmer / cfg.temperature.season_amplitude.max(1.0)).clamp(0.0, 1.5);
+    (season * climate).clamp(0.0, 1.0)
+}
+
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// sRGB (0..1) → linear, for vertex colors going into an HDR pipeline.

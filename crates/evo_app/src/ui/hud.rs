@@ -312,7 +312,8 @@ fn clock_card(ui: &mut egui::Ui, sim: &mut SimState) {
     let world = &sim.world;
     let c = &world.env.clock;
     let (h, m) = c.time_of_day();
-    let day = c.sun > 0.0;
+    // Moon from 6 pm to 6 am.
+    let day = (6..18).contains(&h);
     ui.horizontal(|ui| {
         let (rect, r) = ui.allocate_exact_size(vec2(34.0, 34.0), egui::Sense::hover());
         if day {

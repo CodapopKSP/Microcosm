@@ -29,6 +29,8 @@ pub struct CameraState {
     right_origin: Option<Vec2>,
     /// Events already seen by the director (so it only reacts to new ones).
     seen_events: u64,
+    /// Screen pixels hidden behind side panels (left, right), set by the UI each frame.
+    pub covered: [f32; 2],
 }
 
 impl CameraState {
@@ -44,6 +46,7 @@ impl CameraState {
             drag_origin: None,
             right_origin: None,
             seen_events: 0,
+            covered: [0.0; 2],
         }
     }
 
@@ -182,6 +185,7 @@ fn start_camera(
         drag_origin: None,
         right_origin: None,
         seen_events: state.world.events.count,
+        covered: [0.0; 2],
     });
     for mut t in &mut cameras {
         t.translation = Vec3::new(center.x, center.y, 100.0);
@@ -208,7 +212,6 @@ fn camera_input(
     };
     let dt = time.delta_secs().min(0.1);
     let world = &state.world;
-    let (w, h) = (world.config.world.width, world.config.world.height);
     let pointer_free = !egui_input.wants_any_pointer_input();
     let keys_free = !egui_input.wants_any_keyboard_input();
     let cursor_world = window
@@ -243,9 +246,10 @@ fn camera_input(
             cam.director = !cam.director;
         }
         if keys.just_pressed(KeyCode::Home) {
-            // Whole world.
-            let zoom = (w / window.width()).max(h / window.height()) * 1.02;
-            cam.focus(Vec2::new(w * 0.5, h * 0.5), Some(zoom));
+            // As much of the world as fits.
+            let bounds = view_bounds(world);
+            let zoom = max_zoom(bounds, window, cam.covered);
+            cam.focus(bounds.center(), Some(zoom));
             selection.follow = false;
             cam.director = false;
         }
@@ -265,7 +269,7 @@ fn camera_input(
         };
         let factor = 0.85f32.powf(lines);
         let old_zoom = cam.target_zoom;
-        let new_zoom = (old_zoom * factor).clamp(0.05, 40.0);
+        let new_zoom = (old_zoom * factor).clamp(0.05, max_zoom(view_bounds(world), window, cam.covered));
         if let Some(cursor) = cursor_world {
             // Keep the point under the cursor fixed.
             let offset = cursor - cam.target_center;
@@ -418,23 +422,74 @@ fn follow_selection(mut cam: ResMut<CameraState>, selection: Res<Selection>, sta
     }
 }
 
+/// How much sky may show above the water surface, in world units.
+const SKY: f32 = 1600.0;
+
+/// The part of the world the camera may show: the ocean and a strip of sky.
+fn view_bounds(world: &evo_core::World) -> Rect {
+    let (w, h) = (world.config.world.width, world.config.world.height);
+    Rect::new(0.0, 0.0, w, h + SKY)
+}
+
+/// The furthest zoom out (world units per pixel) at which the visible part of the window (not
+/// behind side panels) still sees only `bounds`.
+fn max_zoom(bounds: Rect, window: &Window, covered: [f32; 2]) -> f32 {
+    let visible = (window.width() - covered[0] - covered[1]).max(1.0);
+    (bounds.width() / visible).min(bounds.height() / window.height().max(1.0))
+}
+
+/// Keep the visible part of a view of `zoom` centered on `center` inside `bounds`.
+fn clamp_center(
+    center: Vec2,
+    zoom: f32,
+    bounds: Rect,
+    window: &Window,
+    covered: [f32; 2],
+) -> Vec2 {
+    let half = Vec2::new(window.width(), window.height()) * 0.5;
+    // How far the visible area reaches from the camera's center, each way.
+    let left = (half.x - covered[0]) * zoom;
+    let right = (half.x - covered[1]) * zoom;
+    let lo = Vec2::new(bounds.min.x + left, bounds.min.y + half.y * zoom);
+    let hi = Vec2::new(bounds.max.x - right, bounds.max.y - half.y * zoom);
+    let fit = |c: f32, lo: f32, hi: f32| {
+        if hi < lo {
+            (lo + hi) * 0.5
+        } else {
+            c.clamp(lo, hi)
+        }
+    };
+    Vec2::new(fit(center.x, lo.x, hi.x), fit(center.y, lo.y, hi.y))
+}
+
 fn apply_camera(
     mut cam: ResMut<CameraState>,
     mut cameras: Query<(&mut Transform, &mut Projection), With<MainCamera>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     state: Res<SimState>,
     time: Res<Time<Real>>,
 ) {
     let dt = time.delta_secs().min(0.1);
-    let (w, h) = (
-        state.world.config.world.width,
-        state.world.config.world.height,
-    );
+    let bounds = view_bounds(&state.world);
     let k = 1.0 - (-dt * 10.0).exp();
-    cam.zoom += (cam.target_zoom - cam.zoom) * k;
-    let target = cam.target_center.clamp(Vec2::ZERO, Vec2::new(w, h));
-    cam.target_center = target;
-    let center = cam.center;
-    cam.center = center + (target - center) * k;
+    if let Ok(window) = windows.single() {
+        // Never zoom out past the edges of the world, and never look past them.
+        let covered = cam.covered;
+        let most = max_zoom(bounds, window, covered);
+        cam.target_zoom = cam.target_zoom.min(most);
+        cam.zoom += (cam.target_zoom - cam.zoom) * k;
+        cam.zoom = cam.zoom.min(most);
+        cam.target_center =
+            clamp_center(cam.target_center, cam.target_zoom, bounds, window, covered);
+        let center = cam.center + (cam.target_center - cam.center) * k;
+        cam.center = clamp_center(center, cam.zoom, bounds, window, covered);
+    } else {
+        cam.zoom += (cam.target_zoom - cam.zoom) * k;
+        let target = cam.target_center.clamp(bounds.min, bounds.max);
+        cam.target_center = target;
+        let center = cam.center;
+        cam.center = center + (target - center) * k;
+    }
     let Ok((mut transform, mut projection)) = cameras.single_mut() else {
         return;
     };
