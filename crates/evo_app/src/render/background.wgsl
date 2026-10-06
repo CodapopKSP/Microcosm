@@ -473,9 +473,18 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             let across = 1.0 - smoothstep(half_w * 0.6, half_w, abs(dx));
             let strength = e.w * across * smoothstep(1800.0, 300.0, depth);
             let streak = pow(0.5 + 0.5 * sin(dx * 0.03 + fbm(vec2<f32>(dx * 0.004, wp.y * 0.003 - time * 0.4)) * 6.0), 6.0);
-            let bubble_p = vec2<f32>(wp.x, wp.y - time * 30.0) / max(10.0, 2.0 * px);
-            let bubble = step(0.992, hash21(floor(bubble_p))) * (1.0 - smoothstep(1.5, 5.0, px));
-            water += (vec3<f32>(0.02, 0.12, 0.16) + vec3<f32>(0.05, 0.2, 0.22) * streak + vec3<f32>(0.4, 0.6, 0.6) * bubble) * strength;
+            // Round bubbles rising and wobbling, in two sizes (bigger ones rise faster), fixed in
+            // the water so they don't reshuffle on zoom; only drawn close enough to see.
+            var bubble = 0.0;
+            let near_up = 1.0 - smoothstep(1.5, 5.0, px);
+            if near_up > 0.0 {
+                let wob = vec2<f32>(sin(wp.y * 0.04 + time * 1.3 + dx * 0.01) * 4.0, 0.0);
+                let big = specks(wp + wob, 26.0, vec2<f32>(0.0, -time * 34.0), 0.18, 2.4, px, 41.7);
+                let big_rim = specks(wp + wob, 26.0, vec2<f32>(0.0, -time * 34.0), 0.18, 1.5, px, 41.7);
+                let small = specks(wp + wob * 0.6, 13.0, vec2<f32>(0.0, -time * 22.0), 0.15, 1.2, px, 57.3);
+                bubble = ((big - big_rim * 0.6) + small * 0.8) * near_up;
+            }
+            water += (vec3<f32>(0.02, 0.12, 0.16) + vec3<f32>(0.05, 0.2, 0.22) * streak + vec3<f32>(0.45, 0.65, 0.68) * bubble) * strength;
         } else if kind == 2u && e.w < 0.0 {
             // A wall on the move: glowing cracks along it and a dust cloud at its top.
             let top = -e.w;
