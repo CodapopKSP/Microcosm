@@ -7,7 +7,7 @@ use std::time::SystemTime;
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use evo_core::genome::{Genome, gene};
+use evo_core::genome::{CHROMOSOMES, Genome, gene};
 use evo_core::parts::{PartKind, slot_offset};
 use evo_core::terrain::Terrain;
 use evo_core::traits::{Traits, describe_gene};
@@ -64,16 +64,59 @@ struct Setup {
     /// Map files available, as (name, description).
     maps: Vec<(String, String)>,
     map: String,
-    seed: u64,
+    /// Any text: a number is used as is, other text is hashed into one.
+    seed_text: String,
     population: u32,
     /// Where life starts: across the ocean (fractions of its width) and between two depths.
     spawn_x: [f32; 2],
     spawn_depth: [f32; 2],
     genome: Genome,
+    /// The genome as text, whole (for copy and paste) and chromosome by chromosome.
     genome_text: String,
+    chromosome_text: Vec<String>,
+    /// What's wrong with the genome text, if anything (Start is disabled).
     genome_error: Option<String>,
     preset: usize,
     vent_life: bool,
+    /// Where a drag on the map started (fraction across the ocean, depth).
+    drag_from: Option<(f32, f32)>,
+}
+
+impl Setup {
+    /// Refresh the genome texts after the genome changed.
+    fn sync_text(&mut self) {
+        self.genome_text = self.genome.to_string();
+        self.chromosome_text = CHROMOSOMES
+            .iter()
+            .map(|c| chromosome_hex(&self.genome, c))
+            .collect();
+        self.genome_error = None;
+    }
+
+    fn seed(&self) -> u64 {
+        seed_from(&self.seed_text)
+    }
+}
+
+/// A seed from any text: a number is used as is, anything else is hashed.
+fn seed_from(text: &str) -> u64 {
+    let t = text.trim();
+    t.parse::<u64>().unwrap_or_else(|_| {
+        t.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+            (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    })
+}
+
+/// A chromosome's genes in hex, spaced so each gene (or part slot, for P) reads on its own.
+fn chromosome_hex(genome: &Genome, c: &evo_core::genome::Chromosome) -> String {
+    let bytes = &genome.0[c.range()];
+    let group = if c.letter == 'P' { 3 } else { 1 };
+    bytes
+        .chunks(group)
+        .map(|g| g.iter().map(|b| format!("{b:02X}")).collect::<String>())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A small picture of the map, with what's needed to place things on it.
@@ -91,33 +134,40 @@ struct Menu {
     error: Option<String>,
     setup: Setup,
     preview: Option<Preview>,
+    /// Height of the taller New-world card last frame (both are drawn this tall).
+    card_height: f32,
 }
 
 impl Default for Menu {
     fn default() -> Self {
         let config = Config::load(Path::new("configs/default.toml")).unwrap_or_default();
         let genome = PRESETS[0].genome(&config);
+        let mut setup = Setup {
+            maps: list_maps(),
+            map: config.world.map.clone(),
+            seed_text: config.world.seed.to_string(),
+            population: config.population.initial,
+            spawn_x: config.population.spawn_x,
+            spawn_depth: [
+                config.population.spawn_min_depth,
+                config.population.spawn_depth,
+            ],
+            genome,
+            genome_text: String::new(),
+            chromosome_text: Vec::new(),
+            genome_error: None,
+            preset: 0,
+            vent_life: false,
+            drag_from: None,
+        };
+        setup.sync_text();
         Self {
             page: Page::Splash,
             saves: Vec::new(),
             error: None,
-            setup: Setup {
-                maps: list_maps(),
-                map: config.world.map.clone(),
-                seed: config.world.seed,
-                population: config.population.initial,
-                spawn_x: config.population.spawn_x,
-                spawn_depth: [
-                    config.population.spawn_min_depth,
-                    config.population.spawn_depth,
-                ],
-                genome_text: genome.to_string(),
-                genome,
-                genome_error: None,
-                preset: 0,
-                vent_life: false,
-            },
+            setup,
             preview: None,
+            card_height: 0.0,
         }
     }
 }
@@ -131,19 +181,19 @@ struct Preset {
 const PRESETS: [Preset; 4] = [
     Preset {
         name: "Drifting plankton",
-        about: "A tiny floating photosynthesizer with no parts: it can't move or see. The classic start.",
+        about: "A tiny floating photosynthesizer. It can't move or see.",
     },
     Preset {
         name: "Swimming plankton",
-        about: "The same, with a flagellum to swim with. It still needs eyes to find the light.",
+        about: "Same as Drifting Plankton but with a small flagellum.",
     },
     Preset {
         name: "Snow eater",
-        about: "A floating scavenger living on marine snow instead of sunlight.",
+        about: "A floating scavenger that eats marine snow.",
     },
     Preset {
         name: "Vent chemotroph",
-        about: "An anchored microbe living on vent minerals, fermenting without oxygen. Start it at a vent.",
+        about: "Lives on vent minerals without oxygen. Start it near a vent.",
     },
 ];
 
@@ -375,6 +425,11 @@ fn draw_menu(
         .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(40, 16)))
         .show(&mut root, |ui| {
             backdrop(ui, t);
+            if menu.page != Page::Splash {
+                ui.ctx()
+                    .layer_painter(egui::LayerId::background())
+                    .rect_filled(ui.ctx().content_rect(), 0.0, rgba(0, 4, 10, 0.55));
+            }
             style_menu(ui);
             match menu.page {
                 Page::Splash => splash(ui, &mut menu, &launch, &mut start, &mut exit, t),
@@ -604,15 +659,46 @@ fn style_menu(ui: &mut egui::Ui) {
     w.active.bg_fill = rgba(40, 150, 135, 0.85);
     w.active.corner_radius = round;
     v.selection.bg_fill = rgba(40, 150, 135, 0.8);
+    v.override_text_color = Some(TEXT);
+    v.weak_text_color = Some(MUTED);
+    v.extreme_bg_color = rgba(0, 6, 12, 0.9); // text fields
 }
 
-/// A dark, translucent panel that keeps text readable over the backdrop.
+/// A section heading inside a card.
+fn heading(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(20.0).color(ACCENT));
+    ui.add_space(6.0);
+}
+
+/// A small label above a group of controls.
+fn caption(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new(text).size(13.0).strong().color(MUTED));
+}
+
+/// Text colours of the menus: main, secondary (still readable), accent and error.
+const TEXT: egui::Color32 = egui::Color32::from_rgb(222, 238, 236);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(160, 196, 198);
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(150, 240, 210);
+const ERROR: egui::Color32 = egui::Color32::from_rgb(250, 140, 125);
+
+/// A dark panel that keeps text readable over the backdrop (opaque enough that the bright
+/// organisms behind don't shine through).
 fn card() -> egui::Frame {
     egui::Frame::NONE
-        .fill(rgba(3, 14, 24, 0.82))
+        .fill(rgba(4, 16, 26, 0.96))
         .stroke(egui::Stroke::new(1.0, rgba(120, 220, 200, 0.18)))
         .corner_radius(14)
         .inner_margin(egui::Margin::same(18))
+}
+
+/// The Back button at the top left of a page.
+fn back_button(ui: &mut egui::Ui) -> bool {
+    ui.add_sized(
+        [92.0, 36.0],
+        egui::Button::new(egui::RichText::new("Back").size(17.0)),
+    )
+    .clicked()
 }
 
 fn big_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
@@ -634,7 +720,7 @@ fn splash(
         ui.add_space((ui.available_height() * 0.16).max(20.0));
         title(ui, t);
         ui.label(
-            egui::RichText::new("A LIVING OCEAN, GROWN FROM A SINGLE MICROBE")
+            egui::RichText::new("EVOLUTION SIMULATOR")
                 .size(15.0)
                 .extra_letter_spacing(3.0)
                 .color(egui::Color32::from_rgb(150, 200, 200)),
@@ -660,7 +746,7 @@ fn splash(
             menu.error = None;
         }
         ui.add_space(10.0);
-        if big_button(ui, "Load a save").clicked() {
+        if big_button(ui, "Load").clicked() {
             menu.page = Page::Load;
             menu.error = None;
         }
@@ -689,10 +775,11 @@ fn load(ui: &mut egui::Ui, menu: &mut Menu, start: &mut Option<World>) {
 
 fn load_list(ui: &mut egui::Ui, menu: &mut Menu, start: &mut Option<World>) {
     ui.horizontal(|ui| {
-        if ui.button("‹ Back").clicked() {
+        if back_button(ui) {
             menu.page = Page::Splash;
         }
-        ui.heading("Load a save");
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Load").size(26.0).color(TEXT));
     });
     ui.add_space(12.0);
     if let Some(e) = &menu.error {
@@ -740,7 +827,7 @@ fn new_world(
         .config
         .clone()
         .unwrap_or_else(|| PathBuf::from("configs/default.toml"));
-    // The map preview (rebuilt when the map changes).
+    // The map picture (rebuilt when the map changes).
     if menu
         .preview
         .as_ref()
@@ -751,76 +838,117 @@ fn new_world(
             Err(e) => menu.error = Some(e),
         }
     }
-    ui.add_space(16.0);
+    ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if ui.button("‹ Back").clicked() {
+        if back_button(ui) {
             menu.page = Page::Splash;
         }
-        ui.heading("New world");
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new("New world").size(30.0).color(TEXT));
     });
-    ui.add_space(8.0);
+    ui.add_space(12.0);
     let Menu {
         setup,
         preview,
         error,
+        card_height,
         ..
     } = menu;
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.columns(2, |cols| {
-            card().show(&mut cols[0], |ui| world_column(ui, setup, preview.as_ref()));
-            card().show(&mut cols[1], |ui| {
-                ancestor_column(ui, setup, preview.as_ref())
+    // Both cards are drawn as tall as the taller one was last frame.
+    let target = *card_height;
+    let mut tallest = 0.0f32;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.columns(2, |cols| {
+                card().show(&mut cols[0], |ui| {
+                    let top = ui.cursor().min.y;
+                    world_column(ui, setup, preview.as_ref());
+                    // Pad up to the taller card's height (measured last frame).
+                    let used = ui.cursor().min.y - top;
+                    tallest = tallest.max(used);
+                    if target > used {
+                        ui.add_space(target - used);
+                    }
+                });
+                card().show(&mut cols[1], |ui| {
+                    let top = ui.cursor().min.y;
+                    ancestor_column(ui, setup, preview.as_ref());
+                    // Pad up to the taller card's height (measured last frame).
+                    let used = ui.cursor().min.y - top;
+                    tallest = tallest.max(used);
+                    if target > used {
+                        ui.add_space(target - used);
+                    }
+                });
             });
-        });
-        ui.add_space(16.0);
-        ui.vertical_centered(|ui| {
-            if let Some(e) = error.as_ref() {
-                ui.colored_label(egui::Color32::from_rgb(240, 120, 110), e);
-            }
-            let ready = setup.genome_error.is_none();
-            let button = ui.add_enabled(
-                ready,
-                egui::Button::new(egui::RichText::new("Start").size(22.0))
-                    .min_size([240.0, 46.0].into()),
-            );
-            ui.label(
-                egui::RichText::new(
-                    "Your autosave, if any, is kept in the saves folder under a dated name.",
-                )
-                .weak(),
-            );
-            if button.clicked() {
-                match create_world(&config_path, setup, &launch.0.save_dir) {
-                    Ok(w) => *start = Some(w),
-                    Err(e) => *error = Some(e),
+            ui.add_space(18.0);
+            ui.vertical_centered(|ui| {
+                if let Some(e) = error.as_ref() {
+                    ui.colored_label(ERROR, e);
                 }
-            }
+                if let Some(e) = &setup.genome_error {
+                    ui.colored_label(ERROR, format!("Genome: {e}"));
+                }
+                let ready = setup.genome_error.is_none();
+                let button = ui.add_enabled(
+                    ready,
+                    egui::Button::new(egui::RichText::new("Start").size(22.0))
+                        .min_size([260.0, 48.0].into()),
+                );
+                if button.clicked() {
+                    match create_world(&config_path, setup, &launch.0.save_dir) {
+                        Ok(w) => *start = Some(w),
+                        Err(e) => *error = Some(e),
+                    }
+                }
+            });
+            ui.add_space(24.0);
         });
-        ui.add_space(24.0);
-    });
+    *card_height = tallest;
+}
+
+/// Size of the map picture's texture.
+const PREVIEW_SIZE: [usize; 2] = [720, 260];
+
+/// The depth shown a fraction `f` of the way down the map picture: stretched near the surface,
+/// where life lives, squeezed in the deep.
+fn depth_at(f: f32, height: f32) -> f32 {
+    f.clamp(0.0, 1.0).powi(2) * height
+}
+
+/// Where depth `depth` sits down the map picture (0 = surface, 1 = bottom).
+fn fraction_at(depth: f32, height: f32) -> f32 {
+    (depth / height.max(1.0)).clamp(0.0, 1.0).sqrt()
 }
 
 fn build_preview(ctx: &egui::Context, map: &str, config: Config) -> Preview {
     let terrain = Terrain::generate(&config);
     let (w, h) = (config.world.width, config.world.height);
-    let width = 480usize;
-    let height = ((width as f32 * h / w).round() as usize).max(40);
+    let ocean = config.ocean_width();
+    let half = config.light.half_depth.max(1.0);
+    let [width, height] = PREVIEW_SIZE;
     let mut pixels = Vec::with_capacity(width * height * 4);
     for y in 0..height {
+        let depth = depth_at((y as f32 + 0.5) / height as f32, h);
+        let light = (-depth / half * std::f32::consts::LN_2).exp();
         for x in 0..width {
-            let p = Vec2::new(
-                (x as f32 + 0.5) / width as f32 * w,
-                h - (y as f32 + 0.5) / height as f32 * h,
-            );
-            let depth = (h - p.y) / h;
+            let px = (x as f32 + 0.5) / width as f32 * w;
+            let p = Vec2::new(px, h - depth);
             let [r, g, b] = if terrain.is_solid(p) {
-                [92, 80, 66]
-            } else {
-                let light = (1.0 - depth).powi(3);
+                let shade = 0.75 + 0.25 * light;
                 [
-                    (6.0 + 30.0 * light) as u8,
-                    (20.0 + 120.0 * light) as u8,
-                    (45.0 + 130.0 * light) as u8,
+                    (96.0 * shade) as u8,
+                    (82.0 * shade) as u8,
+                    (66.0 * shade) as u8,
+                ]
+            } else {
+                let l = light.sqrt();
+                let cut_off = if px > ocean { 0.55 } else { 1.0 };
+                [
+                    ((8.0 + 40.0 * l) * cut_off) as u8,
+                    ((24.0 + 130.0 * l) * cut_off) as u8,
+                    ((48.0 + 140.0 * l) * cut_off) as u8,
                 ]
             };
             pixels.extend_from_slice(&[r, g, b, 255]);
@@ -835,130 +963,160 @@ fn build_preview(ctx: &egui::Context, map: &str, config: Config) -> Preview {
     }
 }
 
+/// The map, with where life starts: drag to draw that area, click to move it.
+fn map_view(ui: &mut egui::Ui, setup: &mut Setup, p: &Preview) {
+    let size = egui::vec2(ui.available_width(), 230.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let painter = ui.painter_at(rect);
+    painter.image(
+        p.texture.id(),
+        rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+    let (w, h) = (p.config.world.width, p.config.world.height);
+    let ocean = p.config.ocean_width();
+    let x_of = |x: f32| rect.left() + x / w * rect.width();
+    let y_of = |depth: f32| rect.top() + fraction_at(depth, h) * rect.height();
+    // A depth scale.
+    for depth in [100.0, 300.0, 1000.0, 2500.0] {
+        if depth >= h {
+            continue;
+        }
+        let y = y_of(depth);
+        painter.line_segment(
+            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+            egui::Stroke::new(1.0, rgba(220, 240, 240, 0.12)),
+        );
+        painter.text(
+            egui::pos2(rect.left() + 4.0, y - 1.0),
+            egui::Align2::LEFT_BOTTOM,
+            format!("{depth:.0}"),
+            egui::FontId::proportional(11.0),
+            rgba(220, 240, 240, 0.65),
+        );
+    }
+    if ocean < w - 1.0 {
+        painter.text(
+            egui::pos2((x_of(ocean) + rect.right()) * 0.5, rect.top() + 14.0),
+            egui::Align2::CENTER_CENTER,
+            "cut off",
+            egui::FontId::proportional(11.0),
+            rgba(220, 240, 240, 0.6),
+        );
+    }
+    for v in &p.vents {
+        let c = egui::pos2(x_of(v.x), y_of(h - v.y));
+        painter.circle_filled(c, 4.0, egui::Color32::from_rgb(255, 150, 60));
+        painter.circle_stroke(c, 6.0, egui::Stroke::new(1.0, rgba(255, 180, 90, 0.6)));
+    }
+    let area = egui::Rect::from_min_max(
+        egui::pos2(x_of(setup.spawn_x[0] * ocean), y_of(setup.spawn_depth[0])),
+        egui::pos2(x_of(setup.spawn_x[1] * ocean), y_of(setup.spawn_depth[1])),
+    );
+    painter.rect_filled(area, 3.0, rgba(140, 255, 170, 0.22));
+    painter.rect_stroke(
+        area,
+        3.0,
+        egui::Stroke::new(2.0, egui::Color32::from_rgb(150, 255, 180)),
+        egui::StrokeKind::Outside,
+    );
+
+    // Pointer to the world: (fraction across the ocean, depth).
+    let to_world = |pos: egui::Pos2| {
+        let x = ((pos.x - rect.left()) / rect.width() * w / ocean).clamp(0.0, 1.0);
+        let depth = depth_at((pos.y - rect.top()) / rect.height(), h);
+        (x, depth)
+    };
+    if response.drag_started()
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        setup.drag_from = Some(to_world(pos));
+    }
+    if response.dragged()
+        && let (Some(a), Some(pos)) = (setup.drag_from, response.interact_pointer_pos())
+    {
+        let b = to_world(pos);
+        let (x0, x1) = (a.0.min(b.0), a.0.max(b.0));
+        let (d0, d1) = (a.1.min(b.1), a.1.max(b.1));
+        setup.spawn_x = [x0, x1.max(x0 + 0.005)];
+        setup.spawn_depth = [d0, d1.max(d0 + 10.0)];
+    }
+    if response.drag_stopped() {
+        setup.drag_from = None;
+    }
+    if response.clicked()
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        let (x, depth) = to_world(pos);
+        let half_x = (setup.spawn_x[1] - setup.spawn_x[0]) * 0.5;
+        let half_d = (setup.spawn_depth[1] - setup.spawn_depth[0]) * 0.5;
+        let cx = x.clamp(half_x, 1.0 - half_x);
+        let cd = depth.clamp(half_d, h - half_d);
+        setup.spawn_x = [cx - half_x, cx + half_x];
+        setup.spawn_depth = [cd - half_d, cd + half_d];
+    }
+    if let Some(pos) = response.hover_pos() {
+        let (x, depth) = to_world(pos);
+        response.on_hover_text_at_pointer(format!("{:.0}% across · depth {depth:.0}", x * 100.0));
+    }
+    ui.label(
+        egui::RichText::new(
+            "Drag to set where life starts, or click to move it. Orange dots are vents.",
+        )
+        .size(12.0)
+        .color(MUTED),
+    );
+}
+
 fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>) {
-    ui.heading("The world");
-    ui.add_space(4.0);
-    let current = setup
+    heading(ui, "The world");
+    caption(ui, "Map");
+    let about = setup
         .maps
         .iter()
         .find(|m| m.0 == setup.map)
         .map(|m| m.1.clone())
         .unwrap_or_default();
-    egui::ComboBox::from_label("Map")
-        .selected_text(&setup.map)
-        .show_ui(ui, |ui| {
-            for (name, about) in &setup.maps {
-                ui.selectable_value(&mut setup.map, name.clone(), name)
-                    .on_hover_text(about);
-            }
-        });
-    ui.label(egui::RichText::new(current).weak());
-
-    // The map, with where life will start; click it to move that spot.
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("map")
+            .width(150.0)
+            .selected_text(&setup.map)
+            .show_ui(ui, |ui| {
+                for (name, about) in &setup.maps {
+                    ui.selectable_value(&mut setup.map, name.clone(), name)
+                        .on_hover_text(about);
+                }
+            });
+        ui.label(egui::RichText::new(about).color(MUTED));
+    });
+    ui.add_space(6.0);
     if let Some(p) = preview {
-        let size = p.texture.size_vec2();
-        let scale = (ui.available_width() / size.x).min(1.4);
-        let (rect, response) = ui.allocate_exact_size(size * scale, egui::Sense::click_and_drag());
-        let painter = ui.painter_at(rect);
-        painter.image(
-            p.texture.id(),
-            rect,
-            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
-        let (w, h) = (p.config.world.width, p.config.world.height);
-        let ocean = p.config.ocean_width();
-        let to_screen = |x: f32, depth: f32| {
-            egui::pos2(
-                rect.left() + x / w * rect.width(),
-                rect.top() + depth / h * rect.height(),
-            )
-        };
-        for v in &p.vents {
-            painter.circle_filled(
-                to_screen(v.x, h - v.y),
-                3.0,
-                egui::Color32::from_rgb(255, 150, 60),
-            );
-        }
-        let area = egui::Rect::from_two_pos(
-            to_screen(setup.spawn_x[0] * ocean, setup.spawn_depth[0]),
-            to_screen(
-                setup.spawn_x[1] * ocean,
-                setup.spawn_depth[1].max(setup.spawn_depth[0] + 1.0),
-            ),
-        );
-        painter.rect_filled(
-            area,
-            2.0,
-            egui::Color32::from_rgba_unmultiplied(140, 255, 170, 50),
-        );
-        painter.rect_stroke(
-            area,
-            2.0,
-            egui::Stroke::new(1.5, egui::Color32::from_rgb(140, 255, 170)),
-            egui::StrokeKind::Outside,
-        );
-        if let Some(pos) = response.interact_pointer_pos()
-            && (response.clicked() || response.dragged())
-        {
-            let x = ((pos.x - rect.left()) / rect.width() * w / ocean).clamp(0.0, 1.0);
-            let depth = ((pos.y - rect.top()) / rect.height() * h).clamp(0.0, h);
-            let half_x = (setup.spawn_x[1] - setup.spawn_x[0]).abs() * 0.5;
-            let half_d = (setup.spawn_depth[1] - setup.spawn_depth[0]).abs() * 0.5;
-            let cx = x.clamp(half_x, 1.0 - half_x);
-            let cd = depth.clamp(half_d, h - half_d);
-            setup.spawn_x = [cx - half_x, cx + half_x];
-            setup.spawn_depth = [cd - half_d, cd + half_d];
-        }
-        ui.label(
-            egui::RichText::new(
-                "Green: where life starts (click or drag to move it). Orange: permanent vents.",
-            )
-            .weak(),
-        );
+        map_view(ui, setup, p);
     }
-    ui.add_space(8.0);
-    egui::Grid::new("world_grid")
+
+    caption(ui, "Where life starts");
+    let depth_max = preview.map(|p| p.config.world.height).unwrap_or(6000.0);
+    egui::Grid::new("where")
         .num_columns(2)
         .spacing([12.0, 6.0])
         .show(ui, |ui| {
-            ui.label("Seed");
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut setup.seed));
-                if ui.button("Random").clicked() {
-                    setup.seed = SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .map(|d| d.as_nanos() as u64 % 1_000_000)
-                        .unwrap_or(1);
-                }
-            });
-            ui.end_row();
-            ui.label("");
-            ui.label(
-                egui::RichText::new(
-                    "Life, events, random vents and currents. The map is the same for every seed.",
-                )
-                .weak(),
-            );
-            ui.end_row();
-            ui.label("Starting population");
-            ui.add(egui::Slider::new(&mut setup.population, 20..=20_000).logarithmic(true));
-            ui.end_row();
-            let ocean_depth = preview.map(|p| p.config.world.height).unwrap_or(6000.0);
             ui.label("Across the ocean");
             ui.horizontal(|ui| {
                 let mut lo = setup.spawn_x[0] * 100.0;
                 let mut hi = setup.spawn_x[1] * 100.0;
                 ui.add(
-                    egui::Slider::new(&mut lo, 0.0..=100.0)
-                        .suffix("%")
-                        .text("from"),
+                    egui::DragValue::new(&mut lo)
+                        .range(0.0..=100.0)
+                        .suffix(" %")
+                        .speed(0.5),
                 );
+                ui.label("to");
                 ui.add(
-                    egui::Slider::new(&mut hi, 0.0..=100.0)
-                        .suffix("%")
-                        .text("to"),
+                    egui::DragValue::new(&mut hi)
+                        .range(0.0..=100.0)
+                        .suffix(" %")
+                        .speed(0.5),
                 );
                 setup.spawn_x = [lo.min(hi) / 100.0, hi.max(lo) / 100.0];
             });
@@ -966,46 +1124,79 @@ fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>)
             ui.label("Depth");
             ui.horizontal(|ui| {
                 let [mut lo, mut hi] = setup.spawn_depth;
-                ui.add(egui::Slider::new(&mut lo, 0.0..=ocean_depth).text("from"));
-                ui.add(egui::Slider::new(&mut hi, 0.0..=ocean_depth).text("to"));
+                ui.add(
+                    egui::DragValue::new(&mut lo)
+                        .range(0.0..=depth_max)
+                        .speed(2.0),
+                );
+                ui.label("to");
+                ui.add(
+                    egui::DragValue::new(&mut hi)
+                        .range(0.0..=depth_max)
+                        .speed(2.0),
+                );
                 setup.spawn_depth = [lo.min(hi), hi.max(lo + 10.0)];
             });
             ui.end_row();
-            ui.label("Quick picks");
-            ui.horizontal_wrapped(|ui| {
-                let picks: [(&str, [f32; 2], [f32; 2]); 4] = [
-                    ("Sunlit surface", [0.0, 1.0], [0.0, 300.0]),
-                    ("Shelf shallows", [0.8, 1.0], [0.0, 600.0]),
-                    ("Twilight", [0.0, 1.0], [900.0, 2000.0]),
-                    ("Deep floor", [0.1, 0.7], [3500.0, 5500.0]),
-                ];
-                for (name, x, d) in picks {
-                    if ui.button(name).clicked() {
-                        setup.spawn_x = x;
-                        setup.spawn_depth = d;
-                    }
-                }
-                if let Some(p) = preview
-                    && let Some(v) = p.vents.first()
-                    && ui.button("Shelf vent").clicked()
-                {
-                    let (ocean, h) = (p.config.ocean_width(), p.config.world.height);
-                    let x = v.x / ocean;
-                    let depth = h - v.y;
-                    setup.spawn_x = [(x - 0.01).max(0.0), (x + 0.01).min(1.0)];
-                    setup.spawn_depth = [(depth - 150.0).max(0.0), depth + 50.0];
-                }
-            });
-            ui.end_row();
         });
+    ui.horizontal_wrapped(|ui| {
+        let picks: [(&str, [f32; 2], [f32; 2]); 4] = [
+            ("Sunlit surface", [0.0, 1.0], [0.0, 300.0]),
+            ("Shelf shallows", [0.8, 1.0], [0.0, 600.0]),
+            ("Twilight", [0.0, 1.0], [900.0, 2000.0]),
+            ("Deep floor", [0.1, 0.7], [3500.0, 5500.0]),
+        ];
+        for (name, x, d) in picks {
+            if ui.button(name).clicked() {
+                setup.spawn_x = x;
+                setup.spawn_depth = d;
+            }
+        }
+        if let Some(p) = preview
+            && let Some(v) = p.vents.first()
+            && ui.button("Shelf vent").clicked()
+        {
+            let (ocean, h) = (p.config.ocean_width(), p.config.world.height);
+            let x = v.x / ocean;
+            let depth = h - v.y;
+            setup.spawn_x = [(x - 0.01).max(0.0), (x + 0.01).min(1.0)];
+            setup.spawn_depth = [(depth - 150.0).max(0.0), depth + 50.0];
+        }
+    });
+
+    caption(ui, "Seed");
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut setup.seed_text)
+                .desired_width(320.0)
+                .hint_text("any number or text"),
+        );
+        if ui.button("Random").clicked() {
+            setup.seed_text = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| (d.as_nanos() as u64 % 1_000_000_000).to_string())
+                .unwrap_or_else(|_| "1".into());
+        }
+    });
+    let numeric = setup.seed_text.trim().parse::<u64>().is_ok();
+    let note = if numeric {
+        "The map is the same for every seed.".to_string()
+    } else {
+        format!("Uses seed {}.", setup.seed())
+    };
+    ui.label(egui::RichText::new(note).size(12.0).color(MUTED));
+
+    caption(ui, "Starting population");
+    ui.add(egui::Slider::new(&mut setup.population, 20..=20_000).logarithmic(true));
 }
 
 fn ancestor_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>) {
-    ui.heading("The ancestor");
-    ui.add_space(4.0);
+    heading(ui, "The ancestor");
     let config = preview.map(|p| p.config.clone()).unwrap_or_default();
+    caption(ui, "Preset");
     let mut preset = setup.preset;
-    egui::ComboBox::from_label("Start from")
+    egui::ComboBox::from_id_salt("preset")
+        .width(220.0)
         .selected_text(PRESETS[preset.min(PRESETS.len() - 1)].name)
         .show_ui(ui, |ui| {
             for (i, p) in PRESETS.iter().enumerate() {
@@ -1016,36 +1207,40 @@ fn ancestor_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Previe
     if preset != setup.preset {
         setup.preset = preset;
         setup.genome = PRESETS[preset].genome(&config);
-        setup.genome_text = setup.genome.to_string();
-        setup.genome_error = None;
+        setup.sync_text();
     }
-    ui.label(egui::RichText::new(PRESETS[setup.preset].about).weak());
-    ui.add_space(6.0);
+    ui.label(egui::RichText::new(PRESETS[setup.preset].about).color(MUTED));
 
     let traits = Traits::decode(&setup.genome, &config);
+    ui.add_space(8.0);
     ui.horizontal(|ui| {
-        crate::ui::swatch(ui, traits.color, 16.0);
-        let parts = if traits.part_count == 0 {
-            "no body parts".to_string()
-        } else {
-            format!("{} body parts", traits.part_count)
+        crate::ui::swatch(ui, traits.color, 18.0);
+        let parts = match traits.part_count {
+            0 => "no body parts".to_string(),
+            1 => "1 body part".to_string(),
+            n => format!("{n} body parts"),
         };
-        ui.label(format!(
-            "Adult radius {:.1} · {} · {}",
-            traits.adult_radius,
-            if traits.is_motile() {
-                "can move"
-            } else {
-                "can't move"
-            },
-            parts
-        ));
+        ui.label(
+            egui::RichText::new(format!(
+                "Adult radius {:.1}  ·  {}  ·  {}",
+                traits.adult_radius,
+                if traits.is_motile() {
+                    "can move"
+                } else {
+                    "can't move"
+                },
+                parts
+            ))
+            .size(15.0),
+        );
     });
-    ui.add_space(4.0);
+
+    caption(ui, "Genes");
+    ui.spacing_mut().slider_width = 170.0;
     let mut changed = false;
     egui::Grid::new("genes")
         .num_columns(3)
-        .spacing([10.0, 4.0])
+        .spacing([12.0, 5.0])
         .show(ui, |ui| {
             for (index, name) in SLIDERS {
                 ui.label(name);
@@ -1059,46 +1254,107 @@ fn ancestor_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Previe
                 }
                 ui.label(
                     egui::RichText::new(describe_gene(index, &setup.genome, &traits, &config))
-                        .weak(),
+                        .color(MUTED),
                 );
                 ui.end_row();
             }
         });
     if changed {
-        setup.genome_text = setup.genome.to_string();
-        setup.genome_error = None;
+        setup.sync_text();
     }
-    ui.add_space(6.0);
-    ui.label("Genome (edit directly for anything the sliders don't cover)");
-    let edit = ui.add(
-        egui::TextEdit::multiline(&mut setup.genome_text)
-            .font(egui::TextStyle::Monospace)
-            .desired_rows(3)
-            .desired_width(f32::INFINITY),
-    );
-    if edit.changed() {
-        match Genome::parse(&setup.genome_text) {
-            Ok(g) => {
-                setup.genome = g;
-                setup.genome_error = None;
+
+    caption(ui, "Genome");
+    let mut errors: Vec<String> = Vec::new();
+    let mut edited = false;
+    egui::Grid::new("chromosomes")
+        .num_columns(3)
+        .spacing([10.0, 4.0])
+        .show(ui, |ui| {
+            for (k, c) in CHROMOSOMES.iter().enumerate() {
+                egui::Frame::NONE
+                    .fill(rgba(30, 110, 110, 0.9))
+                    .corner_radius(5)
+                    .inner_margin(egui::Margin::symmetric(7, 1))
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(c.letter.to_string())
+                                .monospace()
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        );
+                    });
+                ui.label(egui::RichText::new(c.name).size(12.0).color(MUTED));
+                let Some(text) = setup.chromosome_text.get_mut(k) else {
+                    continue;
+                };
+                let edit = ui.add(
+                    egui::TextEdit::singleline(text)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY),
+                );
+                let digits: String = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+                let want = c.genes.len() * 2;
+                if digits.len() != want || !digits.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                    errors.push(format!(
+                        "chromosome {} needs {} hex digits ({} genes), has {}",
+                        c.letter,
+                        want,
+                        c.genes.len(),
+                        digits.len()
+                    ));
+                } else if edit.changed() {
+                    for (i, pair) in digits.as_bytes().chunks(2).enumerate() {
+                        let hex = std::str::from_utf8(pair).unwrap_or("00");
+                        setup.genome.0[c.start + i] = u8::from_str_radix(hex, 16).unwrap_or(0);
+                    }
+                    edited = true;
+                }
+                ui.end_row();
             }
-            Err(e) => setup.genome_error = Some(e),
-        }
+        });
+    if edited {
+        setup.genome_text = setup.genome.to_string();
     }
-    if let Some(e) = &setup.genome_error {
-        ui.colored_label(egui::Color32::from_rgb(240, 120, 110), e);
-    }
+
+    ui.add_space(4.0);
+    egui::CollapsingHeader::new("Copy / paste")
+        .id_salt("whole_genome")
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Copy").clicked() {
+                    ui.ctx().copy_text(setup.genome.to_string());
+                }
+            });
+            let edit = ui.add(
+                egui::TextEdit::multiline(&mut setup.genome_text)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+            match Genome::parse(&setup.genome_text) {
+                Ok(g) if edit.changed() => {
+                    setup.genome = g;
+                    let text = std::mem::take(&mut setup.genome_text);
+                    setup.sync_text();
+                    setup.genome_text = text;
+                    errors.clear();
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    ui.colored_label(ERROR, format!("Can't read this genome: {e}"));
+                }
+            }
+        });
+    setup.genome_error = errors.into_iter().next();
+
     ui.add_space(6.0);
-    ui.checkbox(
-        &mut setup.vent_life,
-        "Also seed vent life: anchored chemotrophs at each vent",
-    );
+    ui.checkbox(&mut setup.vent_life, "Add vent chemotrophs at each vent");
 }
 
 /// Build the world from the setup. An existing autosave is set aside under a dated name first.
 fn create_world(config_path: &Path, setup: &Setup, save_dir: &Path) -> Result<World, String> {
     let mut config = Config::load_with_map(config_path, Some(&setup.map))?;
-    config.world.seed = setup.seed;
+    config.world.seed = setup.seed();
     let p = &mut config.population;
     p.initial = setup.population;
     p.spawn_x = setup.spawn_x;
