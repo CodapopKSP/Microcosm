@@ -1,4 +1,4 @@
-//! Time series statistics, the event log, and milestones.
+//! Time series statistics and the event log.
 
 use std::collections::VecDeque;
 
@@ -100,7 +100,6 @@ impl Stats {
 pub enum EventKind {
     Species,
     Extinction,
-    Milestone,
     Environment,
     Recolonization,
     Disaster,
@@ -121,7 +120,7 @@ pub struct Event {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "SavedEventLog")]
 pub struct EventLog {
     pub entries: VecDeque<Event>,
     /// Total events ever logged (entries may be trimmed).
@@ -129,6 +128,61 @@ pub struct EventLog {
     /// Every event that changed the world (environment, disasters, recolonizations), kept for
     /// the whole run: they're rare, and the family tree marks them.
     pub world: Vec<Event>,
+}
+
+/// An event log as saved. Events of kinds that no longer exist (older saves had milestones)
+/// are dropped when loading.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct SavedEventLog {
+    entries: VecDeque<SavedEvent>,
+    count: u64,
+    world: Vec<SavedEvent>,
+}
+
+#[derive(Deserialize)]
+struct SavedEvent {
+    tick: u64,
+    time: f64,
+    #[serde(deserialize_with = "known_kind")]
+    kind: Option<EventKind>,
+    text: String,
+    organism: Option<u64>,
+    species: Option<u32>,
+    #[serde(default)]
+    pos: Option<glam::Vec2>,
+}
+
+fn known_kind<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<EventKind>, D::Error> {
+    use serde::de::IntoDeserializer;
+    let name = String::deserialize(d)?;
+    let kind: Result<EventKind, serde::de::value::Error> =
+        EventKind::deserialize(name.as_str().into_deserializer());
+    Ok(kind.ok())
+}
+
+impl From<SavedEventLog> for EventLog {
+    fn from(saved: SavedEventLog) -> Self {
+        let known = |e: SavedEvent| {
+            Some(Event {
+                tick: e.tick,
+                time: e.time,
+                kind: e.kind?,
+                text: e.text,
+                organism: e.organism,
+                species: e.species,
+                pos: e.pos,
+            })
+        };
+        let total = saved.entries.len();
+        let entries: VecDeque<Event> = saved.entries.into_iter().filter_map(known).collect();
+        let dropped = (total - entries.len()) as u64;
+        EventLog {
+            entries,
+            count: saved.count.saturating_sub(dropped),
+            world: saved.world.into_iter().filter_map(known).collect(),
+        }
+    }
 }
 
 /// Most world events kept (a cap far beyond weeks of running).
@@ -151,25 +205,49 @@ impl EventLog {
     }
 }
 
-/// One-time "firsts" worth announcing.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Milestones {
-    pub first_swimmer: bool,
-    pub first_kill: bool,
-    pub first_chemotroph: bool,
-    pub first_scavenger: bool,
-    pub first_hunter: bool,
-    pub first_eyes: bool,
-    pub first_armor: bool,
-    pub first_walker: bool,
-    pub first_anchored: bool,
-    pub first_anaerobe: bool,
-    pub first_sulfur: bool,
-    pub first_fixer: bool,
-    pub first_toxic: bool,
-    /// Part kinds that have appeared in a reproducing lineage (bit = kind code).
-    pub parts_seen: u32,
-    /// Largest adult radius ever born.
-    pub size_record: f32,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn events_of_removed_kinds_are_dropped_on_load() {
+        #[derive(Serialize)]
+        struct OldEvent {
+            tick: u64,
+            time: f64,
+            kind: &'static str,
+            text: String,
+            organism: Option<u64>,
+            species: Option<u32>,
+        }
+        #[derive(Serialize)]
+        struct OldLog {
+            entries: Vec<OldEvent>,
+            count: u64,
+            world: Vec<OldEvent>,
+        }
+        let event = |kind| OldEvent {
+            tick: 1,
+            time: 0.5,
+            kind,
+            text: kind.into(),
+            organism: None,
+            species: Some(3),
+        };
+        let old = OldLog {
+            entries: vec![event("Milestone"), event("Species"), event("Environment")],
+            count: 10,
+            world: vec![event("Environment")],
+        };
+        let bytes = rmp_serde::to_vec_named(&old).unwrap();
+        let log: EventLog = rmp_serde::from_slice(&bytes).unwrap();
+        let kinds: Vec<EventKind> = log.entries.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, [EventKind::Species, EventKind::Environment]);
+        assert_eq!(log.count, 9);
+        assert_eq!(log.world.len(), 1);
+        // And today's logs round-trip.
+        let again: EventLog = rmp_serde::from_slice(&rmp_serde::to_vec_named(&log).unwrap()).unwrap();
+        assert_eq!(again.entries.len(), 2);
+        assert_eq!(again.count, 9);
+    }
 }

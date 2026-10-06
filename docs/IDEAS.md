@@ -194,7 +194,7 @@ parent to child get friendlier.
 
 **Eventually (stretch):** an inclusion lineage carried vertically for many generations could
 become an *organelle*: it stops being a separate organism, its benefit becomes a permanent
-trait of the host, and a milestone event celebrates it.
+trait of the host, and an event announces it.
 
 **Showing it:** small cells drawn inside the host's body in the inclusion's colour; the
 inspector lists them ("carries 2 green algae: +0.02 energy/s"); a chart for how many hosts

@@ -24,7 +24,7 @@ use crate::grid::{Entry, SpatialGrid};
 use crate::organism::{Activity, Carcass, Chem, DeathCause, Grasp, Organism};
 use crate::rng::{Rng, mix64};
 use crate::species::{SpeciesEvent, SpeciesRegistry};
-use crate::stats::{Event, EventKind, EventLog, Milestones, StatSample, Stats};
+use crate::stats::{Event, EventKind, EventLog, StatSample, Stats};
 use crate::terrain::Terrain;
 use crate::traits::{MAX_EYES, MAX_GRASPS, Traits};
 
@@ -275,8 +275,6 @@ pub struct World {
     pub stats: Stats,
     #[serde(default)]
     pub events: EventLog,
-    #[serde(default)]
-    pub milestones: Milestones,
     /// Active random events (plagues, upwellings, impact winters, barriers).
     pub happenings: Events,
     pub ancestor: Genome,
@@ -1298,7 +1296,6 @@ impl World {
             species,
             stats: Stats::default(),
             events: EventLog::default(),
-            milestones: Milestones::default(),
             happenings,
             ancestor,
             vent_ancestor,
@@ -1315,11 +1312,12 @@ impl World {
         for p in vents {
             world.seed_vent(p, world.config.population.vent_initial);
         }
+        let first = world.species.name(0).to_string();
         world.log(
-            EventKind::Milestone,
-            "Life begins: the first microbes drift in the sunlit shallows.".into(),
+            EventKind::Species,
+            format!("Life begins: the first species, {first}, emerges."),
             None,
-            None,
+            Some(0),
         );
         world.sample_stats();
         world
@@ -1910,7 +1908,6 @@ impl World {
         let toxin_present = &mut env.toxin_present;
         let m_area = minerals.cell_area();
         let d_area = detritus.cell_area();
-        let mut first_kill = None;
         let tick = self.tick;
         let fx = &mut self.fx;
         let terrain = &self.terrain;
@@ -2225,9 +2222,6 @@ impl World {
             detritus.data[d_idx] += (u.undigested + u.excess_energy) / d_area;
             nutrients.data[i] += u.excess_nutrients / m_area;
             let (hunter, p) = (&self.organisms[h as usize], &self.organisms[prey as usize]);
-            if got.killed && first_kill.is_none() {
-                first_kill = Some((hunter.id, hunter.species));
-            }
             if fx.len() >= MAX_FX {
                 continue;
             }
@@ -2389,18 +2383,6 @@ impl World {
         }
 
         self.scratch = Some(scratch);
-        if let Some((id, species)) = first_kill
-            && !self.milestones.first_kill
-        {
-            self.milestones.first_kill = true;
-            let name = self.species.name(species).to_string();
-            self.log(
-                EventKind::Milestone,
-                format!("First blood: a {name} kills another organism. Predation has begun."),
-                Some(id),
-                Some(species),
-            );
-        }
     }
 
     fn update_carcasses(&mut self) {
@@ -2453,7 +2435,6 @@ impl World {
         let max_population = config.population.max_population as usize;
         let tick = self.tick;
         let mut births: Vec<Organism> = Vec::new();
-        let mut parents: Vec<usize> = Vec::new();
         let mut population = self.organisms.len();
 
         // Find who's ready in parallel (most aren't), then bud them in order.
@@ -2566,21 +2547,8 @@ impl World {
             }
             o.offspring += count;
             o.repro_cooldown = rc.cooldown;
-            parents.push(i);
         }
 
-        // Milestones count only once a lineage has proven itself by reproducing.
-        for &i in &parents {
-            let parent = &self.organisms[i];
-            check_milestones(
-                &mut self.milestones,
-                &mut self.events,
-                parent,
-                &self.species,
-                config,
-                tick,
-            );
-        }
         self.organisms.extend(births);
     }
 
@@ -2749,123 +2717,6 @@ impl World {
         let carcasses: f64 = self.carcasses.iter().map(|c| c.energy as f64).sum();
         let (m, d) = self.env.field_totals();
         orgs + carcasses + m + d
-    }
-}
-
-fn check_milestones(
-    m: &mut Milestones,
-    events: &mut EventLog,
-    parent: &Organism,
-    species: &SpeciesRegistry,
-    config: &Config,
-    tick: u64,
-) {
-    let t = &parent.traits;
-    let time = tick as f64 * config.time.dt as f64;
-    let name = species
-        .established_ancestor(parent.species)
-        .map(|s| species.name(s).to_string())
-        .unwrap_or_else(|| "microbe".into());
-    let mut log = |text: String| {
-        events.push(
-            Event {
-                tick,
-                time,
-                kind: EventKind::Milestone,
-                text,
-                organism: Some(parent.id),
-                species: Some(parent.species),
-                pos: None,
-            },
-            config.stats.max_events,
-        );
-    };
-    let moves = t.is_motile() && (t.restlessness > 0.05 || t.drives.iter().any(|d| d.abs() > 0.05));
-    if !m.first_swimmer && moves && t.max_speed(t.adult_radius) > 1.0 {
-        m.first_swimmer = true;
-        log(format!(
-            "A {name} that can swim reproduces — the first motile lineage."
-        ));
-    }
-    if !m.first_chemotroph && t.main_diet() == 1 && t.chemo > 0.25 {
-        m.first_chemotroph = true;
-        log(format!(
-            "A {name} lineage turns to chemosynthesis, feeding on vent minerals."
-        ));
-    }
-    if !m.first_scavenger && t.main_diet() == 2 && t.scavenge > 0.25 {
-        m.first_scavenger = true;
-        log(format!(
-            "A {name} lineage becomes a scavenger, living off the dead."
-        ));
-    }
-    if !m.first_hunter && t.main_diet() == 3 && t.hunt > 0.25 {
-        m.first_hunter = true;
-        log(format!("A {name} lineage becomes a dedicated hunter."));
-    }
-    if !m.first_eyes && t.eye_count > 0 && t.sense_radii * t.adult_radius > 40.0 {
-        m.first_eyes = true;
-        log(format!("A {name} lineage can see its surroundings."));
-    }
-    if !m.first_armor && t.armor > 0.3 {
-        m.first_armor = true;
-        log(format!("A {name} lineage grows a shell."));
-    }
-    // The first time each kind of part is carried by a lineage that breeds.
-    for p in crate::parts::decode_parts(&parent.genome) {
-        let bit = 1u32 << p.kind.code();
-        if m.parts_seen & bit == 0 && p.size >= 0.25 {
-            m.parts_seen |= bit;
-            log(format!(
-                "A {name} lineage grows the first {}.",
-                if p.count > 1 {
-                    p.kind.plural()
-                } else {
-                    p.kind.name()
-                }
-            ));
-        }
-    }
-    if !m.first_walker && parent.touching && t.crawl_coeff > 2.0 {
-        m.first_walker = true;
-        log(format!("A {name} lineage walks along the seafloor."));
-    }
-    if !m.first_anchored && parent.anchored {
-        m.first_anchored = true;
-        log(format!("A {name} lineage anchors itself to rock."));
-    }
-    if !m.first_anaerobe && t.aerobic < 0.3 {
-        m.first_anaerobe = true;
-        log(format!(
-            "A {name} lineage gives up breathing oxygen and lives by fermentation."
-        ));
-    }
-    if !m.first_sulfur && t.photo > 0.3 && t.oxygenic < 0.3 {
-        m.first_sulfur = true;
-        log(format!(
-            "A {name} lineage photosynthesizes with minerals instead of CO₂, releasing no oxygen."
-        ));
-    }
-    if !m.first_fixer && t.fixation > 0.4 {
-        m.first_fixer = true;
-        log(format!(
-            "A {name} lineage makes its own nutrients (nitrogen fixation)."
-        ));
-    }
-    if !m.first_toxic && t.toxin > 0.4 {
-        m.first_toxic = true;
-        log(format!(
-            "A {name} lineage turns toxic, poisoning the water around it."
-        ));
-    }
-    if m.size_record == 0.0 {
-        m.size_record = t.adult_radius;
-    } else if t.adult_radius > m.size_record * 1.25 && t.adult_radius >= 4.0 {
-        m.size_record = t.adult_radius;
-        log(format!(
-            "Size record: a {name} of radius {:.1} reproduces.",
-            t.adult_radius
-        ));
     }
 }
 

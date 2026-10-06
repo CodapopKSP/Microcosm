@@ -18,7 +18,7 @@ The core has **no rendering dependencies**. Headless runs (tuning, benchmarks, l
 | `parts.rs` | The body-part catalog, decoding the P chromosome, and laying parts out on the body (shared by the simulation and the renderer) |
 | `traits.rs` | Decodes a genome into `Traits` (phenotype) once at birth, summing the parts into plain numbers (thrust, grip, eye cones, …); plain-English gene descriptions for the inspector |
 | `organism.rs` | `Organism` (position, mass, energy, HP, traits, RNG, …) and `Carcass` |
-| `world.rs` | `World` and the tick pipeline (below); feeding, reproduction, death, milestones; save/load |
+| `world.rs` | `World` and the tick pipeline (below); feeding, reproduction, death; save/load |
 | `environment.rs` | Clock (day, season, climate), light (column propagation with shading), temperature, minerals, detritus, vents; water chemistry (oxygen, CO₂, nutrients, toxin), the air, lure glow |
 | `currents.rs` | Curl-noise ocean currents |
 | `events.rs` | Random world events (plague, upwelling, meteor impact + impact winter, rising rock walls) as Poisson processes |
@@ -26,7 +26,7 @@ The core has **no rendering dependencies**. Headless runs (tuning, benchmarks, l
 | `field.rs` | Generic scalar grid with diffusion, vertical advection, decay |
 | `grid.rs` | Multi-level spatial hash for neighbor queries across a wide range of body sizes |
 | `species.rs` | Species and genera: founding by genetic distance, names, populations, extinctions |
-| `stats.rs` | Time series samples, event log, milestones |
+| `stats.rs` | Time series samples, event log |
 | `rng.rs` | Small deterministic PRNG (wyrand) |
 
 ## The tick

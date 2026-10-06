@@ -1,6 +1,7 @@
-//! egui panels: top bar, organism inspector (chromosomes), species list, events, charts, help.
+//! egui panels: HUD, organism inspector (chromosomes), species list, events, charts, help.
 
 mod charts;
+mod hud;
 mod inspector;
 mod probe;
 
@@ -11,7 +12,7 @@ use evo_core::stats::EventKind;
 use evo_core::traits::{format_game_date, format_game_duration};
 
 use crate::camera::CameraState;
-use crate::sim::{SPEEDS, Selection, SimState};
+use crate::sim::{Selection, SimState};
 
 /// Water overlay showing one chemical (key M cycles).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -58,9 +59,11 @@ pub struct UiState {
     pub show_help: bool,
     pub show_events: bool,
     pub show_history: bool,
-    history_filter: [bool; 6],
+    history_filter: [bool; 5],
     pub show_senses: bool,
     pub map_mode: MapMode,
+    /// The map button's list of overlays is open.
+    map_menu: bool,
     charts: charts::ChartState,
     fps: f64,
     /// The egui style has been set up (quicker tooltips).
@@ -78,9 +81,10 @@ impl Default for UiState {
             show_help: false,
             show_events: true,
             show_history: false,
-            history_filter: [true; 6],
+            history_filter: [true; 5],
             show_senses: true,
             map_mode: MapMode::None,
+            map_menu: false,
             charts: charts::ChartState::default(),
             fps: 0.0,
             styled: false,
@@ -196,7 +200,6 @@ pub fn event_color(kind: EventKind) -> egui::Color32 {
     match kind {
         EventKind::Species => egui::Color32::from_rgb(140, 220, 140),
         EventKind::Extinction => egui::Color32::from_rgb(230, 120, 110),
-        EventKind::Milestone => egui::Color32::from_rgb(250, 210, 110),
         EventKind::Environment => egui::Color32::from_rgb(120, 190, 240),
         EventKind::Recolonization => egui::Color32::from_rgb(200, 160, 240),
         EventKind::Disaster => egui::Color32::from_rgb(255, 120, 60),
@@ -242,8 +245,6 @@ fn draw_ui(
         egui::Id::new("evo_root"),
         egui::UiBuilder::new(),
     );
-    top_bar(&mut root, &mut ui_state, &mut sim, &mut cam, &mut selection);
-
     if ui_state.show_species {
         species_panel(&mut root, &sim.world, &mut selection, &mut cam);
     }
@@ -272,8 +273,12 @@ fn draw_ui(
         }
     }
 
-    if ui_state.show_events {
-        event_ticker(ctx, &sim.world, &mut selection, &mut cam);
+    // The world view: what the side panels leave.
+    let view = root.available_rect_before_wrap();
+    hud::draw(ctx, view, &mut ui_state, &mut sim, &mut cam, &mut selection);
+
+    if ui_state.show_events && !sim.world.events.entries.is_empty() {
+        event_ticker(ctx, view, &sim.world, &mut selection, &mut cam);
     }
 
     if ui_state.show_charts {
@@ -308,181 +313,13 @@ fn draw_ui(
         egui::Window::new("Help")
             .open(&mut open)
             .collapsible(false)
+            .resizable(false)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.content_rect().center())
             .show(ctx, help);
         ui_state.show_help = open;
     }
     Ok(())
-}
-
-fn top_bar(
-    root: &mut egui::Ui,
-    ui_state: &mut UiState,
-    sim: &mut SimState,
-    cam: &mut CameraState,
-    selection: &mut Selection,
-) {
-    egui::Panel::top("top_bar").show(root, |ui| {
-        ui.horizontal(|ui| {
-            let world = &sim.world;
-            ui.label(egui::RichText::new(clock_text(world)).strong());
-            ui.separator();
-            let c = &world.env.clock;
-            ui.label(format!(
-                "Sun {:.0}%",
-                c.sun / world.config.light.surface_intensity * 100.0
-            ));
-            ui.label(format!("Surface {:.1} °C", c.surface_temp));
-            let air = &world.env.atmosphere;
-            ui.label(format!(
-                "Air O₂ {:.0}% CO₂ {:.0}%",
-                air.oxygen * 100.0,
-                air.co2 * 100.0
-            ))
-            .on_hover_text(
-                "Oxygen and CO₂ in the air, relative to today's Earth. Photosynthesis \
-                     releases oxygen and uses CO₂; breathing and rotting do the opposite. \
-                     More CO₂ warms the climate.",
-            );
-            if ui
-                .selectable_label(ui_state.map_mode != MapMode::None, "Map")
-                .on_hover_text(
-                    "Show oxygen, CO₂, nutrients, minerals or toxin in the water (key M cycles)",
-                )
-                .clicked()
-            {
-                ui_state.map_mode = ui_state.map_mode.next();
-            }
-            if ui_state.map_mode != MapMode::None {
-                ui.label(egui::RichText::new(ui_state.map_mode.label()).weak());
-            }
-            ui.separator();
-            ui.label(format!("Population {}", world.organisms.len()));
-            ui.label(format!("Species {}", world.species.living().count()));
-            ui.separator();
-
-            let speed_index = sim.speed_index;
-            for (i, s) in SPEEDS.iter().enumerate() {
-                let label = match *s {
-                    0.0 => "⏸".to_string(),
-                    0.5 => "½×".to_string(),
-                    s => format!("{s:.0}×"),
-                };
-                if ui.selectable_label(speed_index == i, label).clicked() {
-                    sim.speed_index = i;
-                }
-            }
-            if !sim.paused() && sim.actual_speed < sim.speed() * 0.9 && sim.tps > 0.0 {
-                ui.label(
-                    egui::RichText::new(format!("(running {:.1}×)", sim.actual_speed))
-                        .color(egui::Color32::from_rgb(230, 180, 90)),
-                );
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .button("Menu")
-                    .on_hover_text("Save, and go back to the main menu")
-                    .clicked()
-                {
-                    ui_state.to_menu = true;
-                }
-                if ui.button("Help").clicked() {
-                    ui_state.show_help = !ui_state.show_help;
-                }
-                if ui
-                    .selectable_label(ui_state.show_history, "History")
-                    .clicked()
-                {
-                    ui_state.show_history = !ui_state.show_history;
-                }
-                if ui
-                    .selectable_label(ui_state.show_charts, "Charts")
-                    .clicked()
-                {
-                    ui_state.show_charts = !ui_state.show_charts;
-                }
-                if ui
-                    .selectable_label(ui_state.show_species, "Species")
-                    .clicked()
-                {
-                    ui_state.show_species = !ui_state.show_species;
-                }
-                if ui.selectable_label(cam.director, "Auto camera").clicked() {
-                    cam.director = !cam.director;
-                }
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{:.0} fps · {:.0} ticks/s · sim {:.1} ms",
-                        ui_state.fps, sim.tps, sim.sim_ms
-                    ))
-                    .weak(),
-                );
-                if let Some((msg, at)) = &sim.last_save_message
-                    && at.elapsed().as_secs_f32() < 4.0
-                {
-                    ui.label(egui::RichText::new(msg).weak());
-                }
-            });
-        });
-    });
-    // Active events get their own row so they never crowd the controls.
-    if !sim.world.happenings.active.is_empty() {
-        egui::Panel::top("events_bar").show(root, |ui| {
-            ui.horizontal(|ui| {
-                let world = &sim.world;
-                ui.label(egui::RichText::new("Now:").weak());
-                // Active events (click to look).
-                let mut goto: Option<Vec2> = None;
-                for e in &world.happenings.active {
-                    use evo_core::events::WorldEvent;
-                    let h = world.config.world.height;
-                    let (text, color, target) = match e {
-                        WorldEvent::Plague { species, .. } => (
-                            format!("Plague: {}", world.species.name(*species)),
-                            egui::Color32::from_rgb(255, 120, 60),
-                            world
-                                .organisms
-                                .iter()
-                                .find(|o| {
-                                    world.species.established_ancestor(o.species) == Some(*species)
-                                })
-                                .map(|o| Vec2::new(o.pos.x, o.pos.y)),
-                        ),
-                        WorldEvent::ImpactWinter { .. } => (
-                            format!(
-                                "Impact winter ({:.0}% sun)",
-                                world.happenings.sun_factor(world.time()) * 100.0
-                            ),
-                            egui::Color32::from_rgb(255, 120, 60),
-                            None,
-                        ),
-                        WorldEvent::Upwelling { x, .. } => (
-                            format!("Upwelling at x={x:.0}"),
-                            egui::Color32::from_rgb(120, 190, 240),
-                            Some(Vec2::new(*x, h - 500.0)),
-                        ),
-                        WorldEvent::Barrier { x, built, .. } => (
-                            format!("Rock wall at x={x:.0}"),
-                            egui::Color32::from_rgb(200, 170, 130),
-                            Some(Vec2::new(*x, built.min(h) - 300.0)),
-                        ),
-                    };
-                    let response = ui.add(
-                        egui::Label::new(egui::RichText::new(text).color(color))
-                            .sense(egui::Sense::click()),
-                    );
-                    if response.clicked() {
-                        goto = target;
-                    }
-                }
-                if let Some(p) = goto {
-                    cam.director = false;
-                    selection.follow = false;
-                    cam.focus(p, Some(2.0));
-                }
-            });
-        });
-    }
 }
 
 fn species_panel(
@@ -568,44 +405,43 @@ fn species_panel(
 
 fn event_ticker(
     ctx: &egui::Context,
+    view: egui::Rect,
     world: &World,
     selection: &mut Selection,
     cam: &mut CameraState,
 ) {
     egui::Area::new(egui::Id::new("events"))
-        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(10.0, -10.0))
+        .fixed_pos(view.left_bottom() + egui::vec2(10.0, -10.0))
+        .pivot(egui::Align2::LEFT_BOTTOM)
         .interactable(true)
         .show(ctx, |ui| {
-            egui::Frame::popup(ui.style())
-                .fill(egui::Color32::from_black_alpha(160))
-                .show(ui, |ui| {
-                    ui.set_max_width(520.0);
-                    for e in world.events.entries.iter().rev().take(6).rev() {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(format_game_date(e.time, &world.config.time))
-                                    .weak()
-                                    .monospace(),
-                            );
-                            let response = ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&e.text).color(event_color(e.kind)),
-                                )
-                                .sense(egui::Sense::click()),
-                            );
-                            if response.clicked() {
-                                goto_event(e, world, selection, cam);
-                            }
-                        });
-                    }
-                });
+            hud::card().show(ui, |ui| {
+                ui.set_max_width(520.0);
+                for e in world.events.entries.iter().rev().take(6).rev() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new(format_game_date(e.time, &world.config.time))
+                                .weak()
+                                .monospace(),
+                        );
+                        let response = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&e.text).color(event_color(e.kind)),
+                            )
+                            .sense(egui::Sense::click()),
+                        );
+                        if response.clicked() {
+                            goto_event(e, world, selection, cam);
+                        }
+                    });
+                }
+            });
         });
 }
 
-const EVENT_KINDS: [(EventKind, &str); 6] = [
+const EVENT_KINDS: [(EventKind, &str); 5] = [
     (EventKind::Species, "New species"),
     (EventKind::Extinction, "Extinctions"),
-    (EventKind::Milestone, "Milestones"),
     (EventKind::Disaster, "Disasters"),
     (EventKind::Environment, "Environment"),
     (EventKind::Recolonization, "Recolonization"),
@@ -615,7 +451,7 @@ const EVENT_KINDS: [(EventKind, &str); 6] = [
 fn history(
     ui: &mut egui::Ui,
     world: &World,
-    filter: &mut [bool; 6],
+    filter: &mut [bool; 5],
     selection: &mut Selection,
     cam: &mut CameraState,
 ) {
@@ -756,25 +592,216 @@ fn stream_overlay(ctx: &egui::Context, sim: &SimState, selection: &Selection) {
     }
 }
 
+/// One piece of a shortcut in the help window.
+enum Key {
+    /// A keyboard key.
+    K(&'static str),
+    /// A mouse action.
+    Mouse(&'static str),
+    /// "or" between alternatives.
+    Or,
+    /// "+" between keys held together.
+    Plus,
+    /// A range of keys ("1 – 7").
+    To,
+}
+
+const HELP_CAMERA: egui::Color32 = egui::Color32::from_rgb(110, 180, 245);
+const HELP_WATCH: egui::Color32 = egui::Color32::from_rgb(120, 210, 120);
+const HELP_TIME: egui::Color32 = egui::Color32::from_rgb(240, 205, 100);
+const HELP_PANELS: egui::Color32 = egui::Color32::from_rgb(190, 150, 240);
+const HELP_EVENTS: egui::Color32 = egui::Color32::from_rgb(240, 120, 110);
+const HELP_GENOME: egui::Color32 = egui::Color32::from_rgb(255, 170, 60);
+/// Width of the shortcut column.
+const HELP_KEYS_WIDTH: f32 = 172.0;
+
+/// A key drawn as a keycap: a raised face over a darker edge.
+fn key_cap(ui: &mut egui::Ui, text: &str, mouse: bool) {
+    let font = egui::FontId::monospace(12.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font, egui::Color32::WHITE);
+    let pad = egui::vec2(6.0, 2.0);
+    let size = egui::vec2(
+        (galley.size().x + 2.0 * pad.x).max(22.0),
+        galley.size().y + 2.0 * pad.y + 3.0,
+    );
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let (face, edge, border) = if mouse {
+        (
+            egui::Color32::from_rgb(45, 62, 82),
+            egui::Color32::from_rgb(20, 28, 38),
+            egui::Color32::from_rgb(90, 125, 160),
+        )
+    } else {
+        (
+            egui::Color32::from_gray(66),
+            egui::Color32::from_gray(26),
+            egui::Color32::from_gray(115),
+        )
+    };
+    let radius = if mouse { 9.0 } else { 4.0 };
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, edge);
+    let top = egui::Rect::from_min_max(rect.min, rect.max - egui::vec2(0.0, 3.0));
+    painter.rect(
+        top,
+        radius,
+        face,
+        egui::Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(
+        top.center() - galley.size() / 2.0,
+        galley,
+        egui::Color32::WHITE,
+    );
+}
+
+fn help_section(ui: &mut egui::Ui, title: &str, color: egui::Color32) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(4.0, 18.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 2.0, color);
+        ui.label(egui::RichText::new(title).strong().size(15.0).color(color));
+    });
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 0.0, color.gamma_multiply(0.35));
+    ui.add_space(4.0);
+}
+
+/// One shortcut: its keys in a fixed-width column, then what it does.
+fn help_row(ui: &mut egui::Ui, keys: &[Key], what: &str) {
+    help_row_width(ui, keys, what, HELP_KEYS_WIDTH);
+}
+
+fn help_row_width(ui: &mut egui::Ui, keys: &[Key], what: &str, width: f32) {
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, 20.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_width(width);
+                ui.spacing_mut().item_spacing.x = 3.0;
+                for k in keys {
+                    match k {
+                        Key::K(t) => key_cap(ui, t, false),
+                        Key::Mouse(t) => key_cap(ui, t, true),
+                        Key::Or => {
+                            ui.label(egui::RichText::new("/").weak());
+                        }
+                        Key::Plus => {
+                            ui.label(egui::RichText::new("+").weak());
+                        }
+                        Key::To => {
+                            ui.label(egui::RichText::new("–").weak());
+                        }
+                    }
+                }
+            },
+        );
+        ui.add(egui::Label::new(what).wrap());
+    });
+}
+
 fn help(ui: &mut egui::Ui) {
-    ui.label("Camera: drag (any mouse button) or WASD/arrows to pan, scroll to zoom, Home for the whole world.");
-    ui.label("Click an organism to inspect it and follow it (F toggles follow, Esc clears).");
-    ui.label("Right-click a spot to inspect its water: light, temperature, oxygen and the rest.");
-    ui.label("Space: pause · 1–7: speed · +/-: faster/slower · F5: quicksave");
+    use Key::*;
+    ui.set_width(760.0);
+    ui.columns(2, |cols| {
+        let ui = &mut cols[0];
+        help_section(ui, "Camera", HELP_CAMERA);
+        help_row(ui, &[Mouse("Drag")], "Pan (any mouse button)");
+        help_row(
+            ui,
+            &[K("W"), K("A"), K("S"), K("D"), Or, K("Arrows")],
+            "Pan",
+        );
+        help_row(ui, &[Mouse("Scroll")], "Zoom");
+        help_row(ui, &[K("Home")], "Show the whole world");
+        help_row(ui, &[K("C")], "Auto camera: follows the action on its own");
+
+        help_section(ui, "Watching", HELP_WATCH);
+        help_row(
+            ui,
+            &[Mouse("Left click")],
+            "Inspect an organism and follow it",
+        );
+        help_row(ui, &[K("F")], "Follow on / off");
+        help_row(ui, &[K("Esc")], "Stop inspecting");
+        help_row(
+            ui,
+            &[Mouse("Right click")],
+            "Inspect the water there: light, temperature, oxygen and more",
+        );
+
+        help_section(ui, "Time", HELP_TIME);
+        help_row(ui, &[K("Space")], "Pause / resume");
+        help_row(ui, &[K("1"), To, K("7")], "Speed, from ½× up to 64×");
+        help_row(ui, &[K("+"), Or, K("-")], "Faster / slower");
+        help_row(ui, &[K("F5")], "Quicksave");
+
+        let ui = &mut cols[1];
+        // Short keys here, so a narrower key column.
+        let help_row =
+            |ui: &mut egui::Ui, keys: &[Key], what: &str| help_row_width(ui, keys, what, 100.0);
+        help_section(ui, "Panels", HELP_PANELS);
+        help_row(ui, &[K("Tab")], "Hide the UI (stream view)");
+        help_row(ui, &[K("L")], "Species list");
+        help_row(ui, &[K("G")], "Charts and family tree");
+        help_row(ui, &[K("E")], "History");
+        help_row(ui, &[K("T")], "Event ticker");
+        help_row(
+            ui,
+            &[K("M")],
+            "Chemistry map: oxygen, CO2, nutrients, minerals, toxin, off",
+        );
+        help_row(ui, &[K("H"), Or, K("F1")], "This help");
+
+        help_section(ui, "Trigger an event", HELP_EVENTS);
+        help_row(ui, &[K("Ctrl"), Plus, K("1")], "Plague");
+        help_row(ui, &[K("Ctrl"), Plus, K("2")], "Upwelling");
+        help_row(ui, &[K("Ctrl"), Plus, K("3")], "Meteor");
+        help_row(ui, &[K("Ctrl"), Plus, K("4")], "Rock wall");
+    });
+
+    help_section(ui, "Genome", HELP_GENOME);
     ui.label(
-        "Ctrl+1 plague · Ctrl+2 upwelling · Ctrl+3 meteor · Ctrl+4 rock wall (trigger events now)",
+        "Each organism's genome is 60 bytes in nine chromosomes. Every byte is one gene; \
+         the inspector shows each gene's value and what it does.",
     );
-    ui.label("Tab: hide the UI (stream view) · C: auto camera · L: species list · G: charts · E: history · T: event ticker · M: chemistry map · H: help");
-    ui.separator();
-    ui.label("Each organism's genome is 60 bytes in nine chromosomes (B, C, D, G, H, N, P, R, T).");
-    ui.label(
-        "P holds up to eight body parts (3 bytes each: type and symmetry, size, placement). \
-         Parts can be copied, lost, or change into related kinds, so body plans evolve.",
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        for c in &evo_core::genome::CHROMOSOMES {
+            // Keep each letter with its name when the row wraps.
+            ui.horizontal(|ui| {
+                key_cap(ui, &c.letter.to_string(), false);
+                ui.label(c.name);
+            });
+            ui.add_space(6.0);
+        }
+    });
+    ui.add_space(4.0);
+    help_row_width(
+        ui,
+        &[K("P")],
+        "Holds up to eight body parts (type and symmetry, size, placement). Parts can be \
+         copied, lost, or turn into related kinds, so body plans evolve.",
+        30.0,
     );
-    ui.label(
-        "G is chemistry: breathing oxygen or fermenting, oxygen- or mineral-based photosynthesis, \
-         nutrient uptake, nitrogen fixation, toxins and resistance to them.",
+    help_row_width(
+        ui,
+        &[K("G")],
+        "Chemistry: breathing oxygen or fermenting, oxygen- or mineral-based photosynthesis, \
+         nutrient uptake, nitrogen fixation, toxins and resistance.",
+        30.0,
     );
-    ui.label("Every byte is one gene. The inspector shows each gene's value and what it does.");
-    ui.label("Genes highlighted in orange mutated in this organism (they differ from its parent).");
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.label("Genes shown in ");
+        ui.label(egui::RichText::new("orange").color(HELP_GENOME).strong());
+        ui.label(" mutated in this organism (they differ from its parent).");
+    });
 }

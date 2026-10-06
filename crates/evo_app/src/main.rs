@@ -129,11 +129,16 @@ fn main() {
         || args.probe.is_some()
         || args.charts
         || args.tree;
-    let mut world = direct.then(|| direct_world(&args));
+    let world = direct.then(|| direct_world(&args));
+    let start = if world.is_some() {
+        AppState::Running
+    } else {
+        AppState::Menu
+    };
 
     let mut app = App::new();
     // A world given on the command line must exist before the first state transition.
-    if let Some(world) = world.take() {
+    if let Some(world) = world {
         let mut state = sim::SimState::new(world, &args);
         if args.gallery {
             state.speed_index = 0;
@@ -156,11 +161,7 @@ fn main() {
     .add_plugins(EguiPlugin::default())
     .insert_resource(ClearColor(Color::srgb(0.01, 0.02, 0.05)))
     .insert_resource(Launch(args.clone()))
-    .insert_state(if world.is_some() {
-        AppState::Running
-    } else {
-        AppState::Menu
-    })
+    .insert_state(start)
     .insert_resource(ViewerOptions {
         stream: args.stream,
         screenshot: args.screenshot.clone(),

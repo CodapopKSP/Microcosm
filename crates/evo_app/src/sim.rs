@@ -19,6 +19,8 @@ pub struct SimState {
     pub world: World,
     /// Index into [`SPEEDS`].
     pub speed_index: usize,
+    /// Speed to go back to when unpausing.
+    resume_speed: usize,
     /// Real seconds of sim time owed (scaled by speed).
     accumulator: f64,
     /// Interpolation factor between the previous and current tick positions.
@@ -42,6 +44,7 @@ impl SimState {
         Self {
             world,
             speed_index: 2,
+            resume_speed: 2,
             accumulator: 0.0,
             alpha: 1.0,
             tps: 0.0,
@@ -69,6 +72,16 @@ impl SimState {
 
     pub fn paused(&self) -> bool {
         self.speed() == 0.0
+    }
+
+    /// Pause, or resume at the speed it had before.
+    pub fn toggle_pause(&mut self) {
+        if self.paused() {
+            self.speed_index = self.resume_speed.max(1);
+        } else {
+            self.resume_speed = self.speed_index;
+            self.speed_index = 0;
+        }
     }
 
     /// Save to `save_dir/name`, keeping the previous file as `*.prev.bin`.
@@ -196,7 +209,7 @@ fn speed_keys(
         return;
     }
     if keys.just_pressed(KeyCode::Space) {
-        state.speed_index = if state.paused() { 2 } else { 0 };
+        state.toggle_pause();
     }
     let digits = [
         KeyCode::Digit1,
