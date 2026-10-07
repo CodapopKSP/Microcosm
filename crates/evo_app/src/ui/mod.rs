@@ -255,7 +255,6 @@ fn draw_ui(
     }
 
     if !ui_state.show_ui {
-        cam.covered = [0.0; 2];
         stream_overlay(ctx, &sim, &selection);
         return Ok(());
     }
@@ -273,16 +272,10 @@ fn draw_ui(
         }
     }
 
-    // The world view. The species card runs down the left, the inspector card sits beside the
-    // toolbar on the right, and the other cards keep to what's between them (`content`).
+    // The world view. The inspector card sits beside the toolbar on the right, and the HUD
+    // cards keep to what's left of it (`content`). The species list goes in the left column,
+    // under the clock and above the event ticker.
     let view = ctx.content_rect();
-    let species_rect = ui_state.show_species.then(|| {
-        egui::Rect::from_min_max(
-            view.left_top() + egui::vec2(hud::GAP, hud::GAP),
-            egui::pos2(view.left() + hud::GAP + species::WIDTH, view.bottom() - hud::GAP),
-        )
-    });
-    let screen = ctx.content_rect();
     let inspector_rect = selection.organism.map(|_| {
         egui::Rect::from_min_max(
             egui::pos2(
@@ -293,25 +286,40 @@ fn draw_ui(
         )
     });
     let content = egui::Rect::from_min_max(
-        egui::pos2(species_rect.map_or(view.left(), |r| r.right()), view.top()),
+        view.min,
         egui::pos2(
             inspector_rect.map_or(view.right() - hud::TOOLBAR_WIDTH, |r| r.left() - hud::GAP),
             view.bottom(),
         ),
     );
-    cam.covered = [
-        (content.left() - screen.left()).max(0.0),
-        if inspector_rect.is_some() {
-            (screen.right() - content.right()).max(0.0)
-        } else {
-            (screen.right() - view.right()).max(0.0)
-        },
-    ];
-    hud::draw(ctx, view, content, &mut ui_state, &mut sim, &mut cam, &mut selection);
-    if let Some(rect) = species_rect
-        && !species::show(ctx, rect, &sim.world, &mut selection, &mut cam)
-    {
-        ui_state.show_species = false;
+    let column_right = if ui_state.show_species {
+        view.left() + hud::GAP + species::WIDTH
+    } else {
+        view.left()
+    };
+    let left_bottom = hud::draw(
+        ctx,
+        view,
+        content,
+        column_right,
+        &mut ui_state,
+        &mut sim,
+        &mut cam,
+        &mut selection,
+    );
+    if ui_state.show_species {
+        // Down to the event ticker (last frame's), or the bottom of the view.
+        let ticker_top = (ui_state.show_events && !sim.world.events.entries.is_empty())
+            .then(|| ctx.memory(|m| m.area_rect(egui::Id::new("events"))))
+            .flatten()
+            .map_or(view.bottom(), |r| r.top());
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(view.left() + hud::GAP, left_bottom + hud::GAP),
+            egui::pos2(view.left() + hud::GAP + species::WIDTH, ticker_top - hud::GAP),
+        );
+        if rect.height() > 80.0 && !species::show(ctx, rect, &sim.world, &mut selection, &mut cam) {
+            ui_state.show_species = false;
+        }
     }
 
     let mut record = None;

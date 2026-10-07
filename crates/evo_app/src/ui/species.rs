@@ -11,8 +11,8 @@ use super::{DIET_NAMES, color32, diet_color};
 use crate::camera::CameraState;
 use crate::sim::Selection;
 
-/// Width of the species card.
-pub const WIDTH: f32 = 290.0;
+/// Width of the species card (the same as the clock card above it).
+pub const WIDTH: f32 = hud::COLUMN_WIDTH;
 const ROW: f32 = 26.0;
 
 fn icon_close(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {

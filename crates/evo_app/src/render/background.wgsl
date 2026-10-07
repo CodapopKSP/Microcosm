@@ -149,6 +149,107 @@ fn ice_color(p: vec2<f32>, y: f32, thick: f32, sun: f32) -> vec3<f32> {
     return c * lit + vec3<f32>(0.02, 0.035, 0.06) * (1.0 - lit);
 }
 
+// Smooth minimum (blends two distance fields with rounded joins).
+fn smin(a: f32, b: f32, k: f32) -> f32 {
+    let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+}
+
+// A vent's outlets for each layout: (x, y of the mouth relative to the vent point, size);
+// size 0 = unused.
+fn vent_outlets(variant: u32) -> array<vec3<f32>, 3> {
+    if variant == 1u {
+        // Twin chimneys.
+        return array<vec3<f32>, 3>(vec3<f32>(-9.0, 34.0, 0.95), vec3<f32>(17.0, 16.0, 0.65), vec3<f32>(0.0));
+    } else if variant == 2u {
+        // A chimney with three spires (middle tallest, right lowest).
+        return array<vec3<f32>, 3>(vec3<f32>(-19.5, 50.0, 0.7), vec3<f32>(0.0, 58.0, 0.85), vec3<f32>(19.5, 33.0, 0.6));
+    } else if variant == 3u {
+        // A squat cone with one wide mouth.
+        return array<vec3<f32>, 3>(vec3<f32>(0.0, 12.0, 1.45), vec3<f32>(0.0), vec3<f32>(0.0));
+    }
+    // A tall chimney.
+    return array<vec3<f32>, 3>(vec3<f32>(0.0, 44.0, 1.0), vec3<f32>(0.0), vec3<f32>(0.0));
+}
+
+struct Puff {
+    dist: f32,     // to the cloud's edge (< 0 inside)
+    lit: f32,      // to the edge of its lit side (each puff shifted toward the light)
+    radius: f32,   // of the puffs here (blended)
+    age: f32,      // of the puffs here (blended): 0 at the mouth .. 1 dissolved
+};
+
+// Smoke puffs from a mouth at the origin, as a plume in water: puffs shoot up, slow as they
+// reach the height where they're no heavier than the water around them, then spread out,
+// drift with the current and swell until they dissolve. Returns the nearest puff and the
+// distance to the merged cloud.
+fn smoke_puffs(p: vec2<f32>, size: f32, strength: f32, time: f32, seed: f32) -> Puff {
+    var out: Puff;
+    out.dist = 1e3;
+    out.lit = 1e3;
+    out.radius = 1.0;
+    out.age = 0.0;
+    if p.y < -10.0 || strength <= 0.01 {
+        return out;
+    }
+    let count = 12.0;
+    let life = 16.0;
+    // The current here pushes the top of the plume one way.
+    let current = (fract(seed * 9.13) - 0.5) * 9.0;
+    var best = 1e3;
+    var lit = 1e3;
+    var weight = 0.0;
+    var age_sum = 0.0;
+    var radius_sum = 0.0;
+    let to_light = normalize(vec2<f32>(-0.5, 0.85));
+    for (var k = 0; k < 12; k++) {
+        let fk = f32(k);
+        let age = fract(time / life + fk / count + seed);
+        // Each release (not each slot) gets its own speed, size and drift, so the plume
+        // never repeats.
+        let cycle = floor(time / life + fk / count + seed);
+        let j1 = hash21(vec2<f32>(fk + cycle * 13.0, seed * 31.0));
+        let j2 = hash21(vec2<f32>(fk * 3.7 + cycle, seed * 17.0 + 5.0));
+        let t = age * life;
+        // Rising, then levelling off; spreading sideways and drifting more the higher it is.
+        let speed = 0.75 + 0.5 * j1;
+        let rise = 210.0 * speed * (0.7 + 0.3 * size) * (1.0 - exp(-t / 4.5));
+        let spread = (j2 - 0.5) * 90.0 * age * age;
+        let drift = spread + current * pow(t, 1.4) * 0.35 + sin(t * 0.5 + j1 * 6.28) * 6.0 * age;
+        let c = vec2<f32>(drift, rise);
+        // Swelling a lot as it rises and mixes with the water.
+        let grow = (6.0 + 52.0 * pow(age, 0.75)) * size * (0.55 + 0.45 * strength);
+        let r = grow * (1.0 - 0.35 * smoothstep(0.7, 1.0, age)) * (0.75 + 0.5 * j2);
+        if r < 0.5 {
+            continue;
+        }
+        // Lumpy edges: a few bumps on each puff.
+        let d = p - c;
+        let ang = atan2(d.y, d.x);
+        // Cauliflower lumps: a few big ones and many small.
+        let bump = 1.0 + 0.05 * sin(ang * 6.0 + j1 * 20.0 + t * 0.6)
+            + 0.03 * sin(ang * 13.0 + j2 * 30.0 - t * 0.4);
+        let dist = length(d) - r * bump;
+        let blend = 7.0 + 10.0 * age;
+        best = smin(best, dist, blend);
+        // The lit side: the puff shifted toward the light (so the shadow is a crescent).
+        lit = smin(lit, length(d - to_light * r * 0.28) - r * 0.9 * bump, blend);
+        // Blend age and size smoothly between neighbouring puffs (no seams where the nearest
+        // one changes).
+        let w = exp(-2.0 * dot(d, d) / (r * r));
+        weight += w;
+        age_sum += age * w;
+        radius_sum += r * w;
+    }
+    out.dist = best;
+    out.lit = lit;
+    if weight > 1e-4 {
+        out.age = age_sum / weight;
+        out.radius = radius_sum / weight;
+    }
+    return out;
+}
+
 fn sdf_at(uv: vec2<f32>) -> f32 {
     return (textureSample(terrain_tex, terrain_sampler, uv).r - 0.5) * 128.0;
 }
@@ -375,85 +476,211 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Nutrient-rich sunlit water is faintly greener.
     water += vec3<f32>(0.0, 0.02, 0.004) * nutrients * brightness * select(1.0, 0.0, outside);
 
-    // Vents: a mineral chimney (a "black smoker") with dark smoke billowing out of its mouth,
-    // and a hot glow there. The mouth sits a little above the vent point; the stack's base runs
-    // down into the rock, which hides it, so it stands on whatever floor is below.
+    // Vents: hydrothermal chimneys ("black smokers") of the same rock as the seafloor, with
+    // puffy, cel-shaded smoke billowing out and a hot glow at each mouth. Each vent picks one
+    // of four layouts from its position: a tall chimney, a twin, a chimney with
+    // three spires, or a squat cone. The outlets are only looks; the vent works the same either way. Stacks
+    // run down into the rock, which hides their bases, so they stand on whatever floor is there.
     let vent_count = u32(bg.sun.w);
     var vent_glow = vec3<f32>(0.0);
     for (var i = 0u; i < min(vent_count, MAX_VENTS); i++) {
         let v = bg.vents[i];
         let strength = v.z;
-        let mouth = v.xy + vec2<f32>(0.0, 26.0);
-        let q = wp - mouth;
-        if abs(q.x) > 700.0 || q.y < -220.0 || q.y > 900.0 {
+        let q0 = wp - v.xy;
+        if abs(q0.x) > 700.0 || q0.y < -220.0 || q0.y > 900.0 {
             continue;
         }
         let seed = hash21(floor(v.xy));
+        let variant = u32(cell_hash(floor(v.xy / 7.0), 4242u) * 4.0);
         let aa = max(px, 0.4);
-
-        let dm = wp - mouth;
         let flicker = 0.8 + 0.2 * value_noise(vec2<f32>(time * 3.0, seed * 40.0));
+        let outlets = vent_outlets(variant);
 
-        // Drawn back to front: a warm halo in the water, the smoke, the stack, the mouth's glow.
-        let halo = vec3<f32>(0.06, 0.02, 0.007) * exp(-length(dm) / 90.0) * strength;
+        // A warm halo in the water.
+        let halo = vec3<f32>(0.06, 0.02, 0.007) * exp(-length(q0 - vec2<f32>(0.0, 26.0)) / 90.0) * strength;
         water += halo;
         vent_glow += halo;
 
-        // Smoke: dark puffs carried up and spreading, swaying with height; densest at the mouth.
-        let rise = max(q.y, 0.0);
-        let sway = sin(rise * 0.011 - time * 0.35 + seed * 6.28) * rise * 0.07;
-        let width = 4.0 + rise * 0.2 + rise * rise * 0.00025;
-        let dx = q.x - sway;
-        let profile = exp(-(dx * dx) / (width * width) * 1.6);
-        if q.y > -4.0 && profile > 0.01 {
-            let up = rise - time * 28.0;
-            let billow = fbm(vec2<f32>(dx / (width + 6.0) * 1.3 + seed * 3.0, up / (width * 1.4 + 14.0)));
-            let fine = value_noise(vec2<f32>(dx * 0.12, up * 0.08));
-            let fade = exp(-rise / 520.0) * smoothstep(-4.0, 2.0, q.y);
-            let core = exp(-rise / 35.0);
-            let puffs = smoothstep(0.3, 0.6, billow + 0.15 * fine);
-            let density = clamp(profile * (puffs * 1.1 + core * 0.8) * fade, 0.0, 1.0) * strength;
-            // Dark smoke, shaded so the billows read as a cloud even in dark water: where the
-            // noise rises a little lighter, as if their tops caught some light.
-            let lit = smoothstep(0.45, 0.85, billow + 0.2 * fine);
-            var smoke = mix(vec3<f32>(0.01, 0.009, 0.01), vec3<f32>(0.085, 0.077, 0.07), lit);
-            // The hot mouth lights the smoke from below, just above it.
-            smoke += vec3<f32>(0.6, 0.22, 0.05) * exp(-rise / 14.0) * profile * strength * flicker;
-            water = mix(water, smoke, density * 0.9);
-            // Heat shimmer just above the mouth.
-            let shimmer = (0.5 + 0.5 * sin(dx * 0.4 + rise * 0.25 - time * 9.0)) * exp(-rise / 60.0) * profile;
-            water += vec3<f32>(0.02, 0.01, 0.004) * shimmer * strength;
+        // Smoke from every outlet, merged into one cloud.
+        var cloud = 1e3;
+        var lit_cloud = 1e3;
+        var near: Puff;
+        near.dist = 1e3;
+        near.lit = 1e3;
+        near.radius = 1.0;
+        near.age = 0.0;
+        for (var k = 0u; k < 3u; k++) {
+            let o = outlets[k];
+            if o.z <= 0.0 {
+                continue;
+            }
+            let mouth = vec2<f32>(o.x, o.y);
+            let puff = smoke_puffs(q0 - mouth, o.z, strength, time, seed + f32(k) * 0.37);
+            if puff.dist < near.dist {
+                near = puff;
+            }
+            cloud = smin(cloud, puff.dist, 8.0);
+            lit_cloud = smin(lit_cloud, puff.lit, 8.0);
+        }
+        // Older smoke has mixed with the water: softer edged, hazier, and tinted by it.
+        let haze = smoothstep(0.2, 0.95, near.age);
+        let soft = aa + haze * near.radius * 0.05;
+        let inside = 1.0 - smoothstep(-soft, soft, cloud);
+        if inside > 0.0 {
+            // Cel shading: the cloud's lit side (each puff shifted toward the light) leaves a
+            // curved crescent of shadow underneath, as in drawn smoke.
+            let edge_w = aa + haze * near.radius * 0.03;
+            let lit = 1.0 - smoothstep(-edge_w, edge_w, lit_cloud);
+            // Sulfide-black and brown at the mouth, paling to grey as it mixes (as real black
+            // smokers do).
+            let shade_young = mix(vec3<f32>(0.011, 0.008, 0.007), vec3<f32>(0.036, 0.026, 0.02), lit);
+            let shade_old = mix(vec3<f32>(0.04, 0.043, 0.048), vec3<f32>(0.1, 0.105, 0.115), lit);
+            var smoke = mix(shade_young, shade_old, smoothstep(0.1, 0.7, near.age));
+            // Faintly lit by the hot mouth just above it.
+            let low = exp(-max(q0.y - 30.0, 0.0) / 18.0);
+            smoke += vec3<f32>(0.35, 0.12, 0.03) * low * strength * flicker * (1.0 - lit) * 0.6;
+            let outline = smoothstep(-2.5 * aa, -0.8 * aa, cloud) * (1.0 - haze);
+            smoke = mix(smoke, vec3<f32>(0.008, 0.007, 0.008), outline * 0.5);
+            // Taking on the water's colour as it spreads.
+            smoke = mix(smoke, water * 0.75 + vec3<f32>(0.01, 0.02, 0.025), haze * 0.45);
+            water = mix(water, smoke, inside * (0.95 - 0.6 * haze));
         }
 
-        // The stack: tapering upward, lumpy, leaning a little.
-        let below = max(-q.y, 0.0);
-        let lean = sin(below * 0.02 + seed * 6.28) * 3.0 + below * (seed - 0.5) * 0.06;
-        let lumps = 1.0 + 0.3 * (value_noise(vec2<f32>(below * 0.09, seed * 50.0)) - 0.5)
-            + 0.15 * (value_noise(vec2<f32>(below * 0.3, seed * 90.0)) - 0.5);
-        let half_w = (6.0 + 14.0 * pow(min(below / 160.0, 1.0), 0.8)) * lumps;
-        let side = abs(q.x - lean);
-        let stack = (1.0 - smoothstep(half_w - aa, half_w + aa, side)) * (1.0 - smoothstep(-aa, aa, q.y));
-        if stack > 0.0 {
-            // Banded dark sulfides with rusty patches; embers in the cracks near the mouth.
-            let band = 0.5 + 0.5 * sin(below * 0.35 + value_noise(vec2<f32>(q.x * 0.2, below * 0.1)) * 4.0);
-            let grain = value_noise(wp * 0.25);
-            var col = mix(vec3<f32>(0.012, 0.01, 0.012), vec3<f32>(0.05, 0.035, 0.025), band * 0.6 + grain * 0.4);
-            col = mix(col, vec3<f32>(0.11, 0.05, 0.02), smoothstep(0.7, 0.92, value_noise(wp * 0.08 + seed * 13.0)) * 0.5);
-            let heat = exp(-below / 12.0) * strength;
-            let cracks = smoothstep(0.8, 0.95, value_noise(vec2<f32>(q.x * 0.5, below * 0.18 - time * 0.2) + seed * 7.0));
-            col += vec3<f32>(1.4, 0.4, 0.07) * cracks * heat * flicker + vec3<f32>(0.12, 0.035, 0.01) * heat;
-            // Rounded: darker toward the edges, a faint rim catching the light from above.
-            let across = clamp(side / max(half_w, 1e-3), 0.0, 1.0);
-            col *= 0.5 + 0.5 * (1.0 - across * across);
-            col += vec3<f32>(0.05, 0.06, 0.06) * smoothstep(0.75, 1.0, across) * (0.1 + lin);
-            water = mix(water, col, stack);
+        // Bubbles streaming up from each mouth, faster than the smoke.
+        if px < 4.0 {
+            for (var k = 0u; k < 3u; k++) {
+                let o = outlets[k];
+                if o.z <= 0.0 {
+                    continue;
+                }
+                let mouth = vec2<f32>(o.x, o.y);
+                for (var b = 0; b < 6; b++) {
+                    let fb = f32(b);
+                    let sk = seed * 7.0 + f32(k) * 3.1 + fb * 1.37;
+                    let age = fract(time / 4.0 + fb / 6.0 + fract(sk));
+                    let cyc = floor(time / 4.0 + fb / 6.0 + fract(sk));
+                    let jb = hash21(vec2<f32>(fb + cyc * 7.0, sk));
+                    let c = mouth + vec2<f32>(
+                        (jb - 0.5) * 10.0 * o.z + sin(age * 18.0 + jb * 6.28) * 3.0,
+                        age * (150.0 + 80.0 * jb),
+                    );
+                    let br = (1.2 + 1.6 * jb) * (0.6 + 0.4 * o.z);
+                    let d = length(wp - v.xy - c);
+                    let fade = (1.0 - smoothstep(0.7, 1.0, age)) * smoothstep(0.0, 0.05, age) * strength;
+                    let body = 1.0 - smoothstep(br - aa, br + aa, d);
+                    let rim = smoothstep(br * 0.55 - aa, br * 0.55 + aa, d) * body;
+                    let glint = 1.0 - smoothstep(br * 0.25, br * 0.25 + aa, length(wp - v.xy - c - vec2<f32>(-br * 0.35, br * 0.35)));
+                    water = mix(water, vec3<f32>(0.35, 0.5, 0.55), rim * fade * 0.7);
+                    water += vec3<f32>(0.4, 0.5, 0.5) * glint * body * fade * 0.6;
+                }
+            }
         }
 
-        // The mouth: a small, bright, flickering glow.
-        let core_r = 3.0 + 2.0 * strength;
-        let glow = vec3<f32>(2.4, 0.85, 0.2) * exp(-dot(dm, dm) / (2.0 * core_r * core_r)) * flicker * strength;
-        water += glow;
-        vent_glow += glow;
+        // The ground's own rock (same as the terrain below), for the stacks to be made of.
+        let rn = fbm(wp * 0.006) * 0.55 + fbm(wp * 0.03) * 0.3 + value_noise(wp * 0.15) * 0.15;
+        var stone = mix(vec3<f32>(0.03, 0.028, 0.03), vec3<f32>(0.11, 0.095, 0.08), rn);
+        stone *= 0.92 + 0.08 * sin(wp.y * 0.018 + fbm(wp * 0.004) * 9.0);
+        stone *= mix(1.0, 0.5, clamp(depth / size.y, 0.0, 1.0));
+
+        // Clustered outlets: one chimney with three spires side by side. The middle spire is
+        // the tallest, the right the lowest; a shallow notch splits the left and middle, a deeper
+        // one the middle and right. The left side slopes gently down to a wide base, the right
+        // drops almost straight.
+        if variant == 2u {
+            let y = q0.y;
+            let wob = (value_noise(vec2<f32>(y * 0.09, seed * 60.0)) - 0.5) * 3.0;
+            // Sides: straight lines from the spires' outer edges down to the base (and on into
+            // the rock).
+            let left = mix(-27.0, -41.0, clamp((46.0 - y) / 91.0, 0.0, 1.6)) + wob;
+            let right = mix(26.0, 35.0, clamp((30.0 - y) / 80.0, 0.0, 1.6)) - wob;
+            // The top: each spire a column with a rounded cap, joined by the notches' floors
+            // (only between the outer spires: outside them the sloping sides rise straight to
+            // the outer spires' caps).
+            let lo = outlets[0];
+            let hi = outlets[2];
+            var top = -1e3;
+            if q0.x > lo.x && q0.x < hi.x {
+                let past = smoothstep(-3.0, 3.0, q0.x - 11.0);
+                top = mix(22.0, -2.0, past);
+            }
+            for (var k = 0u; k < 3u; k++) {
+                let o = outlets[k];
+                let hw = 7.5 * select(1.0, 1.1, k == 1u);
+                let u = (q0.x - o.x) / hw;
+                // Steep walls on the sides that face another spire; the outer sides round off
+                // into the sloping flanks.
+                let outer = (k == 0u && u < 0.0) || (k == 2u && u > 0.0);
+                let wall = select(120.0 * max(abs(u) - 1.0, 0.0), 0.0, outer);
+                top = max(top, o.y - 4.0 * u * u * u * u - wall);
+            }
+            top += (value_noise(vec2<f32>(q0.x * 0.15, seed * 70.0)) - 0.5) * 2.0;
+            let d = max(max(left - q0.x, q0.x - right), y - top);
+            let fill = 1.0 - smoothstep(-aa, aa, d);
+            var heat = 0.0;
+            for (var k = 0u; k < 3u; k++) {
+                let o = outlets[k];
+                heat += exp(-length(q0 - vec2<f32>(o.x, o.y)) / (9.0 * o.z));
+            }
+            if fill > 0.0 {
+                let band = 0.5 + 0.5 * sin(q0.y * 0.3 + value_noise(vec2<f32>(q0.x * 0.2, q0.y * 0.1)) * 4.0);
+                let dust = vec3<f32>(0.15, 0.115, 0.07) * mix(1.0, 0.5, clamp(depth / size.y, 0.0, 1.0));
+                var col = mix(stone, dust, 0.35 + 0.2 * value_noise(wp * 0.05 + seed * 3.0)) * (0.9 + 0.2 * band);
+                col = mix(col, vec3<f32>(0.09, 0.045, 0.02) * (0.6 + 0.4 * rn), smoothstep(0.72, 0.92, value_noise(wp * 0.08 + seed * 13.0)) * 0.25);
+                let hot = min(heat, 1.0) * strength;
+                let cracks = smoothstep(0.8, 0.95, value_noise(vec2<f32>(q0.x * 0.5, q0.y * 0.18 - time * 0.2) + seed * 7.0));
+                col += vec3<f32>(1.4, 0.4, 0.07) * cracks * hot * flicker + vec3<f32>(0.12, 0.035, 0.01) * hot;
+                // Rounded: darker toward the edges, with a rim catching the light.
+                let inner = clamp(-d / 7.0, 0.0, 1.0);
+                col *= 0.78 + 0.22 * inner;
+                col += vec3<f32>(0.22, 0.28, 0.27) * (1.0 - smoothstep(0.0, 0.3, inner)) * (0.04 + lin * 0.6);
+                water = mix(water, col, fill);
+            }
+        }
+
+        // The stacks: tapering up to their mouths, lumpy, leaning a little.
+        for (var k = 0u; k < 3u; k++) {
+            let o = outlets[k];
+            if o.z <= 0.0 {
+                continue;
+            }
+            let mouth = vec2<f32>(o.x, o.y);
+            let q = q0 - mouth;
+            let below = max(-q.y, 0.0);
+            let sk = seed + f32(k) * 0.37;
+            let lean = sin(below * 0.02 + sk * 6.28) * 2.5 + below * (fract(sk * 7.3) - 0.5) * 0.06;
+            let lumps = 1.0 + 0.3 * (value_noise(vec2<f32>(below * 0.09, sk * 50.0)) - 0.5)
+                + 0.15 * (value_noise(vec2<f32>(below * 0.3, sk * 90.0)) - 0.5);
+            // Squat cones flare quickly; chimneys taper over a long stack.
+            let flare = select(160.0, 45.0, variant == 3u);
+            let half_w = (5.0 + 14.0 * pow(min(below / flare, 1.0), 0.8)) * o.z * lumps;
+            let side = abs(q.x - lean);
+            // (The cluster's stacks are drawn above, as one branching chimney.)
+            let stack = (1.0 - smoothstep(half_w - aa, half_w + aa, side)) * (1.0 - smoothstep(-aa, aa, q.y))
+                * select(1.0, 0.0, variant == 2u);
+            if stack > 0.0 {
+                // Seafloor rock, darker and banded with sulfides, rusty in patches.
+                let band = 0.5 + 0.5 * sin(below * 0.3 + value_noise(vec2<f32>(q.x * 0.2, below * 0.1)) * 4.0);
+                // A dusting of the floor's sediment, as on the terrain, so it sits in the ground.
+                let dust = vec3<f32>(0.15, 0.115, 0.07) * mix(1.0, 0.5, clamp(depth / size.y, 0.0, 1.0));
+                var col = mix(stone, dust, 0.35 + 0.2 * value_noise(wp * 0.05 + sk * 3.0)) * (0.9 + 0.2 * band);
+                col = mix(col, vec3<f32>(0.09, 0.045, 0.02) * (0.6 + 0.4 * rn), smoothstep(0.72, 0.92, value_noise(wp * 0.08 + sk * 13.0)) * 0.25);
+                // Heat and glowing cracks near the mouth.
+                let heat = exp(-below / (10.0 * o.z)) * strength;
+                let cracks = smoothstep(0.8, 0.95, value_noise(vec2<f32>(q.x * 0.5, below * 0.18 - time * 0.2) + sk * 7.0));
+                col += vec3<f32>(1.4, 0.4, 0.07) * cracks * heat * flicker + vec3<f32>(0.12, 0.035, 0.01) * heat;
+                // Rounded: darker toward the edges, a rim catching the light from above (as
+                // the terrain's edges do).
+                let across = clamp(side / max(half_w, 1e-3), 0.0, 1.0);
+                col *= 0.78 + 0.22 * (1.0 - across * across);
+                col += vec3<f32>(0.22, 0.28, 0.27) * smoothstep(0.8, 1.0, across) * (0.04 + lin * 0.6);
+                water = mix(water, col, stack);
+            }
+            // The mouth: a small, bright, flickering glow.
+            let core_r = (3.0 + 2.0 * strength) * o.z;
+            let glow = vec3<f32>(2.4, 0.85, 0.2) * exp(-dot(q, q) / (2.0 * core_r * core_r)) * flicker * strength;
+            water += glow;
+            vent_glow += glow;
+        }
     }
 
     // Impact winter: dusty haze near the surface.

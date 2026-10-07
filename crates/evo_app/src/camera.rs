@@ -29,8 +29,6 @@ pub struct CameraState {
     right_origin: Option<Vec2>,
     /// Events already seen by the director (so it only reacts to new ones).
     seen_events: u64,
-    /// Screen pixels hidden behind side panels (left, right), set by the UI each frame.
-    pub covered: [f32; 2],
 }
 
 impl CameraState {
@@ -46,7 +44,6 @@ impl CameraState {
             drag_origin: None,
             right_origin: None,
             seen_events: 0,
-            covered: [0.0; 2],
         }
     }
 
@@ -185,7 +182,6 @@ fn start_camera(
         drag_origin: None,
         right_origin: None,
         seen_events: state.world.events.count,
-        covered: [0.0; 2],
     });
     for mut t in &mut cameras {
         t.translation = Vec3::new(center.x, center.y, 100.0);
@@ -248,7 +244,7 @@ fn camera_input(
         if keys.just_pressed(KeyCode::Home) {
             // As much of the world as fits.
             let bounds = view_bounds(world);
-            let zoom = max_zoom(bounds, window, cam.covered);
+            let zoom = max_zoom(bounds, window);
             cam.focus(bounds.center(), Some(zoom));
             selection.follow = false;
             cam.director = false;
@@ -269,7 +265,7 @@ fn camera_input(
         };
         let factor = 0.85f32.powf(lines);
         let old_zoom = cam.target_zoom;
-        let new_zoom = (old_zoom * factor).clamp(0.05, max_zoom(view_bounds(world), window, cam.covered));
+        let new_zoom = (old_zoom * factor).clamp(0.05, max_zoom(view_bounds(world), window));
         if let Some(cursor) = cursor_world {
             // Keep the point under the cursor fixed.
             let offset = cursor - cam.target_center;
@@ -431,27 +427,18 @@ fn view_bounds(world: &evo_core::World) -> Rect {
     Rect::new(0.0, 0.0, w, h + SKY)
 }
 
-/// The furthest zoom out (world units per pixel) at which the visible part of the window (not
-/// behind side panels) still sees only `bounds`.
-fn max_zoom(bounds: Rect, window: &Window, covered: [f32; 2]) -> f32 {
-    let visible = (window.width() - covered[0] - covered[1]).max(1.0);
-    (bounds.width() / visible).min(bounds.height() / window.height().max(1.0))
+/// The furthest zoom out (world units per pixel) at which the window still sees only `bounds`.
+/// UI panels float over the world and don't change it, so the world's edges stay put when
+/// they open and close.
+fn max_zoom(bounds: Rect, window: &Window) -> f32 {
+    (bounds.width() / window.width().max(1.0)).min(bounds.height() / window.height().max(1.0))
 }
 
-/// Keep the visible part of a view of `zoom` centered on `center` inside `bounds`.
-fn clamp_center(
-    center: Vec2,
-    zoom: f32,
-    bounds: Rect,
-    window: &Window,
-    covered: [f32; 2],
-) -> Vec2 {
-    let half = Vec2::new(window.width(), window.height()) * 0.5;
-    // How far the visible area reaches from the camera's center, each way.
-    let left = (half.x - covered[0]) * zoom;
-    let right = (half.x - covered[1]) * zoom;
-    let lo = Vec2::new(bounds.min.x + left, bounds.min.y + half.y * zoom);
-    let hi = Vec2::new(bounds.max.x - right, bounds.max.y - half.y * zoom);
+/// Keep a view of `zoom` centered on `center` inside `bounds`.
+fn clamp_center(center: Vec2, zoom: f32, bounds: Rect, window: &Window) -> Vec2 {
+    let half = Vec2::new(window.width(), window.height()) * 0.5 * zoom;
+    let lo = bounds.min + half;
+    let hi = bounds.max - half;
     let fit = |c: f32, lo: f32, hi: f32| {
         if hi < lo {
             (lo + hi) * 0.5
@@ -474,15 +461,14 @@ fn apply_camera(
     let k = 1.0 - (-dt * 10.0).exp();
     if let Ok(window) = windows.single() {
         // Never zoom out past the edges of the world, and never look past them.
-        let covered = cam.covered;
-        let most = max_zoom(bounds, window, covered);
+        let most = max_zoom(bounds, window);
         cam.target_zoom = cam.target_zoom.min(most);
         cam.zoom += (cam.target_zoom - cam.zoom) * k;
         cam.zoom = cam.zoom.min(most);
         cam.target_center =
-            clamp_center(cam.target_center, cam.target_zoom, bounds, window, covered);
+            clamp_center(cam.target_center, cam.target_zoom, bounds, window);
         let center = cam.center + (cam.target_center - cam.center) * k;
-        cam.center = clamp_center(center, cam.zoom, bounds, window, covered);
+        cam.center = clamp_center(center, cam.zoom, bounds, window);
     } else {
         cam.zoom += (cam.target_zoom - cam.zoom) * k;
         let target = cam.target_center.clamp(bounds.min, bounds.max);

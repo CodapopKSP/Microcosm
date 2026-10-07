@@ -22,6 +22,8 @@ pub(super) const CARD_FILL: Color32 = Color32::from_rgb(12, 21, 27);
 /// Gap between the HUD and the edges of the view, and between cards.
 pub(super) const GAP: f32 = 10.0;
 pub(super) const BUTTON_RADIUS: f32 = 19.0;
+/// Width of the left column: the clock card and the species list under it.
+pub(super) const COLUMN_WIDTH: f32 = 290.0;
 /// Width the round buttons take down the right edge.
 pub(super) const TOOLBAR_WIDTH: f32 = 2.0 * BUTTON_RADIUS + 2.0 * GAP;
 
@@ -334,6 +336,8 @@ fn clock_card(ui: &mut egui::Ui, sim: &mut SimState) {
     let (h, m) = c.time_of_day();
     // Moon from 6 pm to 6 am.
     let day = (6..18).contains(&h);
+    // As wide as the species list under it (less the card's margins).
+    ui.set_min_width(COLUMN_WIDTH - 24.0);
     ui.horizontal(|ui| {
         let (rect, r) = ui.allocate_exact_size(vec2(34.0, 34.0), egui::Sense::hover());
         if day {
@@ -574,7 +578,7 @@ fn now_card(ui: &mut egui::Ui, world: &World, goto: &mut Option<Vec2>) {
                     Some(Vec2::new(*x, built.min(h) - 300.0)),
                 ),
             };
-            let chip = egui::Button::new(egui::RichText::new(text).color(color))
+            let chip = egui::Button::new(egui::RichText::new(text).size(12.5).color(color))
                 .fill(color.gamma_multiply(0.15))
                 .stroke(Stroke::new(1.0, color.gamma_multiply(0.6)))
                 .corner_radius(10);
@@ -602,16 +606,19 @@ const MAP_MODES: [(MapMode, &str); 6] = [
 
 /// Everything floating over the world view `view` (the screen minus side panels). The cards
 /// keep to `content`: the view minus the toolbar column and the inspector, when it's open.
+/// Returns the bottom of the cards in the leftmost column (the species list goes below).
+/// Cards under the top row start right of `column_right` (the species list's edge).
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     ctx: &egui::Context,
     view: Rect,
     content: Rect,
+    column_right: f32,
     ui_state: &mut UiState,
     sim: &mut SimState,
     cam: &mut CameraState,
     selection: &mut Selection,
-) {
+) -> f32 {
     // Top left: clock and speed, weather, life. A card that doesn't fit beside the previous
     // one (narrow window, side panels open) goes on the next row.
     let top_left = content.left_top() + vec2(GAP, GAP);
@@ -637,19 +644,43 @@ pub fn draw(
     let life = show_card(ctx, "hud_life", at, egui::Align2::LEFT_TOP, |ui| {
         life_card(ui, &sim.world)
     });
-    let mut below = clock.bottom().max(weather.bottom()).max(life.bottom()) + GAP;
+    // The leftmost column's cards, for the species list to sit under.
+    let in_left_column = |r: Rect| (r.left() - top_left.x).abs() < 1.0;
+    let mut left_bottom = [clock, weather, life]
+        .into_iter()
+        .filter(|r| in_left_column(*r))
+        .map(|r| r.bottom())
+        .fold(clock.bottom(), f32::max);
 
+    // What's happening now, then the map legend, right under the weather.
+    let mut below = weather.bottom() + GAP;
+    let under_x = weather.left().max(column_right + GAP);
     if !sim.world.happenings.active.is_empty() {
         let mut goto = None;
+        // In the slot beside the clock card: its bottom lines up with the clock's (when the
+        // weather card is beside the clock), and it's slim so it fits.
+        let height = ctx
+            .memory(|m| m.area_rect(egui::Id::new("hud_now")))
+            .map_or(30.0, |r| r.height());
+        let top = if (weather.top() - clock.top()).abs() < 1.0 {
+            (clock.bottom() - height).max(weather.bottom() + 6.0)
+        } else {
+            below
+        };
         let rect = egui::Area::new(egui::Id::new("hud_now"))
-            .fixed_pos(Pos2::new(top_left.x, below))
+            .fixed_pos(Pos2::new(under_x, top))
             .show(ctx, |ui| {
-                ui.set_max_width((right_edge - top_left.x - GAP).max(200.0));
-                card().show(ui, |ui| now_card(ui, &sim.world, &mut goto));
+                ui.set_max_width((right_edge - under_x).max(200.0));
+                card()
+                    .inner_margin(egui::Margin::symmetric(10, 4))
+                    .show(ui, |ui| now_card(ui, &sim.world, &mut goto));
             })
             .response
             .rect;
         below = rect.bottom() + GAP;
+        if in_left_column(rect) {
+            left_bottom = left_bottom.max(rect.bottom());
+        }
         if let Some(p) = goto {
             cam.director = false;
             selection.follow = false;
@@ -658,10 +689,10 @@ pub fn draw(
     }
 
     if ui_state.map_mode != MapMode::None {
-        show_card(
+        let rect = show_card(
             ctx,
             "hud_map_legend",
-            Pos2::new(top_left.x, below),
+            Pos2::new(under_x, below),
             egui::Align2::LEFT_TOP,
             |ui| {
                 ui.horizontal(|ui| {
@@ -671,6 +702,9 @@ pub fn draw(
                 });
             },
         );
+        if in_left_column(rect) {
+            left_bottom = left_bottom.max(rect.bottom());
+        }
     }
 
     toolbar(ctx, view, ui_state, cam);
@@ -703,6 +737,7 @@ pub fn draw(
                 );
             });
         });
+    left_bottom
 }
 
 /// Round buttons down the right edge of the view.
