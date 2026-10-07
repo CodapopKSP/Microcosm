@@ -410,6 +410,30 @@ impl Environment {
 
     fn new_vent(&mut self, config: &Config, terrain: &Terrain) -> Option<Vent> {
         let v = &config.vents;
+        // Painted maps: only at their spawn points, one vent per point.
+        if let Some(spawns) = &terrain.vent_spawns {
+            let free: Vec<Vec2> = spawns
+                .iter()
+                .copied()
+                .filter(|p| self.vents.iter().all(|o| o.pos.distance(*p) > 40.0))
+                .collect();
+            if free.is_empty() {
+                return None;
+            }
+            let pos = free[self.rng.below(free.len() as u32) as usize];
+            let hours = self.rng.range(v.lifetime_min, v.lifetime_max);
+            let id = self.next_vent_id;
+            self.next_vent_id += 1;
+            return Some(Vent {
+                id,
+                pos,
+                strength: 0.0,
+                peak: self.rng.range(0.6, 1.4),
+                age: 0.0,
+                lifetime: hours * 3600.0,
+                fixed: false,
+            });
+        }
         // Keep a few vents shallow (on the shelf and upper slope): stepping stones between the
         // sunlit water and the deep. The rest open on the deep floor.
         let height = config.world.height;

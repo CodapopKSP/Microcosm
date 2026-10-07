@@ -27,6 +27,14 @@ pub struct Terrain {
     /// Where permanent vents sit (in the shelf cave, and on the cliff ledge).
     #[serde(default)]
     pub vent_sites: Vec<Vec2>,
+    /// Where temporary vents may open: anywhere on the floor (`None`), or only at these
+    /// points (painted maps).
+    #[serde(default)]
+    pub vent_spawns: Option<Vec<Vec2>>,
+    /// How far rock stands above the water in each terrain column (painted maps; empty
+    /// otherwise, where the generator's mountain is the only land).
+    #[serde(default)]
+    pub land: Vec<f32>,
 }
 
 /// Where a generated cave is: its x, the top of its mound, and its chamber (center and radii).
@@ -227,9 +235,52 @@ impl Terrain {
     /// Build the map's terrain. It depends only on the map (`[world]` size and `[terrain]`),
     /// never on the world seed, so every run on a map shares it.
     pub fn generate(config: &Config) -> Terrain {
-        match config.terrain.generator {
-            TerrainGenerator::Ocean => Self::ocean(config),
+        match (config.terrain.generator, &config.terrain.painted) {
+            (TerrainGenerator::Painted, Some(map)) => Self::painted(config, map),
+            _ => Self::ocean(config),
         }
+    }
+
+    /// A map painted in the editor: its rock mask (up to the water level), land above the
+    /// water, permanent vents, and where temporary vents may open.
+    fn painted(config: &Config, map: &crate::map::PaintedMap) -> Terrain {
+        let (width, height) = (config.world.width, config.world.height);
+        let field = Field::new(width, height, config.terrain.cell, 0.0);
+        let (nx, ny, cell) = (field.nx, field.ny, field.cell);
+        let wall = 3usize;
+        let mut solid = vec![false; nx * ny];
+        for y in 0..ny {
+            for x in 0..nx {
+                let p = Vec2::new((x as f32 + 0.5) * cell, (y as f32 + 0.5) * cell);
+                solid[y * nx + x] = x < wall || x >= nx - wall || map.rock_at(p);
+            }
+        }
+        // The bare floor: the top of the rock that rises from the bottom in each column.
+        let floor = (0..nx)
+            .map(|x| (0..ny).take_while(|&y| solid[y * nx + x]).count() as f32 * cell)
+            .collect();
+        let land_cells = map.land_heights();
+        let land = (0..nx)
+            .map(|x| {
+                let px = (x as f32 + 0.5) * cell;
+                land_cells[((px / map.cell) as usize).min(land_cells.len() - 1)]
+            })
+            .collect();
+        let point = |v: &[f32; 2]| Vec2::new(v[0], v[1]);
+        let mut terrain = Terrain {
+            sdf: field,
+            base_mask: solid.clone(),
+            mask: solid,
+            floor,
+            width,
+            height,
+            version: 0,
+            vent_sites: map.permanent_vents.iter().map(point).collect(),
+            vent_spawns: Some(map.vent_spawns.iter().map(point).collect()),
+            land,
+        };
+        terrain.recompute_sdf(0, nx);
+        terrain
     }
 
     /// Open ocean: seafloor with a trench, rocks and caves, a shelf, and optionally a mountain
@@ -625,6 +676,8 @@ impl Terrain {
             height,
             version: 0,
             vent_sites,
+            vent_spawns: None,
+            land: Vec::new(),
         };
         terrain.recompute_sdf(0, nx);
         terrain

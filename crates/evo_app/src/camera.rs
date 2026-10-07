@@ -424,7 +424,9 @@ const SKY: f32 = 1600.0;
 /// The part of the world the camera may show: the ocean and a strip of sky.
 fn view_bounds(world: &evo_core::World) -> Rect {
     let (w, h) = (world.config.world.width, world.config.world.height);
-    Rect::new(0.0, 0.0, w, h + SKY)
+    // Room for the tallest land on a painted map, too.
+    let land = world.terrain.land.iter().cloned().fold(0.0, f32::max);
+    Rect::new(0.0, 0.0, w, h + SKY.max(land + 300.0))
 }
 
 /// The furthest zoom out (world units per pixel) at which the window still sees only `bounds`.

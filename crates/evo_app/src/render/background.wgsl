@@ -13,7 +13,7 @@ struct Background {
     air: vec4<f32>, // air oxygen, air CO2 (1 = today)
     events: array<vec4<f32>, 8>, // x, width, kind (1 upwelling, 2 wall), param
     land: vec4<f32>,      // mountain outline: first sample x, spacing, sample count, on
-    land_profile: array<vec4<f32>, 32>, // its height at each sample (4 per entry)
+    land_profile: array<vec4<f32>, 64>, // its height at each sample (4 per entry)
     sky: vec4<f32>,  // year phase (0 = start of spring), surface ice 0..1, moon phase (0 = full), 0
     orbit: vec4<f32>, // sun and moon path: center x, half width, height above the surface, 0
 };

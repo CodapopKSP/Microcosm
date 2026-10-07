@@ -1,6 +1,7 @@
 //! Viewer for the evolution simulator: pan/zoom around the ocean, inspect organisms and species.
 
 mod camera;
+mod editor;
 mod gallery;
 mod menu;
 mod render;
@@ -61,6 +62,9 @@ pub struct Args {
     /// Select the organism nearest the initial view center.
     #[arg(long)]
     pub select: bool,
+    /// Open the map editor.
+    #[arg(long)]
+    pub editor: bool,
     /// Open the charts window at startup.
     #[arg(long)]
     pub charts: bool,
@@ -90,6 +94,8 @@ pub enum AppState {
     #[default]
     Menu,
     Running,
+    /// The map editor.
+    Editor,
 }
 
 /// The command line, for starting worlds later (from the menu).
@@ -132,6 +138,8 @@ fn main() {
     let world = direct.then(|| direct_world(&args));
     let start = if world.is_some() {
         AppState::Running
+    } else if args.editor {
+        AppState::Editor
     } else {
         AppState::Menu
     };
@@ -190,6 +198,7 @@ fn main() {
         render::RenderPlugin,
         ui::UiPlugin,
         menu::MenuPlugin,
+        editor::EditorPlugin,
     ))
     .add_systems(Update, screenshot_and_exit)
     .run();

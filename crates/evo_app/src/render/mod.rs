@@ -98,7 +98,7 @@ impl Material2d for OrganismMaterial {
 
 pub const MAX_VENTS: usize = 16;
 
-#[derive(ShaderType, Clone, Default)]
+#[derive(ShaderType, Clone)]
 pub struct BackgroundUniform {
     /// width, height, time, world units per pixel
     pub world: Vec4,
@@ -125,8 +125,25 @@ pub struct BackgroundUniform {
     pub orbit: Vec4,
 }
 
+impl Default for BackgroundUniform {
+    fn default() -> Self {
+        Self {
+            world: Vec4::ZERO,
+            sun: Vec4::ZERO,
+            vents: [Vec4::ZERO; _],
+            effects: Vec4::ZERO,
+            air: Vec4::ZERO,
+            events: [Vec4::ZERO; _],
+            land: Vec4::ZERO,
+            land_profile: [Vec4::ZERO; _],
+            sky: Vec4::ZERO,
+            orbit: Vec4::ZERO,
+        }
+    }
+}
+
 /// Height samples of the mountain's outline passed to the background shader.
-pub const LAND_SAMPLES: usize = 128;
+pub const LAND_SAMPLES: usize = 256;
 
 pub const MAX_EVENTS: usize = 8;
 
@@ -466,18 +483,40 @@ fn update_background(
         let ocean = cfg.ocean_width();
         u.orbit = Vec4::new(ocean * 0.5, ocean * 0.22, SUN_HEIGHT, 0.0);
         let tc = &cfg.terrain;
-        let (peak_x, half) = evo_core::terrain::mountain(tc, cfg.ocean_width());
-        let start = peak_x - half;
-        let spacing = 2.0 * half / (LAND_SAMPLES - 1) as f32;
-        u.land = Vec4::new(
-            start,
-            spacing,
-            LAND_SAMPLES as f32,
-            if tc.mountain_width > 0.0 { 1.0 } else { 0.0 },
-        );
-        for (k, entry) in u.land_profile.iter_mut().enumerate() {
-            let at = |j: usize| world.terrain.floor_at(start + (4 * k + j) as f32 * spacing);
-            *entry = Vec4::new(at(0), at(1), at(2), at(3));
+        let land = &world.terrain.land;
+        if !land.is_empty() {
+            // A painted map: land wherever rock stands above the water, across the whole width.
+            let (w, h) = (cfg.world.width, cfg.world.height);
+            let spacing = w / (LAND_SAMPLES - 1) as f32;
+            let cell = world.terrain.sdf.cell;
+            let at = |i: usize| {
+                let top = land[((i as f32 * spacing / cell) as usize).min(land.len() - 1)];
+                // Nothing above the water: keep the ridge just under the surface.
+                if top > 0.0 { h + top } else { h - 20.0 }
+            };
+            u.land = Vec4::new(
+                0.0,
+                spacing,
+                LAND_SAMPLES as f32,
+                if land.iter().any(|&l| l > 0.0) { 1.0 } else { 0.0 },
+            );
+            for (k, entry) in u.land_profile.iter_mut().enumerate() {
+                *entry = Vec4::new(at(4 * k), at(4 * k + 1), at(4 * k + 2), at(4 * k + 3));
+            }
+        } else {
+            let (peak_x, half) = evo_core::terrain::mountain(tc, cfg.ocean_width());
+            let start = peak_x - half;
+            let spacing = 2.0 * half / (LAND_SAMPLES - 1) as f32;
+            u.land = Vec4::new(
+                start,
+                spacing,
+                LAND_SAMPLES as f32,
+                if tc.mountain_width > 0.0 { 1.0 } else { 0.0 },
+            );
+            for (k, entry) in u.land_profile.iter_mut().enumerate() {
+                let at = |j: usize| world.terrain.floor_at(start + (4 * k + j) as f32 * spacing);
+                *entry = Vec4::new(at(0), at(1), at(2), at(3));
+            }
         }
     }
 }

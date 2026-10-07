@@ -27,6 +27,7 @@ The core has **no rendering dependencies**. Headless runs (tuning, benchmarks, l
 | `grid.rs` | Multi-level spatial hash for neighbor queries across a wide range of body sizes |
 | `species.rs` | Species and genera: founding by genetic distance, names, populations, extinctions |
 | `stats.rs` | Time series samples, event log |
+| `map.rs` | Painted maps from the map editor (`configs/maps/<name>.map`): a rock mask, water level, permanent vents and vent spawn points |
 | `notebook.rs` | The field notebook: species the viewer recorded and their specimens' genomes (saved with the world, no effect on the simulation) |
 | `rng.rs` | Small deterministic PRNG (wyrand) |
 

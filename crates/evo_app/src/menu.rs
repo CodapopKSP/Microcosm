@@ -136,6 +136,8 @@ struct Menu {
     preview: Option<Preview>,
     /// Height of the taller New-world card last frame (both are drawn this tall).
     card_height: f32,
+    /// The Map editor button was pressed.
+    open_editor: bool,
 }
 
 impl Default for Menu {
@@ -168,6 +170,7 @@ impl Default for Menu {
             setup,
             preview: None,
             card_height: 0.0,
+            open_editor: false,
         }
     }
 }
@@ -249,8 +252,18 @@ fn list_maps() -> Vec<(String, String)> {
         .flatten()
         .filter_map(|e| {
             let path = e.path();
-            (path.extension()? == "toml").then_some(())?;
             let name = path.file_stem()?.to_str()?.to_string();
+            // Maps painted in the editor.
+            if path.extension()? == "map" {
+                let map = evo_core::map::PaintedMap::load(&path).ok()?;
+                let about = if map.description.is_empty() {
+                    "Painted in the map editor".to_string()
+                } else {
+                    map.description
+                };
+                return Some((name, about));
+            }
+            (path.extension()? == "toml").then_some(())?;
             let text = std::fs::read_to_string(&path).ok()?;
             let table: toml::Table = toml::from_str(&text).ok()?;
             let about = table
@@ -392,6 +405,8 @@ fn refresh(mut menu: ResMut<Menu>, launch: Res<Launch>) {
     menu.saves = list_saves(&launch.0.save_dir);
     menu.setup.maps = list_maps();
     menu.error = None;
+    // A map may have been saved (or changed) in the editor: redraw its picture.
+    menu.preview = None;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -441,6 +456,9 @@ fn draw_menu(
         commands.insert_resource(SimState::new(world, &launch.0));
         next.set(AppState::Running);
     }
+    if std::mem::take(&mut menu.open_editor) {
+        next.set(AppState::Editor);
+    }
     Ok(())
 }
 
@@ -450,7 +468,7 @@ fn hash(i: u32, k: u32) -> f32 {
     (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
-fn rgba(r: u8, g: u8, b: u8, a: f32) -> egui::Color32 {
+pub(crate) fn rgba(r: u8, g: u8, b: u8, a: f32) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(r, g, b, (a.clamp(0.0, 1.0) * 255.0) as u8)
 }
 
@@ -640,7 +658,7 @@ fn title(ui: &mut egui::Ui, t: f32) {
 }
 
 /// The menus' look: rounded, translucent sea-glass buttons that light up on hover.
-fn style_menu(ui: &mut egui::Ui) {
+pub(crate) fn style_menu(ui: &mut egui::Ui) {
     let v = &mut ui.style_mut().visuals;
     let round = egui::CornerRadius::same(12);
     let w = &mut v.widgets;
@@ -677,14 +695,14 @@ fn caption(ui: &mut egui::Ui, text: &str) {
 }
 
 /// Text colours of the menus: main, secondary (still readable), accent and error.
-const TEXT: egui::Color32 = egui::Color32::from_rgb(222, 238, 236);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(160, 196, 198);
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(150, 240, 210);
-const ERROR: egui::Color32 = egui::Color32::from_rgb(250, 140, 125);
+pub(crate) const TEXT: egui::Color32 = egui::Color32::from_rgb(222, 238, 236);
+pub(crate) const MUTED: egui::Color32 = egui::Color32::from_rgb(160, 196, 198);
+pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(150, 240, 210);
+pub(crate) const ERROR: egui::Color32 = egui::Color32::from_rgb(250, 140, 125);
 
 /// A dark panel that keeps text readable over the backdrop (opaque enough that the bright
 /// organisms behind don't shine through).
-fn card() -> egui::Frame {
+pub(crate) fn card() -> egui::Frame {
     egui::Frame::NONE
         .fill(rgba(4, 16, 26, 0.96))
         .stroke(egui::Stroke::new(1.0, rgba(120, 220, 200, 0.18)))
@@ -749,6 +767,10 @@ fn splash(
         if big_button(ui, "Load").clicked() {
             menu.page = Page::Load;
             menu.error = None;
+        }
+        ui.add_space(10.0);
+        if big_button(ui, "Map editor").clicked() {
+            menu.open_editor = true;
         }
         ui.add_space(10.0);
         if big_button(ui, "Quit").clicked() {

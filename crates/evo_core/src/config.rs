@@ -72,6 +72,33 @@ impl Config {
             .map(str::to_string)
             .unwrap_or_else(|| WorldConfig::default().map);
         let map_path = map_path(path, &name);
+        // A painted map: its canvas sets the world's size and the terrain.
+        let painted_path = map_path.with_extension("map");
+        if !map_path.exists() && painted_path.exists() {
+            let painted = crate::map::PaintedMap::load(&painted_path)?;
+            let mut base = toml::Table::new();
+            let mut world = toml::Table::new();
+            world.insert("width".into(), toml::Value::Float(painted.width as f64));
+            world.insert("height".into(), toml::Value::Float(painted.water_level as f64));
+            base.insert("world".into(), toml::Value::Table(world));
+            let mut terrain = toml::Table::new();
+            terrain.insert("generator".into(), toml::Value::String("painted".into()));
+            terrain.insert("cell".into(), toml::Value::Float(painted.cell as f64));
+            // None of the ocean generator's features: the whole width is the ocean.
+            terrain.insert("mountain_width".into(), toml::Value::Float(0.0));
+            terrain.insert("basin_width".into(), toml::Value::Float(0.0));
+            terrain.insert("shelf_vents".into(), toml::Value::Boolean(false));
+            base.insert("terrain".into(), toml::Value::Table(terrain));
+            merge(&mut base, table);
+            let mut config: Config = toml::Value::Table(base)
+                .try_into()
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            config.terrain.painted = Some(std::sync::Arc::new(painted));
+            config
+                .validate()
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            return Ok(config);
+        }
         let merged = match std::fs::read_to_string(&map_path) {
             Ok(map_text) => {
                 let mut base =
@@ -246,6 +273,9 @@ pub struct TerrainConfig {
     pub shelf_vents: bool,
     pub vent_cave_x: f32,
     pub cliff_vent_depth: f32,
+    /// A painted map's canvas (generator "painted"), read from its `.map` file.
+    #[serde(skip)]
+    pub painted: Option<std::sync::Arc<crate::map::PaintedMap>>,
 }
 
 /// Terrain generators. A map file picks one and sets its parameters; new kinds of world are
@@ -257,6 +287,8 @@ pub enum TerrainGenerator {
     /// cutting off a basin and the permanent shelf and cliff vents.
     #[default]
     Ocean,
+    /// Painted in the map editor (`configs/maps/<name>.map`).
+    Painted,
 }
 
 impl Default for TerrainConfig {
@@ -283,6 +315,7 @@ impl Default for TerrainConfig {
             shelf_vents: true,
             vent_cave_x: 0.843,
             cliff_vent_depth: 2250.0,
+            painted: None,
         }
     }
 }

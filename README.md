@@ -83,6 +83,8 @@ cargo run --release -- --load saves/two_hours.bin
 
 All tunable numbers live in [`configs/default.toml`](configs/default.toml), with comments. Copy it, edit it, and pass it with `--config`. Every key is optional.
 
+Maps can also be painted in the **Map editor** (from the main menu, or `--editor`): paint or remove rock with a round or square brush of any size, place permanent vents and vent spawn points (temporary vents only open there), set the water level (rock above it stands out as land) and the map's size, then name and save it. Saved maps (`configs/maps/<name>.map`) appear in the New world map list.
+
 The world's size and terrain live in map files in [`configs/maps/`](configs/maps/). A config picks one with `[world] map = "ocean"`, and `--world-map NAME` overrides that. Each map has its own terrain seed, so the map is the same for every world seed; any `[terrain]` keys in a config override the map's. To make a new map, copy `ocean.toml`, change it and its `seed`, and select it by name.
 
 ## Tests
