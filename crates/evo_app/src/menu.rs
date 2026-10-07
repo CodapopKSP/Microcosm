@@ -691,10 +691,93 @@ fn heading(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
 }
 
-/// A small label above a group of controls.
-fn caption(ui: &mut egui::Ui, text: &str) {
-    ui.add_space(8.0);
-    ui.label(egui::RichText::new(text).size(13.0).strong().color(MUTED));
+/// A small section title above a group of controls: small capitals and a faint rule, as in
+/// the game's panels.
+pub(crate) fn caption(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(12.0);
+    ui.label(
+        egui::RichText::new(text.to_uppercase())
+            .size(11.5)
+            .strong()
+            .extra_letter_spacing(0.6)
+            .color(MUTED),
+    );
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 1.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, rgba(150, 240, 210, 0.14));
+    ui.add_space(6.0);
+}
+
+/// A rounded pill button, lit when `on` (as in the game's inspector).
+pub(crate) fn pill(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
+    let font = egui::FontId::proportional(13.5);
+    let width = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font.clone(), TEXT)
+        .size()
+        .x;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width + 26.0, 30.0), egui::Sense::click());
+    let hovered = response.hovered();
+    let fill = if on {
+        egui::Color32::from_rgb(38, 86, 77)
+    } else if hovered {
+        egui::Color32::from_rgb(32, 49, 56)
+    } else {
+        egui::Color32::from_rgb(16, 30, 38)
+    };
+    let stroke = if on {
+        ACCENT
+    } else {
+        rgba(150, 240, 210, if hovered { 0.45 } else { 0.18 })
+    };
+    let p = ui.painter();
+    p.rect(rect, 15.0, fill, egui::Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+    p.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        font,
+        if on || hovered { ACCENT } else { TEXT },
+    );
+    response
+}
+
+/// A round button with a die on it (for a random seed).
+fn dice_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+    let hovered = response.hovered();
+    let color = if hovered { ACCENT } else { TEXT };
+    let p = ui.painter();
+    p.circle(
+        rect.center(),
+        15.0,
+        if hovered {
+            egui::Color32::from_rgb(32, 49, 56)
+        } else {
+            egui::Color32::from_rgb(16, 30, 38)
+        },
+        egui::Stroke::new(1.0, rgba(150, 240, 210, if hovered { 0.45 } else { 0.18 })),
+    );
+    let die = egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0));
+    p.rect_stroke(die, 3.0, egui::Stroke::new(1.4, color), egui::StrokeKind::Middle);
+    for d in [egui::vec2(-3.5, -3.5), egui::vec2(0.0, 0.0), egui::vec2(3.5, 3.5)] {
+        p.circle_filled(die.center() + d, 1.3, color);
+    }
+    response
+}
+
+/// A thousands-separated number.
+fn grouped(n: u32) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Text colours of the menus: main, secondary (still readable), accent and error.
@@ -1016,7 +1099,7 @@ fn build_preview(ctx: &egui::Context, map: &str, config: Config) -> Preview {
 
 /// The map, with where life starts: drag to draw that area, click to move it.
 fn map_view(ui: &mut egui::Ui, setup: &mut Setup, p: &Preview) {
-    let size = egui::vec2(ui.available_width(), 230.0);
+    let size = egui::vec2(ui.available_width(), 250.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.image(
@@ -1127,21 +1210,66 @@ fn map_view(ui: &mut egui::Ui, setup: &mut Setup, p: &Preview) {
         setup.spawn_x = [cx - half_x, cx + half_x];
         setup.spawn_depth = [cd - half_d, cd + half_d];
     }
+    // Where the pointer is, in a small chip in the corner.
     if let Some(pos) = response.hover_pos() {
         let (x, depth) = to_world(pos);
-        response.on_hover_text_at_pointer(format!("{:.0}% across · depth {depth:.0}", x * 100.0));
+        let text = format!("{:.0}% across · {depth:.0} deep", x * 100.0);
+        let font = egui::FontId::proportional(12.0);
+        let size = painter.layout_no_wrap(text.clone(), font.clone(), TEXT).size();
+        let chip = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - size.x - 18.0, rect.bottom() - size.y - 14.0),
+            size + egui::vec2(12.0, 6.0),
+        );
+        painter.rect_filled(chip, 8.0, egui::Color32::from_rgb(12, 21, 27));
+        painter.text(chip.center(), egui::Align2::CENTER_CENTER, text, font, TEXT);
     }
-    ui.label(
-        egui::RichText::new(
-            "Drag to set where life starts, or click to move it. Orange dots are vents.",
-        )
-        .size(12.0)
-        .color(MUTED),
+    // A frame round the picture.
+    painter.rect_stroke(
+        rect,
+        6.0,
+        egui::Stroke::new(1.0, rgba(150, 240, 210, 0.3)),
+        egui::StrokeKind::Inside,
     );
+
+    // The legend, and how to draw your own area.
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let key = |ui: &mut egui::Ui, draw: &dyn Fn(&egui::Painter, egui::Rect), text: &str| {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 14.0), egui::Sense::hover());
+            draw(ui.painter(), r);
+            ui.label(egui::RichText::new(text).size(12.0).color(MUTED));
+            ui.add_space(8.0);
+        };
+        key(
+            ui,
+            &|p, r| {
+                p.circle_filled(r.center(), 4.0, egui::Color32::from_rgb(255, 150, 60));
+            },
+            "Vent",
+        );
+        key(
+            ui,
+            &|p, r| {
+                p.rect_stroke(r.shrink(1.5), 2.0, egui::Stroke::new(1.0, rgba(150, 255, 180, 0.6)), egui::StrokeKind::Inside);
+            },
+            "Start area",
+        );
+        key(
+            ui,
+            &|p, r| {
+                p.rect_filled(r.shrink(1.5), 2.0, rgba(140, 255, 170, 0.3));
+                p.rect_stroke(r.shrink(1.5), 2.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(150, 255, 180)), egui::StrokeKind::Inside);
+            },
+            "Where life starts",
+        );
+        ui.label(egui::RichText::new("· drag to draw your own").size(12.0).color(MUTED));
+    });
 }
 
 fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>) {
     heading(ui, "The world");
+
     caption(ui, "Map");
     let about = setup
         .maps
@@ -1149,96 +1277,102 @@ fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>)
         .find(|m| m.0 == setup.map)
         .map(|m| m.1.clone())
         .unwrap_or_default();
-    ui.horizontal(|ui| {
-        egui::ComboBox::from_id_salt("map")
-            .width(150.0)
-            .selected_text(&setup.map)
-            .show_ui(ui, |ui| {
-                for (name, about) in &setup.maps {
-                    ui.selectable_value(&mut setup.map, name.clone(), name)
-                        .on_hover_text(about);
-                }
-            });
-        ui.label(egui::RichText::new(about).color(MUTED));
-    });
-    ui.add_space(6.0);
+    egui::ComboBox::from_id_salt("map")
+        .width(ui.available_width())
+        .height(240.0)
+        .selected_text(egui::RichText::new(&setup.map).size(15.0))
+        .show_ui(ui, |ui| {
+            for (name, about) in &setup.maps {
+                ui.selectable_value(&mut setup.map, name.clone(), name)
+                    .on_hover_text(about);
+            }
+        });
+    if !about.is_empty() {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(about).size(13.0).color(MUTED));
+    }
+    ui.add_space(8.0);
     if let Some(p) = preview {
         map_view(ui, setup, p);
     }
 
     caption(ui, "Where life starts");
-    let depth_max = preview.map(|p| p.config.world.height).unwrap_or(6000.0);
-    egui::Grid::new("where")
-        .num_columns(2)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("Across the ocean");
-            ui.horizontal(|ui| {
-                let mut lo = setup.spawn_x[0] * 100.0;
-                let mut hi = setup.spawn_x[1] * 100.0;
-                ui.add(
-                    egui::DragValue::new(&mut lo)
-                        .range(0.0..=100.0)
-                        .suffix(" %")
-                        .speed(0.5),
-                );
-                ui.label("to");
-                ui.add(
-                    egui::DragValue::new(&mut hi)
-                        .range(0.0..=100.0)
-                        .suffix(" %")
-                        .speed(0.5),
-                );
-                setup.spawn_x = [lo.min(hi) / 100.0, hi.max(lo) / 100.0];
-            });
-            ui.end_row();
-            ui.label("Depth");
-            ui.horizontal(|ui| {
-                let [mut lo, mut hi] = setup.spawn_depth;
-                ui.add(
-                    egui::DragValue::new(&mut lo)
-                        .range(0.0..=depth_max)
-                        .speed(2.0),
-                );
-                ui.label("to");
-                ui.add(
-                    egui::DragValue::new(&mut hi)
-                        .range(0.0..=depth_max)
-                        .speed(2.0),
-                );
-                setup.spawn_depth = [lo.min(hi), hi.max(lo + 10.0)];
-            });
-            ui.end_row();
-        });
-    // The map's own start areas (drawn in the map editor).
-    if let Some(p) = preview {
-        let areas = start_areas(p);
-        if areas.is_empty() {
-            ui.label(
-                egui::RichText::new("This map has no start areas: drag one on the map above.")
-                    .size(12.0)
-                    .color(MUTED),
-            );
-        }
+    let areas = preview.map(start_areas).unwrap_or_default();
+    let mut chosen = None;
+    if areas.is_empty() {
+        ui.label(
+            egui::RichText::new("This map has no start areas: drag a box on the map.")
+                .size(12.5)
+                .color(MUTED),
+        );
+    } else {
         ui.horizontal_wrapped(|ui| {
-            for (name, x, d) in areas {
-                let on = setup.spawn_x == x && setup.spawn_depth == d;
-                if ui.selectable_label(on, name).clicked() {
-                    setup.spawn_x = x;
-                    setup.spawn_depth = d;
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            for (name, x, d) in &areas {
+                let on = setup.spawn_x == *x && setup.spawn_depth == *d;
+                if on {
+                    chosen = Some(name.clone());
+                }
+                if pill(ui, name, on).clicked() {
+                    setup.spawn_x = *x;
+                    setup.spawn_depth = *d;
                 }
             }
         });
     }
+    // What's chosen, in a line.
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(format!(
+            "{}{:.0}–{:.0}% across, {:.0}–{:.0} deep",
+            chosen.map(|n| format!("{n}: ")).unwrap_or_else(|| "Custom: ".into()),
+            setup.spawn_x[0] * 100.0,
+            setup.spawn_x[1] * 100.0,
+            setup.spawn_depth[0],
+            setup.spawn_depth[1],
+        ))
+        .size(13.0)
+        .color(TEXT),
+    );
+    let depth_max = preview.map(|p| p.config.world.height).unwrap_or(6000.0);
+    egui::CollapsingHeader::new(egui::RichText::new("Fine-tune").size(13.0).color(MUTED))
+        .id_salt("fine_tune")
+        .default_open(false)
+        .show(ui, |ui| {
+            egui::Grid::new("where")
+                .num_columns(2)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("Across").color(MUTED));
+                    ui.horizontal(|ui| {
+                        let mut lo = setup.spawn_x[0] * 100.0;
+                        let mut hi = setup.spawn_x[1] * 100.0;
+                        ui.add(egui::DragValue::new(&mut lo).range(0.0..=100.0).suffix(" %").speed(0.5));
+                        ui.label(egui::RichText::new("to").color(MUTED));
+                        ui.add(egui::DragValue::new(&mut hi).range(0.0..=100.0).suffix(" %").speed(0.5));
+                        setup.spawn_x = [lo.min(hi) / 100.0, hi.max(lo) / 100.0];
+                    });
+                    ui.end_row();
+                    ui.label(egui::RichText::new("Depth").color(MUTED));
+                    ui.horizontal(|ui| {
+                        let [mut lo, mut hi] = setup.spawn_depth;
+                        ui.add(egui::DragValue::new(&mut lo).range(0.0..=depth_max).speed(2.0));
+                        ui.label(egui::RichText::new("to").color(MUTED));
+                        ui.add(egui::DragValue::new(&mut hi).range(0.0..=depth_max).speed(2.0));
+                        setup.spawn_depth = [lo.min(hi), hi.max(lo + 10.0)];
+                    });
+                    ui.end_row();
+                });
+        });
 
     caption(ui, "Seed");
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut setup.seed_text)
-                .desired_width(320.0)
+                .desired_width(ui.available_width() - 40.0)
                 .hint_text("any number or text"),
         );
-        if ui.button("Random").clicked() {
+        if dice_button(ui).on_hover_text("A random seed").clicked() {
             setup.seed_text = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map(|d| (d.as_nanos() as u64 % 1_000_000_000).to_string())
@@ -1255,7 +1389,19 @@ fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>)
     }
 
     caption(ui, "Starting population");
-    ui.add(egui::Slider::new(&mut setup.population, 20..=20_000).logarithmic(true));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().slider_width = (ui.available_width() - 120.0).max(120.0);
+        ui.add(
+            egui::Slider::new(&mut setup.population, 20..=20_000)
+                .logarithmic(true)
+                .show_value(false),
+        );
+        ui.label(
+            egui::RichText::new(format!("{} organisms", grouped(setup.population)))
+                .size(14.0)
+                .color(TEXT),
+        );
+    });
 }
 
 fn ancestor_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>) {

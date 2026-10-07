@@ -8,7 +8,7 @@ const MAX_VENTS: u32 = 16u;
 struct Background {
     world: vec4<f32>, // width, height, time, world units per pixel
     sun: vec4<f32>,   // sun (0..1), surface temp, day phase, vent count
-    vents: array<vec4<f32>, 16>,
+    vents: array<vec4<f32>, 16>, // x, y, strength, how far below it its chimney reaches
     effects: vec4<f32>, // impact-winter darkness, event count, map mode
     air: vec4<f32>, // air oxygen, air CO2 (1 = today)
     events: array<vec4<f32>, 8>, // x, width, kind (1 upwelling, 2 wall), param
@@ -503,14 +503,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // puffy, cel-shaded smoke billowing out and a hot glow at each mouth. Each vent picks one
     // of four layouts from its position: a tall chimney, a twin, a chimney with
     // three spires, or a squat cone. The outlets are only looks; the vent works the same either way. Stacks
-    // run down into the rock, which hides their bases, so they stand on whatever floor is there.
+    // reach down to the first rock below the vent and a little into it (`root`), no further.
     let vent_count = u32(bg.sun.w);
     var vent_glow = vec3<f32>(0.0);
     for (var i = 0u; i < min(vent_count, MAX_VENTS); i++) {
         let v = bg.vents[i];
         let strength = v.z;
+        let root = v.w;
         let q0 = wp - v.xy;
-        if abs(q0.x) > 700.0 || q0.y < -220.0 || q0.y > 900.0 {
+        if abs(q0.x) > 700.0 || q0.y < -root - 20.0 || q0.y > 900.0 {
             continue;
         }
         let seed = hash21(floor(v.xy));
@@ -637,7 +638,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
                 top = max(top, o.y - 4.0 * u * u * u * u - wall);
             }
             top += (value_noise(vec2<f32>(q0.x * 0.15, seed * 70.0)) - 0.5) * 2.0;
-            let d = max(max(left - q0.x, q0.x - right), y - top);
+            // The base ends a little below the vent (buried in its floor), so it never shows
+            // through open water or caves underneath.
+            let d = max(max(max(left - q0.x, q0.x - right), y - top), -root - y);
             let fill = 1.0 - smoothstep(-aa, aa, d);
             var heat = 0.0;
             for (var k = 0u; k < 3u; k++) {
@@ -679,6 +682,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             let side = abs(q.x - lean);
             // (The cluster's stacks are drawn above, as one branching chimney.)
             let stack = (1.0 - smoothstep(half_w - aa, half_w + aa, side)) * (1.0 - smoothstep(-aa, aa, q.y))
+                * smoothstep(-root - aa, -root + aa, q0.y)
                 * select(1.0, 0.0, variant == 2u);
             if stack > 0.0 {
                 // Seafloor rock, darker and banded with sulfides, rusty in patches.

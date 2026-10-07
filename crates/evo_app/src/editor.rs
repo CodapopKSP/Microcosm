@@ -10,7 +10,7 @@ use evo_core::Config;
 use evo_core::map::PaintedMap;
 
 use crate::AppState;
-use crate::menu::{ACCENT, ERROR, MUTED, TEXT, card, rgba, style_menu};
+use crate::menu::{ACCENT, ERROR, MUTED, TEXT, caption, card, pill, rgba, style_menu};
 
 pub struct EditorPlugin;
 
@@ -462,7 +462,7 @@ fn draw_editor(
         .order(egui::Order::Background)
         .show(&ctx, |ui| canvas(ui, screen, ed));
 
-    let panel_w = 290.0;
+    let panel_w = 300.0;
     egui::Area::new(egui::Id::new("editor_tools"))
         .fixed_pos(screen.left_top() + vec2(14.0, 14.0))
         .show(&ctx, |ui| {
@@ -716,13 +716,14 @@ fn canvas(ui: &mut egui::Ui, screen: Rect, ed: &mut Editor) {
         } else {
             format!("x {:.0} · {:.0} above water", w.x, -depth)
         };
-        painter.text(
-            rect.center_bottom() + vec2(0.0, -70.0),
-            egui::Align2::CENTER_BOTTOM,
-            label,
-            egui::FontId::proportional(13.0),
-            MUTED,
+        let font = egui::FontId::proportional(12.5);
+        let size = painter.layout_no_wrap(label.clone(), font.clone(), TEXT).size();
+        let chip = Rect::from_center_size(
+            rect.center_bottom() + vec2(0.0, -86.0),
+            size + vec2(18.0, 8.0),
         );
+        painter.rect(chip, 10.0, Color32::from_rgb(12, 21, 27), Stroke::new(1.0, rgba(150, 240, 210, 0.18)), egui::StrokeKind::Inside);
+        painter.text(chip.center(), egui::Align2::CENTER_CENTER, label, font, TEXT);
     }
 
     // Using the tool.
@@ -846,94 +847,279 @@ fn canvas(ui: &mut egui::Ui, screen: Rect, ed: &mut Editor) {
     }
 }
 
-fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(10.0);
-    ui.label(egui::RichText::new(title.to_uppercase()).size(11.5).strong().color(MUTED));
-    ui.add_space(2.0);
+
+// ---- Panel widgets ----
+
+const TILE_FILL: Color32 = Color32::from_rgb(16, 30, 38);
+const TILE_HOVER: Color32 = Color32::from_rgb(32, 49, 56);
+const TILE_ON: Color32 = Color32::from_rgb(38, 86, 77);
+const ROCK: Color32 = Color32::from_rgb(150, 130, 108);
+const VENT: Color32 = Color32::from_rgb(255, 150, 60);
+const AREA: Color32 = Color32::from_rgb(150, 255, 180);
+
+/// A tool's icon, drawn at `c` about `s` across.
+fn tool_icon(p: &egui::Painter, tool: Tool, c: Pos2, s: f32, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    match tool {
+        Tool::Ground => {
+            // A rocky mound.
+            let pts = vec![
+                c + vec2(-s, s * 0.6),
+                c + vec2(-s * 0.55, -s * 0.1),
+                c + vec2(-s * 0.15, -s * 0.55),
+                c + vec2(s * 0.35, -s * 0.2),
+                c + vec2(s, s * 0.6),
+            ];
+            p.add(egui::Shape::convex_polygon(pts, ROCK.gamma_multiply(0.85), stroke));
+        }
+        Tool::Erase => {
+            // A mound with a bite out of it.
+            let pts = vec![
+                c + vec2(-s, s * 0.6),
+                c + vec2(-s * 0.55, -s * 0.1),
+                c + vec2(-s * 0.15, -s * 0.55),
+                c + vec2(s * 0.35, -s * 0.2),
+                c + vec2(s, s * 0.6),
+            ];
+            p.add(egui::Shape::convex_polygon(pts, ROCK.gamma_multiply(0.35), stroke));
+            p.circle_filled(c + vec2(s * 0.15, -s * 0.05), s * 0.42, TILE_FILL);
+            p.circle_stroke(c + vec2(s * 0.15, -s * 0.05), s * 0.42, Stroke::new(1.5, ERROR));
+        }
+        Tool::Cave => {
+            // Rock with a dark hollow inside.
+            let r = Rect::from_center_size(c, vec2(s * 2.0, s * 1.5));
+            p.rect_filled(r, 3.0, ROCK.gamma_multiply(0.85));
+            p.add(egui::Shape::ellipse_filled(c + vec2(0.0, s * 0.1), vec2(s * 0.62, s * 0.4), Color32::from_rgb(30, 25, 22)));
+            p.rect_stroke(r, 3.0, stroke, egui::StrokeKind::Middle);
+        }
+        Tool::VentSpawn => {
+            p.circle_stroke(c, s * 0.55, Stroke::new(2.0, VENT));
+            p.circle_filled(c, s * 0.18, VENT);
+        }
+        Tool::PermanentVent => {
+            p.circle_filled(c, s * 0.5, VENT);
+            p.circle_stroke(c, s * 0.8, Stroke::new(1.2, VENT.gamma_multiply(0.6)));
+        }
+        Tool::StartArea => {
+            let r = Rect::from_center_size(c, vec2(s * 1.9, s * 1.3));
+            p.rect_filled(r, 2.0, AREA.gamma_multiply(0.15));
+            for (a, b) in [
+                (r.left_top(), r.right_top()),
+                (r.right_top(), r.right_bottom()),
+                (r.right_bottom(), r.left_bottom()),
+                (r.left_bottom(), r.left_top()),
+            ] {
+                p.extend(egui::Shape::dashed_line(&[a, b], Stroke::new(1.5, AREA), 4.0, 3.0));
+            }
+        }
+    }
+}
+
+/// A tool tile: icon, name, and its key in the corner.
+fn tool_tile(ui: &mut egui::Ui, tool: Tool, name: &str, key: &str, on: bool, width: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 58.0), egui::Sense::click());
+    let hovered = response.hovered();
+    let p = ui.painter();
+    let fill = if on { TILE_ON } else if hovered { TILE_HOVER } else { TILE_FILL };
+    let stroke = if on { ACCENT } else { rgba(150, 240, 210, if hovered { 0.4 } else { 0.14 }) };
+    p.rect(rect, 10.0, fill, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+    let color = if on || hovered { ACCENT } else { TEXT };
+    tool_icon(p, tool, pos2(rect.center().x, rect.top() + 20.0), 10.0, color);
+    p.text(
+        pos2(rect.center().x, rect.bottom() - 13.0),
+        egui::Align2::CENTER_CENTER,
+        name,
+        egui::FontId::proportional(12.5),
+        color,
+    );
+    p.text(
+        rect.right_top() + vec2(-8.0, 7.0),
+        egui::Align2::RIGHT_TOP,
+        key,
+        egui::FontId::monospace(10.5),
+        MUTED,
+    );
+    response
+}
+
+/// A small round button with a painted icon.
+fn round_icon(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    icon: impl FnOnce(&egui::Painter, Pos2, Color32),
+) -> egui::Response {
+    let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), sense);
+    let hovered = enabled && response.hovered();
+    let p = ui.painter();
+    p.circle(
+        rect.center(),
+        15.0,
+        if hovered { TILE_HOVER } else { TILE_FILL },
+        Stroke::new(1.0, rgba(150, 240, 210, if hovered { 0.45 } else { 0.18 })),
+    );
+    let color = if !enabled {
+        MUTED.gamma_multiply(0.5)
+    } else if hovered {
+        ACCENT
+    } else {
+        TEXT
+    };
+    icon(p, rect.center(), color);
+    response
+}
+
+/// An arrow curling round (undo, or redo when `forward`).
+fn icon_curl(p: &egui::Painter, c: Pos2, color: Color32, forward: bool) {
+    let sign = if forward { -1.0 } else { 1.0 };
+    let pts: Vec<Pos2> = (0..=12)
+        .map(|i| {
+            let a = std::f32::consts::PI * (0.15 + 0.85 * i as f32 / 12.0);
+            c + vec2(-sign * a.cos() * 6.0, -a.sin() * 6.0 + 2.0)
+        })
+        .collect();
+    let tip = pts[0];
+    p.add(egui::Shape::line(pts, Stroke::new(1.6, color)));
+    p.line_segment([tip, tip + vec2(-sign * 4.0, -2.0)], Stroke::new(1.6, color));
+    p.line_segment([tip, tip + vec2(-sign * 1.0, -5.0)], Stroke::new(1.6, color));
+}
+
+/// Four corners (fit the view).
+fn icon_fit(p: &egui::Painter, c: Pos2, color: Color32) {
+    let s = 6.0;
+    let k = 3.0;
+    let stroke = Stroke::new(1.6, color);
+    for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+        let corner = c + vec2(dx * s, dy * s);
+        p.line_segment([corner, corner - vec2(dx * k, 0.0)], stroke);
+        p.line_segment([corner, corner - vec2(0.0, dy * k)], stroke);
+    }
+}
+
+fn icon_back(p: &egui::Painter, c: Pos2, color: Color32) {
+    let stroke = Stroke::new(2.0, color);
+    p.line_segment([c + vec2(3.0, -6.0), c + vec2(-3.0, 0.0)], stroke);
+    p.line_segment([c + vec2(-3.0, 0.0), c + vec2(3.0, 6.0)], stroke);
+}
+
+fn hint(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(12.0).color(MUTED));
 }
 
 fn tools_panel(ui: &mut egui::Ui, ed: &mut Editor) {
+    // Header: back, title, and the map's name.
     ui.horizontal(|ui| {
-        if ui.add_sized([80.0, 30.0], egui::Button::new("Back")).clicked() {
+        if round_icon(ui, true, icon_back).on_hover_text("Back to the menu").clicked() {
             ed.leave = true;
         }
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("Map editor").size(22.0).color(TEXT));
+        ui.add_space(4.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(egui::RichText::new("Map editor").size(20.0).color(TEXT));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(&ed.name).size(12.5).color(ACCENT));
+                if ed.unsaved {
+                    ui.label(egui::RichText::new("· unsaved").size(12.5).color(MUTED));
+                }
+            });
+        });
     });
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(&ed.name).size(13.0).color(MUTED));
-        if ed.unsaved {
-            ui.label(egui::RichText::new("· unsaved").size(13.0).color(MUTED));
-        }
-    });
-    section(ui, "Tool");
-    for (tool, name, key, tip) in TOOLS {
-        ui.horizontal(|ui| {
-            let on = ed.tool == tool;
-            if ui
-                .add_sized([200.0, 28.0], egui::Button::selectable(on, name))
+
+    caption(ui, "Tools");
+    let tile_w = (ui.available_width() - 6.0) / 2.0;
+    egui::Grid::new("tools").num_columns(2).spacing([6.0, 6.0]).show(ui, |ui| {
+        for (i, (tool, name, key, tip)) in TOOLS.into_iter().enumerate() {
+            if tool_tile(ui, tool, name, key, ed.tool == tool, tile_w)
                 .on_hover_text(tip)
                 .clicked()
             {
                 ed.tool = tool;
             }
-            ui.label(egui::RichText::new(key).monospace().color(MUTED));
-        });
-    }
-    if matches!(ed.tool, Tool::Ground | Tool::Erase | Tool::Cave) {
-        section(ui, "Brush");
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut ed.shape, Shape::Round, "Round");
-            ui.selectable_value(&mut ed.shape, Shape::Square, "Square");
-        });
-        ui.add(
-            egui::Slider::new(&mut ed.size, BRUSH_MIN..=BRUSH_MAX)
-                .logarithmic(true)
-                .suffix(" u")
-                .text("size"),
-        )
-        .on_hover_text("[ and ] make it smaller or bigger");
-    } else if ed.tool == Tool::StartArea {
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new("Drag a box, then name it. Right-click an area to remove it.")
-                .size(12.5)
-                .color(MUTED),
-        );
-        section(ui, "Start areas");
-        if ed.map.spawn_areas.is_empty() {
-            ui.label(egui::RichText::new("None yet.").size(12.5).color(MUTED));
+            if i % 2 == 1 {
+                ui.end_row();
+            }
         }
-        let mut remove = None;
-        for (i, area) in ed.map.spawn_areas.iter().enumerate() {
+    });
+
+    match ed.tool {
+        Tool::Ground | Tool::Erase | Tool::Cave => {
+            caption(ui, "Brush");
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&area.name).size(13.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Remove").clicked() {
-                        remove = Some(i);
-                    }
-                });
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if pill(ui, "Round", ed.shape == Shape::Round).clicked() {
+                    ed.shape = Shape::Round;
+                }
+                if pill(ui, "Square", ed.shape == Shape::Square).clicked() {
+                    ed.shape = Shape::Square;
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().slider_width = ui.available_width() - 70.0;
+                ui.add(
+                    egui::Slider::new(&mut ed.size, BRUSH_MIN..=BRUSH_MAX)
+                        .logarithmic(true)
+                        .show_value(false),
+                )
+                .on_hover_text("[ and ] make it smaller or bigger");
+                ui.label(egui::RichText::new(format!("{:.0} u", ed.size)).size(13.0));
             });
         }
-        if let Some(i) = remove {
-            ed.checkpoint();
-            ed.map.spawn_areas.remove(i);
+        Tool::StartArea => {
+            caption(ui, "Start areas");
+            hint(ui, "Drag a box, then name it. Right-click one to remove it. The first is the default for new worlds.");
+            ui.add_space(4.0);
+            if ed.map.spawn_areas.is_empty() {
+                hint(ui, "None yet.");
+            }
+            let mut remove = None;
+            for (i, area) in ed.map.spawn_areas.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), egui::Sense::hover());
+                    ui.painter().rect_filled(r.shrink(2.0), 2.0, AREA.gamma_multiply(0.35));
+                    ui.label(egui::RichText::new(&area.name).size(13.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Remove").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                });
+            }
+            if let Some(i) = remove {
+                ed.checkpoint();
+                ed.map.spawn_areas.remove(i);
+            }
         }
-        ui.label(
-            egui::RichText::new("The first is picked by default for new worlds.")
-                .size(12.0)
-                .color(MUTED),
-        );
-    } else {
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new("Click to place, right-click a node to remove it.").size(12.5).color(MUTED));
+        Tool::VentSpawn | Tool::PermanentVent => {
+            caption(ui, "Vents");
+            hint(ui, "Click in the water to place one, right-click one to remove it.");
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} spawn point{} · {} permanent",
+                    ed.map.vent_spawns.len(),
+                    if ed.map.vent_spawns.len() == 1 { "" } else { "s" },
+                    ed.map.permanent_vents.len(),
+                ))
+                .size(13.0),
+            );
+        }
     }
 
-    section(ui, "Water level");
+    caption(ui, "Water level");
     let mut level = ed.map.water_level;
     let max = ed.map.height;
     let slider = ui
-        .add(egui::Slider::new(&mut level, 1000.0f32.min(max)..=max).step_by(ed.map.cell as f64).suffix(" u"))
+        .horizontal(|ui| {
+            ui.spacing_mut().slider_width = ui.available_width() - 70.0;
+            let r = ui.add(
+                egui::Slider::new(&mut level, 1000.0f32.min(max)..=max)
+                    .step_by(ed.map.cell as f64)
+                    .show_value(false),
+            );
+            ui.label(egui::RichText::new(format!("{level:.0} u")).size(13.0));
+            r
+        })
+        .inner
         .on_hover_text("How high the water reaches. Rock above it stands out of the sea as land.");
     // One undo step per drag (or per typed value).
     if slider.drag_started() || (slider.changed() && !slider.dragged()) {
@@ -947,72 +1133,59 @@ fn tools_panel(ui: &mut egui::Ui, ed: &mut Editor) {
         ed.rebuild = true;
     }
 
-    section(ui, "Map size");
+    caption(ui, "Map size");
     // Applied as soon as a value is finished: when a drag ends, or a typed value is entered.
     let mut apply = false;
-    egui::Grid::new("size").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-        ui.label("Width");
+    ui.horizontal(|ui| {
         let r = ui.add(egui::DragValue::new(&mut ed.width_edit).range(2000.0..=40000.0).speed(50.0).suffix(" u"));
         apply |= r.drag_stopped() || (r.changed() && !r.dragged());
-        ui.end_row();
-        ui.label("Height");
+        ui.label(egui::RichText::new("×").color(MUTED));
         let r = ui.add(egui::DragValue::new(&mut ed.height_edit).range(1200.0..=10000.0).speed(20.0).suffix(" u"));
         apply |= r.drag_stopped() || (r.changed() && !r.dragged());
-        ui.end_row();
     });
     if apply {
         ed.apply_size();
     }
-    ui.label(
-        egui::RichText::new("New space is water; what's painted stays put from the bottom left.")
-            .size(12.0)
-            .color(MUTED),
-    );
-    ui.label(
-        egui::RichText::new(format!(
-            "{:.0} × {:.0}, water {:.0} deep",
-            ed.map.width, ed.map.height, ed.map.water_level
-        ))
-        .size(12.5)
-        .color(MUTED),
-    );
+    hint(ui, "Width × height. New space is water; the painting stays put from the bottom left.");
 
-    section(ui, "View");
+    // View and history.
+    ui.add_space(12.0);
     ui.horizontal(|ui| {
-        if ui.button("Fit").clicked() {
-            ed.fit = true;
-        }
-        if ui.add_enabled(!ed.undo.is_empty(), egui::Button::new("Undo")).on_hover_text("Ctrl+Z").clicked() {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if round_icon(ui, !ed.undo.is_empty(), |p, c, col| icon_curl(p, c, col, false))
+            .on_hover_text("Undo (Ctrl+Z)")
+            .clicked()
+        {
             ed.undo();
         }
-        if ui.add_enabled(!ed.redo.is_empty(), egui::Button::new("Redo")).on_hover_text("Ctrl+Y").clicked() {
+        if round_icon(ui, !ed.redo.is_empty(), |p, c, col| icon_curl(p, c, col, true))
+            .on_hover_text("Redo (Ctrl+Y)")
+            .clicked()
+        {
             ed.redo();
         }
+        if round_icon(ui, true, icon_fit).on_hover_text("Fit the map in view").clicked() {
+            ed.fit = true;
+        }
+        ui.add_space(4.0);
+        hint(ui, "Scroll to zoom, right-drag to pan");
     });
-    ui.label(
-        egui::RichText::new("Scroll to zoom, right- or middle-drag to pan.")
-            .size(12.0)
-            .color(MUTED),
-    );
-    ui.label(
-        egui::RichText::new(format!(
-            "{} vent spawn{}, {} permanent vent{}",
-            ed.map.vent_spawns.len(),
-            if ed.map.vent_spawns.len() == 1 { "" } else { "s" },
-            ed.map.permanent_vents.len(),
-            if ed.map.permanent_vents.len() == 1 { "" } else { "s" },
-        ))
-        .size(12.0)
-        .color(MUTED),
-    );
 
-    ui.add_space(14.0);
+    // File.
+    ui.add_space(12.0);
     ui.horizontal(|ui| {
-        if ui.add_sized([118.0, 34.0], egui::Button::new("Save")).clicked() {
+        let w = (ui.available_width() - 8.0) / 2.0;
+        if ui
+            .add_sized([w, 36.0], egui::Button::new(egui::RichText::new("Save").size(15.0)))
+            .clicked()
+        {
             ed.save_open = true;
             ed.new_open = false;
         }
-        if ui.add_sized([118.0, 34.0], egui::Button::new("New…")).clicked() {
+        if ui
+            .add_sized([w, 36.0], egui::Button::new(egui::RichText::new("New / open").size(15.0)))
+            .clicked()
+        {
             ed.new_open = true;
             ed.save_open = false;
         }
@@ -1085,14 +1258,14 @@ fn save_dialog(ctx: &egui::Context, ed: &mut Editor) {
             card().show(ui, |ui| {
                 ui.set_width(360.0);
                 ui.label(egui::RichText::new("Save map").size(20.0).color(TEXT));
-                section(ui, "Name");
+                caption(ui, "Name");
                 let name = ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(f32::INFINITY));
                 let path_name = clean_name(&ed.name);
                 let exists = ed.saved.contains(&path_name);
                 if exists {
                     ui.label(egui::RichText::new("A saved map has this name; it will be replaced.").size(12.0).color(MUTED));
                 }
-                section(ui, "Description");
+                caption(ui, "Description");
                 ui.add(
                     egui::TextEdit::multiline(&mut ed.map.description)
                         .hint_text("Shown in the New world map list")

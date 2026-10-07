@@ -425,7 +425,12 @@ fn update_background(
         );
         u.vents = [Vec4::ZERO; MAX_VENTS];
         for (slot, vent) in u.vents.iter_mut().zip(world.env.vents.iter()) {
-            *slot = Vec4::new(vent.pos.x, vent.pos.y, vent.strength, cfg.vents.radius);
+            *slot = Vec4::new(
+                vent.pos.x,
+                vent.pos.y,
+                vent.strength,
+                vent_root(&world.terrain, vent.pos),
+            );
         }
         let now = world.time();
         u.events = [Vec4::ZERO; MAX_EVENTS];
@@ -528,6 +533,22 @@ fn update_background(
 /// Highest the sun and moon climb above the surface, in world units (the camera shows up to
 /// 1600 of sky, and the HUD covers the top of it).
 const SUN_HEIGHT: f32 = 800.0;
+
+/// How far below a vent its chimney reaches: down to the first rock beneath it and a little
+/// into it, so it stands on that rock and never shows through open water or a cave further
+/// down. (A vent with no rock close below gets a short stub.)
+fn vent_root(terrain: &evo_core::terrain::Terrain, pos: glam::Vec2) -> f32 {
+    const MAX: f32 = 600.0;
+    const INTO: f32 = 24.0;
+    let mut d = 0.0;
+    while d < MAX {
+        if terrain.is_solid(pos - glam::Vec2::new(0.0, d)) {
+            return d + INTO;
+        }
+        d += 4.0;
+    }
+    INTO
+}
 
 /// Days from one full moon to the next.
 const MOON_DAYS: f32 = 8.0;
