@@ -6,7 +6,7 @@
 
 [world]
 seed = 1                 # life, events, random vents and currents: same seed + config => same run
-map = "ocean"            # world size and terrain from configs/maps/<map>.toml (same for every seed)
+map = "Deep Ocean"       # world size and terrain from configs/maps/<map>.map or .toml (same for every seed)
 
 [time]
 dt = 0.0333333333        # sim seconds per tick; 1x speed = 1/dt ticks per second
@@ -48,6 +48,8 @@ sink_speed = 3.0         # marine snow (slow, so the water column has food)
 decay = 0.0015
 to_minerals = 0.5        # decomposed detritus released as minerals
 diffusion = 100.0
+cave_rate = 6.0e-6       # detritus shed into cave water (energy/s per unit² of cave; painted maps)
+cave_nutrients = 3.0e-5  # ...and the nutrients that come with it
 
 [vents]
 count = 3                # random vents, besides the permanent ones (which count as shallow)
@@ -249,11 +251,9 @@ established = 20         # members needed before a species is named and listed
 # The ancestor: a tiny, floating, green photosynthesizer with no parts, so it can't move.
 ancestor = "B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 N:80808080808080808000 P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0"
 initial = 2000
-spawn_min_depth = 0.0    # life starts (and recolonizes) between these depths...
+spawn_min_depth = 0.0    # life starts between these depths...
 spawn_depth = 300.0
 spawn_x = [0.0, 1.0]     # ...across this part of the ocean's width (0 = left edge, 1 = right)
-min_population = 100     # below this, the seed bank recolonizes
-reseed_count = 300
 max_population = 250000  # safety cap on births
 # Optional second founding lineage at the vents, in chromosome notation (empty = none, so
 # life has to find its own way down). Example: an anchored, fermenting vent chemosynthesizer:

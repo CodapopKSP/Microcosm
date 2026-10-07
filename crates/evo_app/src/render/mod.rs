@@ -185,14 +185,18 @@ struct RenderHandles {
     frame: u64,
 }
 
-/// Encode the terrain SDF into an R8 texture (±64 units around the surface).
-fn write_terrain(image: &mut Image, sdf: &evo_core::field::Field) {
+/// Encode the terrain into an RG8 texture: the SDF (±64 units around the surface) in red, and
+/// caves in green.
+fn write_terrain(image: &mut Image, terrain: &evo_core::terrain::Terrain) {
+    let sdf = &terrain.sdf;
     if let Some(data) = image.data.as_mut() {
         for y in 0..sdf.ny {
             for x in 0..sdf.nx {
-                let d = sdf.data[sdf.index(x, y)];
-                let v = (d / 128.0 + 0.5).clamp(0.0, 1.0);
-                data[(sdf.ny - 1 - y) * sdf.nx + x] = (v * 255.0).round() as u8;
+                let i = sdf.index(x, y);
+                let v = (sdf.data[i] / 128.0 + 0.5).clamp(0.0, 1.0);
+                let o = 2 * ((sdf.ny - 1 - y) * sdf.nx + x);
+                data[o] = (v * 255.0).round() as u8;
+                data[o + 1] = if terrain.cave.get(i).copied().unwrap_or(false) { 255 } else { 0 };
             }
         }
     }
@@ -256,8 +260,8 @@ fn setup(
 
     // Terrain SDF texture (static until terrain changes).
     let sdf = &world.terrain.sdf;
-    let mut terrain = empty_image(sdf.nx as u32, sdf.ny as u32, TextureFormat::R8Unorm, 1);
-    write_terrain(&mut terrain, sdf);
+    let mut terrain = empty_image(sdf.nx as u32, sdf.ny as u32, TextureFormat::Rg8Unorm, 2);
+    write_terrain(&mut terrain, &world.terrain);
     let light = &world.env.light;
     let light_image = images.add(empty_image(
         light.nx as u32,
@@ -340,7 +344,7 @@ fn update_background(
     if world.terrain.version != handles.terrain_version {
         handles.terrain_version = world.terrain.version;
         if let Some(mut image) = images.get_mut(&handles.terrain_image) {
-            write_terrain(&mut image, &world.terrain.sdf);
+            write_terrain(&mut image, &world.terrain);
         }
     }
 

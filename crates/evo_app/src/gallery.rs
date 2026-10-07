@@ -103,7 +103,6 @@ pub fn rows() -> Vec<(&'static str, Setter)> {
 pub fn build() -> World {
     let mut config = Config::default();
     config.population.initial = 0;
-    config.population.min_population = 0;
     config.events.enabled = false;
     let mut world = World::new(config);
     let config = world.config.clone();

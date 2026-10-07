@@ -418,6 +418,29 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Gentle darkening with depth even where light is similar, for a sense of scale.
     water *= mix(1.0, 0.6, clamp(depth / size.y, 0.0, 1.0));
 
+    // Caves (painted maps): the back wall of a hollow in the rock, the same stone as the
+    // terrain but far darker, and darker still in the shadow of the rock around it.
+    let cave = textureSample(terrain_tex, terrain_sampler, uv).g;
+    if cave > 0.01 && !outside {
+        let cn = fbm(wp * 0.006) * 0.55 + fbm(wp * 0.03) * 0.3 + value_noise(wp * 0.15) * 0.15;
+        var wall = mix(vec3<f32>(0.03, 0.028, 0.03), vec3<f32>(0.11, 0.095, 0.08), cn);
+        wall *= 0.92 + 0.08 * sin(wp.y * 0.018 + fbm(wp * 0.004) * 9.0);
+        // Distance into the cave from its rock walls: deep shadow near them (an overhang's
+        // shade), a little lighter toward the middle; most shadow under ceilings.
+        let to_rock = sdf_at(uv);
+        let open = smoothstep(0.0, 90.0, to_rock);
+        // Under a ceiling the rock overhead casts the deepest shade.
+        let above = sdf_at(uv + vec2<f32>(0.0, -70.0 / size.y));
+        let ceiling = 1.0 - smoothstep(-20.0, 60.0, above);
+        wall *= (0.3 + 0.25 * open) * (1.0 - 0.45 * ceiling);
+        // Faint, wavering streaks of sediment trickling down the back wall.
+        let wave = fbm(vec2<f32>(wp.y * 0.01, wp.x * 0.002)) * 40.0;
+        let streak = smoothstep(0.65, 0.9, value_noise(vec2<f32>((wp.x + wave) * 0.03, wp.y * 0.003)));
+        wall = mix(wall, vec3<f32>(0.05, 0.038, 0.024), streak * 0.2);
+        wall *= mix(1.0, 0.7, clamp(depth / size.y, 0.0, 1.0));
+        water = mix(water, wall + water * 0.15, smoothstep(0.0, 1.0, cave));
+    }
+
     // Soft god rays in the upper water.
     let ray_x = wp.x * 0.0016 + sin(wp.x * 0.0005 + time * 0.05) * 2.0 + depth * 0.0003;
     let rays = pow(0.5 + 0.5 * sin(ray_x + time * 0.12), 6.0) * 0.6

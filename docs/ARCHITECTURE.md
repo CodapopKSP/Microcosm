@@ -27,7 +27,7 @@ The core has **no rendering dependencies**. Headless runs (tuning, benchmarks, l
 | `grid.rs` | Multi-level spatial hash for neighbor queries across a wide range of body sizes |
 | `species.rs` | Species and genera: founding by genetic distance, names, populations, extinctions |
 | `stats.rs` | Time series samples, event log |
-| `map.rs` | Painted maps from the map editor (`configs/maps/<name>.map`): a rock mask, water level, permanent vents and vent spawn points |
+| `map.rs` | Painted maps from the map editor (`configs/maps/<name>.map`): a rock mask, cave mask (dark water that sheds detritus), water level, permanent vents and vent spawn points |
 | `notebook.rs` | The field notebook: species the viewer recorded and their specimens' genomes (saved with the world, no effect on the simulation) |
 | `rng.rs` | Small deterministic PRNG (wyrand) |
 
@@ -40,7 +40,7 @@ The core has **no rendering dependencies**. Headless runs (tuning, benchmarks, l
 3. **Think** (parallel, read-only): each organism finds contacts within its tentacle reach (collision push, prey, carcass) and, if motile, senses neighbors through its eye cones and antennae, reads field gradients, and combines its drives into a heading and throttle. Output: one `Intent` per organism.
 4. **Act** (parallel; each organism mutates only itself): touching rock, anchoring, turning, swimming or walking, currents, buoyancy, terrain collision, metabolism with breathing or fermentation, photosynthesis (limited by CO₂ or minerals), nitrogen fixation, toxins, temperature, healing, nutrient-limited growth, aging. What it exchanged with the water is recorded in `Organism::chem`, not applied yet. Then events apply (plague deaths, impacts, barrier terrain rebuilds).
 5. **Feed** (sequential, because it touches shared state): apply each organism's `chem` to the fields; minerals, nutrient and detritus uptake; carcass eating; hunting (with poison and nutrients passing to the hunter).
-6. **Life**: carcasses sink and decay (releasing nutrients); reproduction (with mutation, nutrients, and species classification); deaths become detritus or carcasses; seed bank; events; stats.
+6. **Life**: carcasses sink and decay (releasing nutrients); reproduction (with mutation, nutrients, and species classification); deaths become detritus or carcasses; events; stats. If everything dies, the world goes on empty (no reseeding).
 
 **Determinism.** Parallel phases write only per-organism outputs, and every organism has its own RNG. The same seed and config reproduce the same run exactly, which a test checks.
 

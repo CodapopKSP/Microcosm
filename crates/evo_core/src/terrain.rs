@@ -35,6 +35,10 @@ pub struct Terrain {
     /// otherwise, where the generator's mountain is the only land).
     #[serde(default)]
     pub land: Vec<f32>,
+    /// Cave cells (painted maps): open water, but dark and rich in detritus. Same layout as
+    /// the rock mask; empty when there are none.
+    #[serde(default)]
+    pub cave: Vec<bool>,
 }
 
 /// Where a generated cave is: its x, the top of its mound, and its chamber (center and radii).
@@ -267,6 +271,16 @@ impl Terrain {
             })
             .collect();
         let point = |v: &[f32; 2]| Vec2::new(v[0], v[1]);
+        let mut cave = vec![false; nx * ny];
+        for y in 0..ny {
+            for x in 0..nx {
+                let p = Vec2::new((x as f32 + 0.5) * cell, (y as f32 + 0.5) * cell);
+                cave[y * nx + x] = !solid[y * nx + x] && map.cave_at(p);
+            }
+        }
+        if !cave.contains(&true) {
+            cave.clear();
+        }
         let mut terrain = Terrain {
             sdf: field,
             base_mask: solid.clone(),
@@ -278,6 +292,7 @@ impl Terrain {
             vent_sites: map.permanent_vents.iter().map(point).collect(),
             vent_spawns: Some(map.vent_spawns.iter().map(point).collect()),
             land,
+            cave,
         };
         terrain.recompute_sdf(0, nx);
         terrain
@@ -678,6 +693,7 @@ impl Terrain {
             vent_sites,
             vent_spawns: None,
             land: Vec::new(),
+            cave: Vec::new(),
         };
         terrain.recompute_sdf(0, nx);
         terrain
@@ -825,6 +841,16 @@ impl Terrain {
     pub fn floor_at(&self, x: f32) -> f32 {
         let i = ((x / self.sdf.cell) as usize).min(self.floor.len() - 1);
         self.floor[i]
+    }
+
+    /// Whether `pos` is in a cave (open water, dark and rich in detritus).
+    pub fn is_cave(&self, pos: Vec2) -> bool {
+        if self.cave.is_empty() || pos.x < 0.0 || pos.y < 0.0 {
+            return false;
+        }
+        let (nx, cell) = (self.sdf.nx, self.sdf.cell);
+        let (x, y) = ((pos.x / cell) as usize, (pos.y / cell) as usize);
+        x < nx && y < self.sdf.ny && self.cave[y * nx + x]
     }
 
     /// Whether the terrain cell containing `pos` is rock.

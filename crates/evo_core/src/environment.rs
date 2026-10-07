@@ -34,7 +34,8 @@ impl LightField {
         for x in 0..nx {
             for y in 0..ny {
                 let p = Vec2::new((x as f32 + 0.5) * cell, (y as f32 + 0.5) * cell);
-                opaque[x * ny + y] = terrain.distance(p) < 0.0;
+                // Caves are dark: no sunlight reaches in.
+                opaque[x * ny + y] = terrain.distance(p) < 0.0 || terrain.is_cave(p);
             }
         }
         Self {
@@ -282,6 +283,9 @@ pub struct Environment {
     next_vent_id: u32,
     rng: Rng,
     since_temperature_update: f32,
+    /// Detritus cells in caves, with the share of each that's cave (built on first use).
+    #[serde(skip)]
+    cave_cells: Option<Vec<(u32, f32)>>,
 }
 
 /// Copy a terrain rock mask onto another field's grid (cell is solid if its center is rock).
@@ -293,6 +297,36 @@ fn mask_from_terrain(field: &mut Field, terrain: &Terrain) {
             field.solid[i] = terrain.distance(p) < 0.0;
         }
     }
+}
+
+/// The detritus cells that are (partly) cave, and how much of each: sampled at 4×4 points.
+fn cave_cells(field: &Field, terrain: &Terrain) -> Vec<(u32, f32)> {
+    if terrain.cave.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for y in 0..field.ny {
+        for x in 0..field.nx {
+            let i = field.index(x, y);
+            if field.solid[i] {
+                continue;
+            }
+            let mut hits = 0;
+            for sy in 0..4 {
+                for sx in 0..4 {
+                    let p = Vec2::new(
+                        (x as f32 + (sx as f32 + 0.5) / 4.0) * field.cell,
+                        (y as f32 + (sy as f32 + 0.5) / 4.0) * field.cell,
+                    );
+                    hits += terrain.is_cave(p) as u32;
+                }
+            }
+            if hits > 0 {
+                out.push((i as u32, hits as f32 / 16.0));
+            }
+        }
+    }
+    out
 }
 
 impl Environment {
@@ -354,6 +388,7 @@ impl Environment {
             next_vent_id: 0,
             rng: Rng::new(config.world.seed ^ 0xE4E4_0001),
             since_temperature_update: f32::INFINITY,
+            cave_cells: None,
         };
         // Start mid-morning, with vents already at various stages of life.
         env.update_clock(0, config);
@@ -621,6 +656,18 @@ impl Environment {
             self.snow_nutrients = self.detritus.clone();
             self.snow_nutrients.data.fill(0.0);
         }
+
+        // Caves keep shedding detritus (and its nutrients) into their water.
+        if self.cave_cells.is_none() {
+            self.cave_cells = Some(cave_cells(&self.detritus, terrain));
+        }
+        if let Some(cells) = &self.cave_cells {
+            let (d, n) = (dc.cave_rate * dt, dc.cave_nutrients * dt);
+            for &(i, share) in cells {
+                self.detritus.data[i as usize] += d * share;
+                self.snow_nutrients.data[i as usize] += n * share;
+            }
+        }
         let cell = self.detritus.cell;
         self.snow_nutrients
             .advect_vertical(dc.sink_speed * dt / cell, false, None);
@@ -871,12 +918,13 @@ impl Environment {
             }
         }
         self.water_cells = 0;
+        self.cave_cells = None;
         let light = &mut self.light;
         let g = light.geometry();
         for x in g.column(x_min)..=g.column(x_max) {
             for y in 0..g.ny {
                 let p = Vec2::new((x as f32 + 0.5) * g.cell, (y as f32 + 0.5) * g.cell);
-                light.opaque[x * g.ny + y] = terrain.distance(p) < 0.0;
+                light.opaque[x * g.ny + y] = terrain.distance(p) < 0.0 || terrain.is_cave(p);
             }
         }
     }

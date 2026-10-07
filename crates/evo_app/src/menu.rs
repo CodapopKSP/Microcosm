@@ -138,6 +138,9 @@ struct Menu {
     card_height: f32,
     /// The Map editor button was pressed.
     open_editor: bool,
+    /// The map the last picture was of (so coming back from the editor doesn't reset the
+    /// chosen start area).
+    preview_map: Option<String>,
 }
 
 impl Default for Menu {
@@ -171,6 +174,7 @@ impl Default for Menu {
             preview: None,
             card_height: 0.0,
             open_editor: false,
+            preview_map: None,
         }
     }
 }
@@ -276,7 +280,7 @@ fn list_maps() -> Vec<(String, String)> {
         .collect();
     maps.sort();
     if maps.is_empty() {
-        maps.push(("ocean".into(), "The built-in ocean".into()));
+        maps.push(("Deep Ocean".into(), String::new()));
     }
     maps
 }
@@ -344,7 +348,7 @@ fn stamp() -> String {
 /// game's own renderer under a still camera. It's never saved.
 fn create_backdrop(mut commands: Commands, launch: Res<Launch>) {
     let path = Path::new("configs/default.toml");
-    let Ok(mut config) = Config::load_with_map(path, Some("small")).or_else(|_| Config::load(path))
+    let Ok(mut config) = Config::load(path).or_else(|_| Config::from_toml(""))
     else {
         return;
     };
@@ -355,7 +359,6 @@ fn create_backdrop(mut commands: Commands, launch: Res<Launch>) {
     let ocean = config.ocean_width();
     let p = &mut config.population;
     p.initial = 32;
-    p.min_population = 0;
     p.max_population = 44; // so they bud only now and then
     p.spawn_x = [(center.x - 160.0) / ocean, (center.x + 160.0) / ocean];
     p.spawn_min_depth = 150.0;
@@ -849,14 +852,25 @@ fn new_world(
         .config
         .clone()
         .unwrap_or_else(|| PathBuf::from("configs/default.toml"));
-    // The map picture (rebuilt when the map changes).
+    // The map picture (rebuilt when the map changes). A newly picked map starts life in its
+    // first start area.
     if menu
         .preview
         .as_ref()
         .is_none_or(|p| p.map != menu.setup.map)
     {
+        let changed = menu.preview.as_ref().is_some_and(|p| p.map != menu.setup.map)
+            || menu.preview_map.as_deref() != Some(menu.setup.map.as_str());
         match Config::load_with_map(&config_path, Some(&menu.setup.map)) {
-            Ok(config) => menu.preview = Some(build_preview(ctx, &menu.setup.map, config)),
+            Ok(config) => {
+                let preview = build_preview(ctx, &menu.setup.map, config);
+                if changed && let Some(area) = start_areas(&preview).into_iter().next() {
+                    menu.setup.spawn_x = area.1;
+                    menu.setup.spawn_depth = area.2;
+                }
+                menu.preview_map = Some(menu.setup.map.clone());
+                menu.preview = Some(preview);
+            }
             Err(e) => menu.error = Some(e),
         }
     }
@@ -928,6 +942,21 @@ fn new_world(
             ui.add_space(24.0);
         });
     *card_height = tallest;
+}
+
+/// A map's start areas: name, span across the ocean (fractions) and depths.
+fn start_areas(p: &Preview) -> Vec<(String, [f32; 2], [f32; 2])> {
+    let Some(map) = &p.config.terrain.painted else {
+        return Vec::new();
+    };
+    let ocean = p.config.ocean_width();
+    map.spawn_areas
+        .iter()
+        .map(|a| {
+            let (x, d) = a.in_water(ocean, map.water_level);
+            (a.name.clone(), x, [d[0], d[1].max(d[0] + 10.0)])
+        })
+        .collect()
 }
 
 /// Size of the map picture's texture.
@@ -1031,6 +1060,26 @@ fn map_view(ui: &mut egui::Ui, setup: &mut Setup, p: &Preview) {
         let c = egui::pos2(x_of(v.x), y_of(h - v.y));
         painter.circle_filled(c, 4.0, egui::Color32::from_rgb(255, 150, 60));
         painter.circle_stroke(c, 6.0, egui::Stroke::new(1.0, rgba(255, 180, 90, 0.6)));
+    }
+    // The map's start areas, faintly, with their names.
+    for (name, x, d) in start_areas(p) {
+        let r = egui::Rect::from_min_max(
+            egui::pos2(x_of(x[0] * ocean), y_of(d[0])),
+            egui::pos2(x_of(x[1] * ocean), y_of(d[1])),
+        );
+        painter.rect_stroke(
+            r,
+            2.0,
+            egui::Stroke::new(1.0, rgba(150, 255, 180, 0.35)),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            r.left_top() + egui::vec2(4.0, 2.0),
+            egui::Align2::LEFT_TOP,
+            name,
+            egui::FontId::proportional(10.5),
+            rgba(190, 255, 210, 0.7),
+        );
     }
     let area = egui::Rect::from_min_max(
         egui::pos2(x_of(setup.spawn_x[0] * ocean), y_of(setup.spawn_depth[0])),
@@ -1161,30 +1210,26 @@ fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>)
             });
             ui.end_row();
         });
-    ui.horizontal_wrapped(|ui| {
-        let picks: [(&str, [f32; 2], [f32; 2]); 4] = [
-            ("Sunlit surface", [0.0, 1.0], [0.0, 300.0]),
-            ("Shelf shallows", [0.8, 1.0], [0.0, 600.0]),
-            ("Twilight", [0.0, 1.0], [900.0, 2000.0]),
-            ("Deep floor", [0.1, 0.7], [3500.0, 5500.0]),
-        ];
-        for (name, x, d) in picks {
-            if ui.button(name).clicked() {
-                setup.spawn_x = x;
-                setup.spawn_depth = d;
+    // The map's own start areas (drawn in the map editor).
+    if let Some(p) = preview {
+        let areas = start_areas(p);
+        if areas.is_empty() {
+            ui.label(
+                egui::RichText::new("This map has no start areas: drag one on the map above.")
+                    .size(12.0)
+                    .color(MUTED),
+            );
+        }
+        ui.horizontal_wrapped(|ui| {
+            for (name, x, d) in areas {
+                let on = setup.spawn_x == x && setup.spawn_depth == d;
+                if ui.selectable_label(on, name).clicked() {
+                    setup.spawn_x = x;
+                    setup.spawn_depth = d;
+                }
             }
-        }
-        if let Some(p) = preview
-            && let Some(v) = p.vents.first()
-            && ui.button("Shelf vent").clicked()
-        {
-            let (ocean, h) = (p.config.ocean_width(), p.config.world.height);
-            let x = v.x / ocean;
-            let depth = h - v.y;
-            setup.spawn_x = [(x - 0.01).max(0.0), (x + 0.01).min(1.0)];
-            setup.spawn_depth = [(depth - 150.0).max(0.0), depth + 50.0];
-        }
-    });
+        });
+    }
 
     caption(ui, "Seed");
     ui.horizontal(|ui| {
@@ -1200,13 +1245,14 @@ fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>)
                 .unwrap_or_else(|_| "1".into());
         }
     });
-    let numeric = setup.seed_text.trim().parse::<u64>().is_ok();
-    let note = if numeric {
-        "The map is the same for every seed.".to_string()
-    } else {
-        format!("Uses seed {}.", setup.seed())
-    };
-    ui.label(egui::RichText::new(note).size(12.0).color(MUTED));
+    // Text seeds are turned into a number: show which.
+    if setup.seed_text.trim().parse::<u64>().is_err() {
+        ui.label(
+            egui::RichText::new(format!("Uses seed {}.", setup.seed()))
+                .size(12.0)
+                .color(MUTED),
+        );
+    }
 
     caption(ui, "Starting population");
     ui.add(egui::Slider::new(&mut setup.population, 20..=20_000).logarithmic(true));

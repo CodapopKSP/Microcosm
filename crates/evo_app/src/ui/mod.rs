@@ -67,7 +67,7 @@ pub struct UiState {
     inspector_tab: inspector::Tab,
     /// A short message in the corner (e.g. "recorded in the notebook") and when it appeared.
     pub toast: Option<(String, std::time::Instant)>,
-    history_filter: [bool; 5],
+    history_filter: [bool; 4],
     pub show_senses: bool,
     pub map_mode: MapMode,
     /// The map button's list of overlays is open.
@@ -95,7 +95,7 @@ impl Default for UiState {
             notebook: Default::default(),
             inspector_tab: Default::default(),
             toast: None,
-            history_filter: [true; 5],
+            history_filter: [true; 4],
             show_senses: true,
             map_mode: MapMode::None,
             map_menu: false,
@@ -219,7 +219,6 @@ pub fn event_color(kind: EventKind) -> egui::Color32 {
         EventKind::Species => egui::Color32::from_rgb(140, 220, 140),
         EventKind::Extinction => egui::Color32::from_rgb(230, 120, 110),
         EventKind::Environment => egui::Color32::from_rgb(120, 190, 240),
-        EventKind::Recolonization => egui::Color32::from_rgb(200, 160, 240),
         EventKind::Disaster => egui::Color32::from_rgb(255, 120, 60),
     }
 }
@@ -455,19 +454,18 @@ fn event_ticker(
         });
 }
 
-const EVENT_KINDS: [(EventKind, &str); 5] = [
+const EVENT_KINDS: [(EventKind, &str); 4] = [
     (EventKind::Species, "New species"),
     (EventKind::Extinction, "Extinctions"),
     (EventKind::Disaster, "Disasters"),
     (EventKind::Environment, "Environment"),
-    (EventKind::Recolonization, "Recolonization"),
 ];
 
 /// Full event log with filters.
 fn history(
     ui: &mut egui::Ui,
     world: &World,
-    filter: &mut [bool; 5],
+    filter: &mut [bool; 4],
     selection: &mut Selection,
     cam: &mut CameraState,
 ) {

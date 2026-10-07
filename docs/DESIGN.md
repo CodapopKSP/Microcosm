@@ -14,7 +14,7 @@ Guiding principles (see [VISION.md](VISION.md)):
 
 A **side-on cross-section of an ocean**. `y` grows upward; the water surface is at the top of the world, the seafloor is procedurally generated terrain at the bottom. Default size 20,400 × 6,000 units: 16,000 of open ocean, then a mountain and a cut-off basin (below). Explored with pan/zoom.
 
-The world's size and terrain come from a **map**: a file in `configs/maps/` (the default is `ocean.toml`, described here). A map has its own terrain seed, so every run on it shares the same seafloor, caves and permanent vents whatever the world seed. The world seed drives life, events, the random vents and the currents. A map also names the generator that builds it (only `ocean` so far), so new kinds of world can be added beside it.
+The world's size and terrain come from a **map**: a file in `configs/maps/`. The game ships with **Deep Ocean**, painted in the map editor; painted maps hold their rock and cave cells, water level, permanent vents and the spots where temporary vents may open. A map is the same for every run whatever the world seed, which drives life, events, the vents' timing and the currents. Maps can also be `.toml` files naming a generator (only `ocean`, the built-in default described here, so far).
 
 | Region | What makes it distinct |
 |--------|------------------------|
@@ -23,7 +23,7 @@ The world's size and terrain come from a **map**: a file in `configs/maps/` (the
 | Deep / seafloor | Dark and cold; detritus ("marine snow") settles into sediment |
 | Vents | Point sources on the seafloor: hot, mineral-rich, oxygen-free. Two are permanent parts of the terrain (below); three more open and die on the deep floor over hours. 35% of each vent's minerals seep out over 240 u around its base; the rest rise in a plume. Plumes rise at 4 u/s all the way up; the shallow shelf vent's (about 850 deep) still reaches the surface with roughly 40% of its minerals, while deep vents' plumes mostly fade on the way. |
 | Shelf | A shallow region where the seafloor itself is sunlit |
-| Mountain and basin | Past the shelf a rugged mountain (ridges, shoulders and crags) rises above sea level, and beyond it lies a basin of water (about 1,100 deep) that it cuts off from the ocean. Nothing lives there at the start: ancestors, recolonization, random vents and events stay in the ocean. Reaching it is for later (see `docs/IDEAS.md`) |
+| Mountain and basin | Past the shelf a rugged mountain (ridges, shoulders and crags) rises above sea level, and beyond it lies a basin of water (about 1,100 deep) that it cuts off from the ocean. Nothing lives there at the start: ancestors, random vents and events stay in the ocean. Reaching it is for later (see `docs/IDEAS.md`) |
 | Permanent vents | One inside a cave on the shelf near the cliff's edge (the cave nearest a fixed spot; made if there isn't one), opening upward in a wide V to the water above, with a short passage joining the little cave to its left. Beside the vent, out of its plume and a little above it, a flat **warm ledge** (about 43 °C at its near end, mid-20s at its far end, rich in minerals seeping out) where chemotrophs can live without being cooked at the vent itself (55 °C); a short passage joins it to the vent. One on a small ledge partway down the cliff (about 2,250 deep), with the cliff bulging out below the ledge rather than falling in one even slope. Winding tunnels branch up from the cliff vent through the rock into both caves |
 | Rocks & crevices | Block movement and cast shade; narrow gaps shelter small organisms |
 | Caves | Hollow rock chambers with a narrow entrance, on the shelf and the deep floor. Dark inside; only small bodies fit through the entrance |
@@ -348,7 +348,7 @@ Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Min
 | **Plague** | ~every 8 h | Strikes the most common species (only if it holds ≥35% of all life); ~70% of its members die over 10 min. Kill-the-winner keeps any one species from taking over |
 | **Rock wall** | ~every 30 h | A wall rises from the seafloor to the surface over about 6 minutes and splits the ocean in two for ~20 h, then sinks. Separated populations drift apart genetically (allopatric speciation), then meet again |
 | **Meteor impact** | ~every 48 h | Kills everything within 700 units, releases minerals, and dims the sun by up to 70% for ~4 days (an impact winter) |
-| **Seed bank** | Always | If population falls below a minimum, the ancestor recolonizes so the world never goes dark. (With the optional vent ancestor, a new vent with no vent life nearby is settled by 20 of them.) |
+| **Extinction is final** | Always | If everything dies, nothing is reseeded: the world goes on empty, and the log says "The last species has gone extinct. Life has ceased in this world." (With the optional vent ancestor, a new vent with no vent life nearby is settled by 20 of them, while any life remains.) |
 
 ## 9. Future extensions
 

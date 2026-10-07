@@ -32,7 +32,7 @@ Click any organism to see what each gene does.
 # button in the game saves and comes back here.
 cargo run --release
 
-# Skip the menu: start a fresh world (or: --config my.toml, --seed 7, --world-map small)
+# Skip the menu: start a fresh world (or: --config my.toml, --seed 7, --world-map "Deep Ocean")
 cargo run --release -- --new
 
 # Load a specific save
@@ -83,9 +83,9 @@ cargo run --release -- --load saves/two_hours.bin
 
 All tunable numbers live in [`configs/default.toml`](configs/default.toml), with comments. Copy it, edit it, and pass it with `--config`. Every key is optional.
 
-Maps can also be painted in the **Map editor** (from the main menu, or `--editor`): paint or remove rock with a round or square brush of any size, place permanent vents and vent spawn points (temporary vents only open there), set the water level (rock above it stands out as land) and the map's size, then name and save it. Saved maps (`configs/maps/<name>.map`) appear in the New world map list.
+Maps can also be painted in the **Map editor** (from the main menu, or `--editor`): paint rock, open water or cave with a round or square brush of any size (caves are open water that's dark and keeps filling with detritus and nutrients: a home for anaerobic scavengers), place permanent vents and vent spawn points (temporary vents only open there), draw named start areas (offered on the New world screen as places for life to start), set the water level (rock above it stands out as land) and the map's size, then name and save it. Saved maps (`configs/maps/<name>.map`) appear in the New world map list.
 
-The world's size and terrain live in map files in [`configs/maps/`](configs/maps/). A config picks one with `[world] map = "ocean"`, and `--world-map NAME` overrides that. Each map has its own terrain seed, so the map is the same for every world seed; any `[terrain]` keys in a config override the map's. To make a new map, copy `ocean.toml`, change it and its `seed`, and select it by name.
+The world's size and terrain live in map files in [`configs/maps/`](configs/maps/). The game ships with one map, **Deep Ocean** (`Deep Ocean.map`, painted in the editor). Maps you paint and save appear beside it. A config picks one with `[world] map = "Deep Ocean"`, and `--world-map NAME` overrides that. The map is the same for every world seed. A map can also be a `.toml` file naming a terrain generator and its settings (see `TerrainConfig`); without any map file the built-in generated ocean is used.
 
 ## Tests
 

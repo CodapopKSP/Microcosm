@@ -1,12 +1,12 @@
 //! Simulation configuration. Every tunable number lives here.
 //!
-//! Defaults in this file must match `configs/default.toml` and, for the world size and terrain,
-//! `configs/maps/ocean.toml` (enforced by tests). TOML files may omit any key; missing keys take
-//! the default.
+//! Defaults in this file must match `configs/default.toml` (enforced by a test). TOML files may
+//! omit any key; missing keys take the default. The built-in world size and terrain are the
+//! generated ocean, used when there's no map file.
 //!
-//! The world's size and terrain come from a map file, `configs/maps/<world.map>.toml`, which
-//! holds only `[world]` width and height and a `[terrain]` table. Keys in the config file
-//! override the map's.
+//! The world's size and terrain come from a map: `configs/maps/<world.map>.map`, painted in the
+//! map editor (the default, "Deep Ocean"), or `.toml`, which holds only `[world]` width and
+//! height and a `[terrain]` table for a generator. Keys in the config file override the map's.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -214,7 +214,9 @@ pub struct WorldConfig {
     /// Master seed for life, events, random vents and currents: same seed + config ⇒ same
     /// run. The terrain has its own seed (`terrain.seed`), so every run shares the map.
     pub seed: u64,
-    /// The map: world size and terrain from `configs/maps/<map>.toml`.
+    /// The map: world size and terrain from `configs/maps/<map>.map` (painted) or `.toml`
+    /// (generated). `configs/default.toml` picks "Deep Ocean"; without a config file the
+    /// built-in "ocean" is used.
     pub map: String,
 }
 
@@ -455,6 +457,10 @@ pub struct DetritusConfig {
     pub to_minerals: f32,
     /// Diffusion coefficient (units²/s).
     pub diffusion: f32,
+    /// Detritus that cave floors and walls keep shedding into cave water (energy/s per unit²
+    /// of cave), and the nutrients that come with it.
+    pub cave_rate: f32,
+    pub cave_nutrients: f32,
 }
 
 impl Default for DetritusConfig {
@@ -465,6 +471,8 @@ impl Default for DetritusConfig {
             decay: 0.0015,
             to_minerals: 0.5,
             diffusion: 100.0,
+            cave_rate: 6.0e-6,
+            cave_nutrients: 3.0e-5,
         }
     }
 }
@@ -1102,16 +1110,16 @@ pub struct PopulationConfig {
     pub ancestor: String,
     /// Organisms spawned at the start.
     pub initial: u32,
-    /// Where life starts (and the seed bank recolonizes): between these depths below the
-    /// surface…
+    /// Where life starts: between these depths below the surface…
     pub spawn_min_depth: f32,
     pub spawn_depth: f32,
     /// …and between these fractions of the ocean's width (0 = left edge, 1 = right edge).
     pub spawn_x: [f32; 2],
-    /// If the population falls below this, the seed bank recolonizes.
-    pub min_population: u32,
-    /// Organisms added by one recolonization.
-    pub reseed_count: u32,
+    /// No longer used (life isn't reseeded when it dies out); still read from older saves.
+    #[serde(skip_serializing, rename = "min_population")]
+    pub legacy_min_population: Option<u32>,
+    #[serde(skip_serializing, rename = "reseed_count")]
+    pub legacy_reseed_count: Option<u32>,
     /// Hard safety cap: no births above this population.
     pub max_population: u32,
     /// A second founding lineage that lives at the vents (empty = none).
@@ -1133,8 +1141,8 @@ impl Default for PopulationConfig {
             spawn_min_depth: 0.0,
             spawn_depth: 300.0,
             spawn_x: [0.0, 1.0],
-            min_population: 100,
-            reseed_count: 300,
+            legacy_min_population: None,
+            legacy_reseed_count: None,
             max_population: 250_000,
             vent_ancestor: String::new(),
             vent_initial: 40,
@@ -1230,37 +1238,38 @@ mod tests {
     #[test]
     fn default_toml_matches_rust_defaults() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/default.toml");
-        let loaded = Config::load(&path).expect("configs/default.toml should load");
+        // It loads, with its map.
+        let config = Config::load(&path).expect("configs/default.toml should load with its map");
+        assert_eq!(config.world.map, "Deep Ocean");
+        // Every key in it matches the built-in defaults (the map aside).
+        let mut keys: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        keys.world.map = WorldConfig::default().map;
         assert_eq!(
-            loaded,
+            keys,
             Config::default(),
             "configs/default.toml and Config::default() have drifted apart"
         );
     }
 
     #[test]
-    fn the_ocean_map_is_the_built_in_default() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs/maps/ocean.toml");
-        let map = parse_map(&std::fs::read_to_string(path).unwrap()).unwrap();
-        let config: Config = toml::Value::Table(map).try_into().unwrap();
-        assert_eq!(config.terrain, TerrainConfig::default());
-        let d = WorldConfig::default();
-        assert_eq!(
-            (config.world.width, config.world.height),
-            (d.width, d.height)
-        );
-    }
-
-    #[test]
     fn config_keys_override_the_map_and_maps_can_be_switched() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../configs");
-        let small = Config::load(&dir.join("small.toml")).unwrap();
-        assert_eq!(small.world.map, "small");
-        assert_eq!(small.world.width, 6000.0);
-        let switched = Config::load_with_map(&dir.join("default.toml"), Some("small")).unwrap();
-        assert_eq!(switched.world.width, 6000.0);
-        assert_eq!(switched.terrain, small.terrain);
-        assert!(Config::load_with_map(&dir.join("default.toml"), Some("nowhere")).is_err());
+        let dir = std::env::temp_dir().join(format!("evo_maps_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("maps")).unwrap();
+        std::fs::write(
+            dir.join("maps/wide.toml"),
+            "[world]\nwidth = 9000.0\nheight = 3000.0\n[terrain]\nrocks = 2\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("maps/narrow.toml"), "[world]\nwidth = 4000.0\n").unwrap();
+        std::fs::write(dir.join("a.toml"), "[world]\nmap = \"wide\"\n[terrain]\ncaves = 1\n").unwrap();
+        let a = Config::load(&dir.join("a.toml")).unwrap();
+        assert_eq!((a.world.width, a.world.height), (9000.0, 3000.0));
+        // The config's keys win over the map's; the rest come from the map.
+        assert_eq!((a.terrain.rocks, a.terrain.caves), (2, 1));
+        let switched = Config::load_with_map(&dir.join("a.toml"), Some("narrow")).unwrap();
+        assert_eq!(switched.world.width, 4000.0);
+        assert!(Config::load_with_map(&dir.join("a.toml"), Some("nowhere")).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

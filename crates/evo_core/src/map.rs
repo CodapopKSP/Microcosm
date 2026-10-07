@@ -27,12 +27,43 @@ pub struct PaintedMap {
     pub ny: usize,
     /// One bit per cell, row by row from the bottom: set = rock.
     bits: Vec<u64>,
+    /// One bit per cell, as `bits`: set = cave (open water, dark, rich in detritus).
+    #[serde(default)]
+    cave: Vec<u64>,
     /// Vents that never die out.
     #[serde(default)]
     pub permanent_vents: Vec<[f32; 2]>,
     /// Where temporary vents may open (and only there).
     #[serde(default)]
     pub vent_spawns: Vec<[f32; 2]>,
+    /// Named areas where a new world's first organisms can start (offered on the New world
+    /// screen, the first one picked by default).
+    #[serde(default)]
+    pub spawn_areas: Vec<SpawnArea>,
+}
+
+/// A named box (world units, `min` = bottom left) where life can start.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpawnArea {
+    pub name: String,
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+}
+
+impl SpawnArea {
+    /// Its span across the map (fractions of `width`) and in depth below the surface
+    /// `water_level` (shallow first), clipped to the water.
+    pub fn in_water(&self, width: f32, water_level: f32) -> ([f32; 2], [f32; 2]) {
+        let x = [
+            (self.min[0] / width).clamp(0.0, 1.0),
+            (self.max[0] / width).clamp(0.0, 1.0),
+        ];
+        let depth = [
+            (water_level - self.max[1]).clamp(0.0, water_level),
+            (water_level - self.min[1]).clamp(0.0, water_level),
+        ];
+        (x, depth)
+    }
 }
 
 impl PaintedMap {
@@ -50,8 +81,10 @@ impl PaintedMap {
             nx,
             ny,
             bits: vec![0; (nx * ny).div_ceil(64)],
+            cave: vec![0; (nx * ny).div_ceil(64)],
             permanent_vents: Vec::new(),
             vent_spawns: Vec::new(),
+            spawn_areas: Vec::new(),
         }
     }
 
@@ -97,6 +130,7 @@ impl PaintedMap {
         self.bits[i / 64] >> (i % 64) & 1 == 1
     }
 
+    /// Make a cell rock (`true`) or open water (`false`, which also clears any cave).
     pub fn set(&mut self, x: usize, y: usize, rock: bool) {
         if x >= self.nx || y >= self.ny {
             return;
@@ -107,6 +141,33 @@ impl PaintedMap {
         } else {
             self.bits[i / 64] &= !(1 << (i % 64));
         }
+        self.cave[i / 64] &= !(1 << (i % 64));
+    }
+
+    pub fn is_cave(&self, x: usize, y: usize) -> bool {
+        if x >= self.nx || y >= self.ny {
+            return false;
+        }
+        let i = self.index(x, y);
+        self.cave[i / 64] >> (i % 64) & 1 == 1
+    }
+
+    /// Make a cell cave: open water (no rock), dark and rich in detritus.
+    pub fn set_cave(&mut self, x: usize, y: usize) {
+        if x >= self.nx || y >= self.ny {
+            return;
+        }
+        let i = self.index(x, y);
+        self.bits[i / 64] &= !(1 << (i % 64));
+        self.cave[i / 64] |= 1 << (i % 64);
+    }
+
+    /// Cave at world position `p`.
+    pub fn cave_at(&self, p: Vec2) -> bool {
+        if p.x < 0.0 || p.y < 0.0 {
+            return false;
+        }
+        self.is_cave((p.x / self.cell) as usize, (p.y / self.cell) as usize)
     }
 
     /// Rock at world position `p` (outside the canvas: none).
@@ -129,6 +190,8 @@ impl PaintedMap {
             for x in 0..self.nx.min(next.nx) {
                 if self.get(x, y) {
                     next.set(x, y, true);
+                } else if self.is_cave(x, y) {
+                    next.set_cave(x, y);
                 }
             }
         }
@@ -136,6 +199,16 @@ impl PaintedMap {
         next.description = std::mem::take(&mut self.description);
         next.permanent_vents = self.permanent_vents.iter().copied().filter(inside).collect();
         next.vent_spawns = self.vent_spawns.iter().copied().filter(inside).collect();
+        // Start areas are clipped to the new canvas (dropped if nothing's left).
+        next.spawn_areas = self
+            .spawn_areas
+            .iter()
+            .filter_map(|a| {
+                let max = [a.max[0].min(next.width), a.max[1].min(next.height)];
+                (max[0] > a.min[0] + 1.0 && max[1] > a.min[1] + 1.0)
+                    .then(|| SpawnArea { name: a.name.clone(), min: a.min, max })
+            })
+            .collect();
         *self = next;
     }
 
@@ -170,9 +243,14 @@ impl PaintedMap {
             .strip_prefix(MAGIC)
             .ok_or_else(|| format!("{}: not a map file", path.display()))?;
         let packed = lz4_flex::decompress_size_prepended(body).map_err(|e| e.to_string())?;
-        let map: PaintedMap =
+        let mut map: PaintedMap =
             rmp_serde::from_slice(&packed).map_err(|e| format!("{}: {e}", path.display()))?;
-        if map.bits.len() != (map.nx * map.ny).div_ceil(64) {
+        let words = (map.nx * map.ny).div_ceil(64);
+        // Maps saved before caves existed have none.
+        if map.cave.is_empty() {
+            map.cave = vec![0; words];
+        }
+        if map.bits.len() != words || map.cave.len() != words {
             return Err(format!("{}: damaged map", path.display()));
         }
         Ok(map)
@@ -196,8 +274,21 @@ mod tests {
         assert_eq!(land[x], 80.0);
         assert_eq!(land[x + 1], 0.0);
         m.vent_spawns.push([3900.0, 500.0]);
+        m.set_cave(20, 100);
+        assert!(m.is_cave(20, 100) && !m.get(20, 100));
+        m.set(20, 100, true);
+        assert!(!m.is_cave(20, 100));
+        m.set_cave(20, 100);
+        // A start area half off the new canvas is clipped; one wholly off it is dropped.
+        m.spawn_areas.push(SpawnArea { name: "a".into(), min: [2000.0, 1000.0], max: [3600.0, 2600.0] });
+        m.spawn_areas.push(SpawnArea { name: "b".into(), min: [3200.0, 100.0], max: [3800.0, 300.0] });
+        // In the water: x as fractions, depths below the surface (shallow first), clipped.
+        let (x, d) = m.spawn_areas[0].in_water(4000.0, 2400.0);
+        assert_eq!((x, d), ([0.5, 0.9], [0.0, 1400.0]));
         m.resize(3000.0, 3000.0);
-        assert!(m.get(10, 0) && m.vent_spawns.is_empty());
+        assert_eq!(m.spawn_areas.len(), 1);
+        assert_eq!(m.spawn_areas[0].max, [3000.0, 2600.0]);
+        assert!(m.get(10, 0) && m.vent_spawns.is_empty() && m.is_cave(20, 100));
         let dir = std::env::temp_dir().join(format!("evo_map_{}", std::process::id()));
         let path = dir.join("t.map");
         m.save(&path).unwrap();
@@ -249,5 +340,39 @@ mod world_tests {
         for _ in 0..30 {
             world.step();
         }
+    }
+
+    /// Caves are open water, dark, and fill with detritus and its nutrients.
+    #[test]
+    fn caves_are_dark_and_rich() {
+        let mut m = PaintedMap::flat(6000.0, 3000.0, 3000.0, 400.0);
+        // A cave chamber 1000 units across, in the open water above the floor.
+        for y in 70..170 {
+            for x in 300..425 {
+                m.set_cave(x, y);
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("evo_cave_{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("maps")).unwrap();
+        m.save(&dir.join("maps/cave.map")).unwrap();
+        std::fs::write(dir.join("c.toml"), "[world]\nmap = \"cave\"\n").unwrap();
+        let mut config = Config::load(&dir.join("c.toml")).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        config.population.initial = 0;
+        config.vents.count = 0;
+        let mut world = World::new(config);
+        let inside = glam::Vec2::new(2900.0, 950.0);
+        let outside = glam::Vec2::new(1000.0, 950.0);
+        assert!(world.terrain.is_cave(inside) && !world.terrain.is_cave(outside));
+        assert!(!world.terrain.is_solid(inside));
+        for _ in 0..900 {
+            world.step();
+        }
+        assert_eq!(world.env.light.level_at(inside), 0.0);
+        assert!(world.env.light.level_at(outside) > 0.0);
+        let d_in = world.env.detritus.sample(inside);
+        let d_out = world.env.detritus.sample(outside);
+        assert!(d_in > d_out * 10.0 && d_in > 1e-5, "{d_in} vs {d_out}");
+        assert!(world.env.snow_nutrients.sample(inside) > world.env.snow_nutrients.sample(outside));
     }
 }

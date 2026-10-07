@@ -101,7 +101,6 @@ pub enum EventKind {
     Species,
     Extinction,
     Environment,
-    Recolonization,
     Disaster,
 }
 
@@ -125,7 +124,7 @@ pub struct EventLog {
     pub entries: VecDeque<Event>,
     /// Total events ever logged (entries may be trimmed).
     pub count: u64,
-    /// Every event that changed the world (environment, disasters, recolonizations), kept for
+    /// Every event that changed the world (environment, disasters), kept for
     /// the whole run: they're rare, and the family tree marks them.
     pub world: Vec<Event>,
 }
@@ -192,7 +191,7 @@ impl EventLog {
     pub fn push(&mut self, event: Event, max: usize) {
         if matches!(
             event.kind,
-            EventKind::Environment | EventKind::Disaster | EventKind::Recolonization
+            EventKind::Environment | EventKind::Disaster
         ) && self.world.len() < MAX_WORLD_EVENTS
         {
             self.world.push(event.clone());

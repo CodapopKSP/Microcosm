@@ -7,7 +7,7 @@
 //! 4. **Act** (parallel, each organism mutates only itself): movement, metabolism, photosynthesis,
 //!    temperature, healing, growth, aging.
 //! 5. **Feed** (sequential, touches shared state): minerals, detritus, carcasses, hunting.
-//! 6. Carcasses sink and decay; reproduction; deaths; seed bank; statistics.
+//! 6. Carcasses sink and decay; reproduction; deaths; statistics.
 //!
 //! Everything is deterministic for a given seed and config: parallel phases only write
 //! per-organism outputs, and every organism has its own RNG.
@@ -284,6 +284,9 @@ pub struct World {
     #[serde(default)]
     pub vent_species: Option<u32>,
     pub next_id: u64,
+    /// Everything has died (logged once; the world goes on empty).
+    #[serde(default)]
+    pub life_ceased: bool,
     /// Species the viewer recorded in the field notebook (doesn't affect the simulation).
     #[serde(default)]
     pub notebook: crate::notebook::Notebook,
@@ -1304,6 +1307,7 @@ impl World {
             vent_ancestor,
             vent_species,
             next_id: 1,
+            life_ceased: false,
             notebook: Default::default(),
             rng,
             scratch: None,
@@ -1647,20 +1651,10 @@ impl World {
         self.feed();
         lap(&mut timings.feed);
 
-        // 6. Carcasses, reproduction, deaths, seed bank.
+        // 6. Carcasses, reproduction, deaths. If everything dies, the world goes on empty.
         self.update_carcasses();
         self.reproduce();
         self.remove_dead();
-        if (self.organisms.len() as u32) < self.config.population.min_population {
-            let n = self.config.population.reseed_count;
-            self.spawn_ancestors(n);
-            self.log(
-                EventKind::Recolonization,
-                format!("Life clings on: {n} ancestral microbes recolonize the shallows."),
-                None,
-                Some(0),
-            );
-        }
 
         // 7. Events and statistics.
         for e in env_events {
@@ -1673,11 +1667,12 @@ impl World {
                         None,
                         Some(p),
                     );
-                    // Drifting spores settle there if no vent life lives nearby.
+                    // Drifting spores settle there if no vent life lives nearby (while there's
+                    // any life left at all).
                     let settled = self.organisms.iter().any(|o| {
                         o.traits.chemo > 0.3 && o.pos.distance_squared(p) < 1500.0 * 1500.0
                     });
-                    if !settled {
+                    if !settled && !self.organisms.is_empty() {
                         self.seed_vent(p, self.config.population.vent_seed);
                     }
                 }
@@ -1711,6 +1706,15 @@ impl World {
                     self.log(EventKind::Extinction, text, None, Some(id));
                 }
             }
+        }
+        if self.organisms.is_empty() && !self.life_ceased {
+            self.life_ceased = true;
+            self.log(
+                EventKind::Extinction,
+                "The last species has gone extinct. Life has ceased in this world.".into(),
+                None,
+                None,
+            );
         }
         self.stats.since_sample += dt;
         if self.stats.since_sample >= self.config.stats.sample_interval {
@@ -2742,10 +2746,30 @@ mod tests {
         c.terrain.trench_depth = 400.0;
         c.vents.min_depth = 1500.0;
         c.population.initial = 300;
-        c.population.min_population = 10;
         c.population.vent_initial = 0;
         c.population.vent_seed = 0;
         c
+    }
+
+    #[test]
+    fn when_everything_dies_the_world_goes_on_empty() {
+        let mut world = World::new(small_config());
+        assert!(!world.organisms.is_empty());
+        for o in &mut world.organisms {
+            o.hp = -1.0;
+        }
+        for _ in 0..300 {
+            world.step();
+        }
+        assert!(world.organisms.is_empty(), "nothing comes back");
+        let ceased = world
+            .events
+            .entries
+            .iter()
+            .filter(|e| e.text.contains("Life has ceased"))
+            .count();
+        assert_eq!(ceased, 1);
+        assert!(world.species.living().next().is_none());
     }
 
     #[test]
@@ -2890,7 +2914,6 @@ mod tests {
     fn predator_eats_prey() {
         let mut config = small_config();
         config.population.initial = 0;
-        config.population.min_population = 0;
         let mut world = World::new(config.clone());
         let mut hunter_g = world.ancestor;
         hunter_g.0[crate::genome::gene::SIZE] = 0x60; // radius 8
@@ -2949,7 +2972,6 @@ mod tests {
     fn empty_world() -> World {
         let mut config = small_config();
         config.population.initial = 0;
-        config.population.min_population = 0;
         config.events.enabled = false;
         World::new(config)
     }
