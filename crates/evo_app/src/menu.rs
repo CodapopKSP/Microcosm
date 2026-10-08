@@ -145,7 +145,7 @@ struct Menu {
 
 impl Default for Menu {
     fn default() -> Self {
-        let config = Config::load(Path::new("configs/default.toml")).unwrap_or_default();
+        let config = crate::paths::load_config(None, None).unwrap_or_default();
         let genome = PRESETS[0].genome(&config);
         let mut setup = Setup {
             maps: list_maps(),
@@ -250,39 +250,7 @@ const SLIDERS: [(usize, &str); 10] = [
 ];
 
 fn list_maps() -> Vec<(String, String)> {
-    let mut maps: Vec<(String, String)> = std::fs::read_dir("configs/maps")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let path = e.path();
-            let name = path.file_stem()?.to_str()?.to_string();
-            // Maps painted in the editor.
-            if path.extension()? == "map" {
-                let map = evo_core::map::PaintedMap::load(&path).ok()?;
-                let about = if map.description.is_empty() {
-                    "Painted in the map editor".to_string()
-                } else {
-                    map.description
-                };
-                return Some((name, about));
-            }
-            (path.extension()? == "toml").then_some(())?;
-            let text = std::fs::read_to_string(&path).ok()?;
-            let table: toml::Table = toml::from_str(&text).ok()?;
-            let about = table
-                .get("description")
-                .and_then(|d| d.as_str())
-                .unwrap_or("")
-                .to_string();
-            Some((name, about))
-        })
-        .collect();
-    maps.sort();
-    if maps.is_empty() {
-        maps.push(("Deep Ocean".into(), String::new()));
-    }
-    maps
+    crate::paths::list_maps()
 }
 
 fn list_saves(dir: &Path) -> Vec<SaveFile> {
@@ -347,8 +315,7 @@ fn stamp() -> String {
 /// The menu's backdrop: a small live world of founder ancestors in sunlit water, shown by the
 /// game's own renderer under a still camera. It's never saved.
 fn create_backdrop(mut commands: Commands, launch: Res<Launch>) {
-    let path = Path::new("configs/default.toml");
-    let Ok(mut config) = Config::load(path).or_else(|_| Config::from_toml(""))
+    let Ok(mut config) = crate::paths::load_config(None, None).or_else(|_| Config::from_toml(""))
     else {
         return;
     };
@@ -930,11 +897,7 @@ fn new_world(
     launch: &Launch,
     start: &mut Option<World>,
 ) {
-    let config_path = launch
-        .0
-        .config
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("configs/default.toml"));
+    let config_path = launch.0.config.clone();
     // The map picture (rebuilt when the map changes). A newly picked map starts life in its
     // first start area.
     if menu
@@ -944,7 +907,7 @@ fn new_world(
     {
         let changed = menu.preview.as_ref().is_some_and(|p| p.map != menu.setup.map)
             || menu.preview_map.as_deref() != Some(menu.setup.map.as_str());
-        match Config::load_with_map(&config_path, Some(&menu.setup.map)) {
+        match crate::paths::load_config(config_path.as_deref(), Some(&menu.setup.map)) {
             Ok(config) => {
                 let preview = build_preview(ctx, &menu.setup.map, config);
                 if changed && let Some(area) = start_areas(&preview).into_iter().next() {
@@ -1016,7 +979,7 @@ fn new_world(
                         .min_size([260.0, 48.0].into()),
                 );
                 if button.clicked() {
-                    match create_world(&config_path, setup, &launch.0.save_dir) {
+                    match create_world(config_path.as_deref(), setup, &launch.0.save_dir) {
                         Ok(w) => *start = Some(w),
                         Err(e) => *error = Some(e),
                     }
@@ -1566,8 +1529,12 @@ fn ancestor_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Previe
 }
 
 /// Build the world from the setup. An existing autosave is set aside under a dated name first.
-fn create_world(config_path: &Path, setup: &Setup, save_dir: &Path) -> Result<World, String> {
-    let mut config = Config::load_with_map(config_path, Some(&setup.map))?;
+fn create_world(
+    config_path: Option<&Path>,
+    setup: &Setup,
+    save_dir: &Path,
+) -> Result<World, String> {
+    let mut config = crate::paths::load_config(config_path, Some(&setup.map))?;
     config.world.seed = setup.seed();
     let p = &mut config.population;
     p.initial = setup.population;

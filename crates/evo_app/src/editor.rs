@@ -1,12 +1,11 @@
 //! The map editor: paint rock, place vent nodes, set the water level and the map's size, and
-//! save the map under a name for the new-world screen (`configs/maps/<name>.map`).
+//! save the map under a name for the new-world screen (in the player's maps folder; see
+//! `paths.rs`).
 
-use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use egui::{Color32, Pos2, Rect, Stroke, Vec2, pos2, vec2};
-use evo_core::Config;
 use evo_core::map::PaintedMap;
 
 use crate::AppState;
@@ -25,7 +24,6 @@ impl Plugin for EditorPlugin {
     }
 }
 
-const MAPS_DIR: &str = "configs/maps";
 /// Most undo steps kept.
 const UNDO_STEPS: usize = 40;
 /// Brush sizes (world units), for the slider.
@@ -82,8 +80,6 @@ enum Shape {
 enum Template {
     Flat,
     Empty,
-    /// A copy of a built-in (generated) map.
-    Copy(String),
 }
 
 #[derive(Resource)]
@@ -108,10 +104,8 @@ pub struct Editor {
     /// Map size settings being edited (applied with "Resize").
     width_edit: f32,
     height_edit: f32,
-    /// Painted maps saved so far (names).
+    /// Maps to open (the player's and the built-in ones).
     saved: Vec<String>,
-    /// Generated maps, to start from.
-    builtin: Vec<String>,
     template: Template,
     new_open: bool,
     /// The save window is open (asking for a name and description).
@@ -147,7 +141,6 @@ impl Default for Editor {
             redo: Vec::new(),
             last: None,
             saved: Vec::new(),
-            builtin: Vec::new(),
             template: Template::Flat,
             new_open: false,
             save_open: false,
@@ -165,28 +158,6 @@ fn new_flat() -> PaintedMap {
     PaintedMap::flat(12000.0, 4400.0, 4000.0, 700.0)
 }
 
-fn map_path(name: &str) -> PathBuf {
-    Path::new(MAPS_DIR).join(format!("{name}.map"))
-}
-
-/// Map names in the maps folder with this extension.
-fn list(ext: &str) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(MAPS_DIR)
-        .map(|d| {
-            d.flatten()
-                .filter_map(|e| {
-                    let p = e.path();
-                    (p.extension()?.to_str()? == ext)
-                        .then(|| p.file_stem()?.to_str().map(str::to_string))
-                        .flatten()
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    names.sort();
-    names
-}
-
 /// A name that's safe as a file name (letters, digits, spaces, - and _).
 fn clean_name(name: &str) -> String {
     name.trim()
@@ -198,8 +169,7 @@ fn clean_name(name: &str) -> String {
 fn enter(mut commands: Commands, mut editor: ResMut<Editor>) {
     // The menu's live backdrop isn't needed here.
     commands.remove_resource::<crate::sim::SimState>();
-    editor.saved = list("map");
-    editor.builtin = list("toml");
+    editor.saved = crate::paths::all_map_names();
     editor.rebuild = true;
     editor.fit = true;
     editor.leave = false;
@@ -274,15 +244,11 @@ impl Editor {
             self.say("Give the map a name first.", true);
             return false;
         }
-        if self.builtin.contains(&name) {
-            self.say(format!("\"{name}\" is a built-in map; pick another name."), true);
-            return false;
-        }
         self.name = name.clone();
-        match self.map.save(&map_path(&name)) {
+        match self.map.save(&crate::paths::user_map_path(&name)) {
             Ok(()) => {
                 self.unsaved = false;
-                self.saved = list("map");
+                self.saved = crate::paths::all_map_names();
                 self.say(format!("Saved \"{name}\". It's in the New world map list."), false);
                 true
             }
@@ -294,7 +260,7 @@ impl Editor {
     }
 
     fn open(&mut self, name: &str) {
-        match PaintedMap::load(&map_path(name)) {
+        match crate::paths::load_painted(name) {
             Ok(map) => {
                 self.replace(map, name);
                 self.say(format!("Opened \"{name}\"."), false);
@@ -307,21 +273,8 @@ impl Editor {
         let map = match &self.template {
             Template::Flat => new_flat(),
             Template::Empty => PaintedMap::new(12000.0, 4400.0, 4000.0),
-            Template::Copy(name) => {
-                match Config::load_with_map(Path::new("configs/default.toml"), Some(name)) {
-                    Ok(config) => PaintedMap::from_config(&config),
-                    Err(e) => {
-                        self.say(e, true);
-                        return;
-                    }
-                }
-            }
         };
-        let name = match &self.template {
-            Template::Copy(n) => format!("{n}-copy"),
-            _ => "my-map".into(),
-        };
-        self.replace(map, &name);
+        self.replace(map, "my-map");
         self.unsaved = true;
     }
 
@@ -1205,19 +1158,19 @@ fn new_dialog(ctx: &egui::Context, ed: &mut Editor) {
                 ui.add_space(6.0);
                 ui.radio_value(&mut ed.template, Template::Flat, "Flat seafloor");
                 ui.radio_value(&mut ed.template, Template::Empty, "Empty (all water)");
-                let builtin = ed.builtin.clone();
-                for name in builtin {
-                    let label = format!("Copy of the \"{name}\" map");
-                    ui.radio_value(&mut ed.template, Template::Copy(name), label);
-                }
                 let mut open = None;
                 if !ed.saved.is_empty() {
-                    ui.add_space(10.0);
-                    ui.label(egui::RichText::new("OPEN A SAVED MAP").size(11.5).strong().color(MUTED));
+                    caption(ui, "Open a map");
                     egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                        let mine = crate::paths::user_map_names();
                         for name in &ed.saved {
+                            let label = if crate::paths::is_builtin_map(name) && !mine.contains(name) {
+                                format!("{name}  (comes with the game)")
+                            } else {
+                                name.clone()
+                            };
                             if ui
-                                .add_sized([ui.available_width(), 26.0], egui::Button::selectable(*name == ed.name, name))
+                                .add_sized([ui.available_width(), 26.0], egui::Button::selectable(*name == ed.name, label))
                                 .clicked()
                             {
                                 open = Some(name.clone());
@@ -1261,9 +1214,16 @@ fn save_dialog(ctx: &egui::Context, ed: &mut Editor) {
                 caption(ui, "Name");
                 let name = ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(f32::INFINITY));
                 let path_name = clean_name(&ed.name);
-                let exists = ed.saved.contains(&path_name);
-                if exists {
-                    ui.label(egui::RichText::new("A saved map has this name; it will be replaced.").size(12.0).color(MUTED));
+                let mine = crate::paths::user_map_names().contains(&path_name);
+                let note = if mine {
+                    Some("You have a map with this name; it will be replaced.")
+                } else if crate::paths::is_builtin_map(&path_name) {
+                    Some("This saves your own copy, used instead of the one that comes with the game.")
+                } else {
+                    None
+                };
+                if let Some(note) = note {
+                    ui.label(egui::RichText::new(note).size(12.0).color(MUTED));
                 }
                 caption(ui, "Description");
                 ui.add(

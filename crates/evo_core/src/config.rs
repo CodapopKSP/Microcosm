@@ -51,12 +51,37 @@ impl Config {
     }
 
     /// Load a config file together with its map: `world.map` (or `map`, if given), read from
-    /// `maps/<name>.toml` next to the config. Keys in the config file override the map's.
+    /// `maps/<name>.map` or `maps/<name>.toml` next to the config. Keys in the config file
+    /// override the map's.
     pub fn load_with_map(path: &Path, map: Option<&str>) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-        let mut table: toml::Table =
-            toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let origin = path.display().to_string();
+        Self::from_text(&text, &origin, map, &|name| {
+            let toml_path = map_path(path, name);
+            let painted_path = toml_path.with_extension("map");
+            if painted_path.exists() {
+                return crate::map::PaintedMap::load(&painted_path)
+                    .map(|m| Some(MapSource::Painted(m)));
+            }
+            match std::fs::read_to_string(&toml_path) {
+                Ok(text) => Ok(Some(MapSource::Generated(text))),
+                Err(_) => Ok(None),
+            }
+        })
+    }
+
+    /// A config from TOML text (`origin` names it in errors) and its map: `world.map` (or
+    /// `map`, if given), found by `find` (`None`: no such map). Keys in the config override the
+    /// map's. Without any map, the built-in defaults (the generated ocean) are used, but only
+    /// for the default map name.
+    pub fn from_text(
+        text: &str,
+        origin: &str,
+        map: Option<&str>,
+        find: &dyn Fn(&str) -> Result<Option<MapSource>, String>,
+    ) -> Result<Self, String> {
+        let mut table: toml::Table = toml::from_str(text).map_err(|e| format!("{origin}: {e}"))?;
         if let Some(name) = map {
             let world = table
                 .entry("world")
@@ -71,57 +96,43 @@ impl Config {
             .and_then(|m| m.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| WorldConfig::default().map);
-        let map_path = map_path(path, &name);
-        // A painted map: its canvas sets the world's size and the terrain.
-        let painted_path = map_path.with_extension("map");
-        if !map_path.exists() && painted_path.exists() {
-            let painted = crate::map::PaintedMap::load(&painted_path)?;
-            let mut base = toml::Table::new();
-            let mut world = toml::Table::new();
-            world.insert("width".into(), toml::Value::Float(painted.width as f64));
-            world.insert("height".into(), toml::Value::Float(painted.water_level as f64));
-            base.insert("world".into(), toml::Value::Table(world));
-            let mut terrain = toml::Table::new();
-            terrain.insert("generator".into(), toml::Value::String("painted".into()));
-            terrain.insert("cell".into(), toml::Value::Float(painted.cell as f64));
-            // None of the ocean generator's features: the whole width is the ocean.
-            terrain.insert("mountain_width".into(), toml::Value::Float(0.0));
-            terrain.insert("basin_width".into(), toml::Value::Float(0.0));
-            terrain.insert("shelf_vents".into(), toml::Value::Boolean(false));
-            base.insert("terrain".into(), toml::Value::Table(terrain));
-            merge(&mut base, table);
-            let mut config: Config = toml::Value::Table(base)
+        let finish = |merged: toml::Table, painted: Option<crate::map::PaintedMap>| {
+            let mut config: Config = toml::Value::Table(merged)
                 .try_into()
-                .map_err(|e| format!("{}: {e}", path.display()))?;
-            config.terrain.painted = Some(std::sync::Arc::new(painted));
-            config
-                .validate()
-                .map_err(|e| format!("{}: {e}", path.display()))?;
-            return Ok(config);
-        }
-        let merged = match std::fs::read_to_string(&map_path) {
-            Ok(map_text) => {
-                let mut base =
-                    parse_map(&map_text).map_err(|e| format!("{}: {e}", map_path.display()))?;
+                .map_err(|e| format!("{origin}: {e}"))?;
+            config.terrain.painted = painted.map(std::sync::Arc::new);
+            config.validate().map_err(|e| format!("{origin}: {e}"))?;
+            Ok(config)
+        };
+        match find(&name)? {
+            // A painted map: its canvas sets the world's size and the terrain.
+            Some(MapSource::Painted(painted)) => {
+                let mut base = toml::Table::new();
+                let mut world = toml::Table::new();
+                world.insert("width".into(), toml::Value::Float(painted.width as f64));
+                world.insert("height".into(), toml::Value::Float(painted.water_level as f64));
+                base.insert("world".into(), toml::Value::Table(world));
+                let mut terrain = toml::Table::new();
+                terrain.insert("generator".into(), toml::Value::String("painted".into()));
+                terrain.insert("cell".into(), toml::Value::Float(painted.cell as f64));
+                // None of the ocean generator's features: the whole width is the ocean.
+                terrain.insert("mountain_width".into(), toml::Value::Float(0.0));
+                terrain.insert("basin_width".into(), toml::Value::Float(0.0));
+                terrain.insert("shelf_vents".into(), toml::Value::Boolean(false));
+                base.insert("terrain".into(), toml::Value::Table(terrain));
                 merge(&mut base, table);
-                base
+                finish(base, Some(painted))
+            }
+            Some(MapSource::Generated(map_text)) => {
+                let mut base =
+                    parse_map(&map_text).map_err(|e| format!("map \"{name}\": {e}"))?;
+                merge(&mut base, table);
+                finish(base, None)
             }
             // The built-in defaults are the default map, so it may be missing.
-            Err(_) if map.is_none() && name == WorldConfig::default().map => table,
-            Err(e) => {
-                return Err(format!(
-                    "map \"{name}\": failed to read {}: {e}",
-                    map_path.display()
-                ));
-            }
-        };
-        let config: Config = toml::Value::Table(merged)
-            .try_into()
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        config
-            .validate()
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(config)
+            None if map.is_none() && name == WorldConfig::default().map => finish(table, None),
+            None => Err(format!("there's no map called \"{name}\"")),
+        }
     }
 
     pub fn from_toml(text: &str) -> Result<Self, String> {
@@ -157,6 +168,14 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// A map, as found by a config loader.
+pub enum MapSource {
+    /// Painted in the map editor.
+    Painted(crate::map::PaintedMap),
+    /// A `.toml` map: `[world]` size and a `[terrain]` table for a generator.
+    Generated(String),
 }
 
 /// Where map `name` lives for a config at `config_path`: `maps/<name>.toml` beside it.

@@ -239,19 +239,21 @@ impl PaintedMap {
 
     pub fn load(path: &Path) -> Result<PaintedMap, String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let body = bytes
-            .strip_prefix(MAGIC)
-            .ok_or_else(|| format!("{}: not a map file", path.display()))?;
+        Self::from_bytes(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// A map from the contents of a `.map` file.
+    pub fn from_bytes(bytes: &[u8]) -> Result<PaintedMap, String> {
+        let body = bytes.strip_prefix(MAGIC).ok_or("not a map file")?;
         let packed = lz4_flex::decompress_size_prepended(body).map_err(|e| e.to_string())?;
-        let mut map: PaintedMap =
-            rmp_serde::from_slice(&packed).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut map: PaintedMap = rmp_serde::from_slice(&packed).map_err(|e| e.to_string())?;
         let words = (map.nx * map.ny).div_ceil(64);
         // Maps saved before caves existed have none.
         if map.cave.is_empty() {
             map.cave = vec![0; words];
         }
         if map.bits.len() != words || map.cave.len() != words {
-            return Err(format!("{}: damaged map", path.display()));
+            return Err("damaged map".into());
         }
         Ok(map)
     }

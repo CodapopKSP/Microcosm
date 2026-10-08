@@ -1,9 +1,12 @@
 //! Viewer for the evolution simulator: pan/zoom around the ocean, inspect organisms and species.
+// Windows: no console window beside the game in builds for players.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod camera;
 mod editor;
 mod gallery;
 mod menu;
+mod paths;
 mod render;
 mod sim;
 mod ui;
@@ -20,7 +23,7 @@ use evo_core::{Config, World};
 #[command(about = "Microcosm: a living ocean, grown from a single microbe")]
 pub struct Args {
     /// Config file for a new world (implies `--new`), or, with `--load`, a config to apply to the
-    /// loaded world. Default: configs/default.toml.
+    /// loaded world. Default: the built-in settings.
     #[arg(long)]
     pub config: Option<PathBuf>,
     /// Start a new world even if an autosave exists.
@@ -29,15 +32,18 @@ pub struct Args {
     /// Override the world seed.
     #[arg(long)]
     pub seed: Option<u64>,
-    /// Use this map (configs/maps/NAME.toml) instead of the config's `world.map` (implies
-    /// `--new`).
+    /// Use this map (one of yours, or a built-in one) instead of the config's `world.map`
+    /// (implies `--new`).
     #[arg(long)]
     pub world_map: Option<String>,
-    /// Resume a saved world (e.g. saves/autosave.bin).
+    /// Resume a saved world (a .bin file).
     #[arg(long)]
     pub load: Option<PathBuf>,
-    /// Where autosaves go.
-    #[arg(long, default_value = "saves")]
+    /// Where saves go. Default: the game's folder in your user data folder (see `paths.rs`).
+    #[arg(long = "save-dir", value_name = "DIR")]
+    pub save_dir_arg: Option<PathBuf>,
+    /// The folder saves go in (`--save-dir`, else the default).
+    #[arg(skip)]
     pub save_dir: PathBuf,
     /// Minutes between autosaves (0 = off).
     #[arg(long, default_value_t = 10.0)]
@@ -119,7 +125,8 @@ pub struct ViewerOptions {
 }
 
 fn main() {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    args.save_dir = args.save_dir_arg.clone().unwrap_or_else(paths::saves_dir);
     // Any flag that names or shapes a world goes straight in; otherwise the menu comes first.
     let direct = args.load.is_some()
         || args.new
@@ -242,19 +249,16 @@ fn direct_world(args: &Args) -> World {
         match loaded {
             Some(mut w) => {
                 if let Some(cfg_path) = &args.config {
-                    let cfg = Config::load(cfg_path).unwrap_or_else(|e| fail(&e));
+                    let cfg = paths::load_config(Some(cfg_path), None).unwrap_or_else(|e| fail(&e));
                     w.replace_config(cfg).unwrap_or_else(|e| fail(&e));
                     eprintln!("applied {} to the loaded world", cfg_path.display());
                 }
                 w
             }
             None => {
-                let path = args
-                    .config
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from("configs/default.toml"));
-                let mut config = Config::load_with_map(&path, args.world_map.as_deref())
-                    .unwrap_or_else(|e| fail(&e));
+                let mut config =
+                    paths::load_config(args.config.as_deref(), args.world_map.as_deref())
+                        .unwrap_or_else(|e| fail(&e));
                 if let Some(seed) = args.seed {
                     config.world.seed = seed;
                 }

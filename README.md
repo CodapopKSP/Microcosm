@@ -36,11 +36,11 @@ cargo run --release
 cargo run --release -- --new
 
 # Load a specific save
-cargo run --release -- --load saves/quicksave.bin
+cargo run --release -- --load ~/.local/share/microcosm/saves/quicksave.bin
 
 # Saves from before body parts (genome v2) can't be loaded; start a new world.
 # Saves keep their own config. To apply your edited config to a saved world:
-cargo run --release -- --load saves/autosave.bin --config configs/default.toml
+cargo run --release -- --load ~/.local/share/microcosm/saves/autosave.bin --config configs/default.toml
 
 # Stream mode: UI hidden, auto camera
 cargo run --release -- --stream
@@ -61,8 +61,17 @@ cargo run --release -- --stream
 | L / G / E / T / H | Species list / charts (population, family tree) / event history / event ticker / help |
 | N | Field notebook. In the inspector, "Record in Field Notebook" sketches the organism under its species; recording more of a species adds sketches side by side |
 | M | Chemistry map: oxygen, nutrients, toxin |
-| F5 | Quicksave (`saves/quicksave.bin`). The world also autosaves every 10 minutes and on exit; the previous save is kept as `*.prev.bin` |
+| F5 | Quicksave (`quicksave.bin` in the saves folder; see Files and releases below). The world also autosaves every 10 minutes and on exit; the previous save is kept as `*.prev.bin` |
 | Ctrl+1–4 | Trigger a plague, upwelling, meteor, or rock wall right now |
+
+### Files and releases
+
+Saves (autosave, quicksave) and maps made in the map editor live in your user data folder, not
+the project: `~/.local/share/microcosm` on Linux, `%APPDATA%\Microcosm` on Windows,
+`~/Library/Application Support/Microcosm` on macOS (`--save-dir` overrides the saves folder).
+The default settings and built-in maps are built into the program. To build zips for players
+(itch.io and so on), see [docs/RELEASING.md](docs/RELEASING.md).
+
 
 ### Art gallery
 

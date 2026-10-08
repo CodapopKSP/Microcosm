@@ -20,3 +20,12 @@ opt-level = 3
 
 [profile.release]
 debug = "line-tables-only"
+
+# Builds to give to players (`scripts/package.sh`, the release workflow): no debug info,
+# stripped, optimized across crates. Slower to build than `release`.
+[profile.dist]
+inherits = "release"
+debug = false
+strip = true
+lto = "thin"
+codegen-units = 1
