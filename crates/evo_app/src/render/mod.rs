@@ -119,7 +119,8 @@ pub struct BackgroundUniform {
     pub land: Vec4,
     /// Its height at each sample (4 per entry), taken from the terrain.
     pub land_profile: [Vec4; LAND_SAMPLES / 4],
-    /// Year phase (0 = start of spring), surface ice (0..1), moon phase (0..1, 0 = full), 0
+    /// Year phase (0 = start of spring), surface ice (0..1), moon phase (0..1, 0 = full),
+    /// snowfall (0..1, winter only)
     pub sky: Vec4,
     /// The sun's and moon's path: center x, half its width, its height above the surface, 0
     pub orbit: Vec4,
@@ -486,7 +487,7 @@ fn update_background(
             clock.year_phase,
             surface_ice(clock, cfg),
             ((clock.day as f32 + clock.day_phase) / MOON_DAYS).fract(),
-            0.0,
+            winter(clock),
         );
         // Rising out of the sea partway across the ocean and setting further along.
         let ocean = cfg.ocean_width();
@@ -553,13 +554,20 @@ fn vent_root(terrain: &evo_core::terrain::Terrain, pos: glam::Vec2) -> f32 {
 /// Days from one full moon to the next.
 const MOON_DAYS: f32 = 8.0;
 
-/// How much of the surface is iced over (0..1), for the look only: floes form in late autumn,
-/// cover the most in midwinter and melt in early spring. A warmer climate makes less ice, a
-/// colder one more.
+/// How far into winter it is: 0 outside winter (the last quarter of the year), rising early in
+/// winter, full through its middle, and back to 0 as it ends.
+fn winter(clock: &evo_core::environment::Clock) -> f32 {
+    let p = clock.year_phase;
+    smoothstep(0.75, 0.8, p) * (1.0 - smoothstep(0.96, 1.0, p))
+}
+
+/// How much of the surface is iced over (0..1), for the look only: floes form early in winter,
+/// cover the most in midwinter and melt as it ends. A warmer climate makes less ice, a colder
+/// one more.
 fn surface_ice(clock: &evo_core::environment::Clock, cfg: &evo_core::Config) -> f32 {
-    // Midwinter is 7/8 of the way through the year (seasons are quarters, from spring).
-    let d = (clock.year_phase - 0.875 + 0.5).rem_euclid(1.0) - 0.5;
-    let season = 1.0 - smoothstep(0.04, 0.2, d.abs());
+    let p = clock.year_phase;
+    // Grows through the first part of winter; melts away in its last days.
+    let season = smoothstep(0.75, 0.85, p) * (1.0 - smoothstep(0.93, 0.995, p));
     // Compare with how warm this time of year normally is.
     let warmer = clock.climate + clock.greenhouse;
     let climate = (1.0 - warmer / cfg.temperature.season_amplitude.max(1.0)).clamp(0.0, 1.5);
@@ -1495,5 +1503,29 @@ fn draw_overlays(
             z.radius * o.radius,
             Color::srgba(1.0, 0.5, 0.6, 0.3),
         );
+    }
+}
+
+#[cfg(test)]
+mod season_tests {
+    use super::*;
+
+    #[test]
+    fn snow_and_ice_only_in_winter() {
+        let cfg = evo_core::Config::default();
+        let at = |phase: f32| {
+            let clock = evo_core::environment::Clock {
+                year_phase: phase,
+                ..Default::default()
+            };
+            (winter(&clock), surface_ice(&clock, &cfg))
+        };
+        // Spring (a new world starts at its very beginning), summer and autumn: none.
+        for phase in [0.0, 0.01, 0.1, 0.25, 0.4, 0.5, 0.6, 0.7, 0.749] {
+            assert_eq!(at(phase), (0.0, 0.0), "phase {phase}");
+        }
+        // Midwinter: snow and ice.
+        let (snow, ice) = at(0.875);
+        assert!(snow > 0.99 && ice > 0.99);
     }
 }

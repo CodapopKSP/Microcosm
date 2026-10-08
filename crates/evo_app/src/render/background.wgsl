@@ -14,7 +14,7 @@ struct Background {
     events: array<vec4<f32>, 8>, // x, width, kind (1 upwelling, 2 wall), param
     land: vec4<f32>,      // mountain outline: first sample x, spacing, sample count, on
     land_profile: array<vec4<f32>, 64>, // its height at each sample (4 per entry)
-    sky: vec4<f32>,  // year phase (0 = start of spring), surface ice 0..1, moon phase (0 = full), 0
+    sky: vec4<f32>,  // year phase (0 = start of spring), surface ice 0..1, moon phase (0 = full), snowfall 0..1
     orbit: vec4<f32>, // sun and moon path: center x, half width, height above the surface, 0
 };
 
@@ -344,14 +344,15 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         sky += vec3<f32>(star) * (1.0 - winter);
 
-        // Winter: snow drifting down.
-        if ice > 0.0 {
+        // Winter: snow drifting down (only in winter, however much ice there is).
+        let snowfall = bg.sky.w;
+        if snowfall > 0.0 {
             // Sized and spaced on screen (it's weather close to the viewer), in two layers.
             let near_cell = 34.0 * px;
             let flurry = vec2<f32>(sin(time * 0.5 + wp.y / (60.0 * px)) * 6.0 * px, time * 45.0 * px);
-            var snow = specks(wp, near_cell, flurry, ice * 0.3, 1.6 * px, px, 5.5);
+            var snow = specks(wp, near_cell, flurry, snowfall * 0.3, 1.6 * px, px, 5.5);
             let far_flurry = vec2<f32>(sin(time * 0.3 + 2.0) * 4.0 * px, time * 22.0 * px);
-            snow += 0.6 * specks(wp, 21.0 * px, far_flurry, ice * 0.25, 1.0 * px, px, 6.5);
+            snow += 0.6 * specks(wp, 21.0 * px, far_flurry, snowfall * 0.25, 1.0 * px, px, 6.5);
             sky += vec3<f32>(0.8, 0.83, 0.88) * snow * (0.3 + 0.7 * clamp(bg.sun.x * 2.0, 0.0, 1.0));
         }
 

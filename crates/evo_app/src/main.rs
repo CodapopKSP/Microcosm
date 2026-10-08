@@ -6,6 +6,7 @@ mod camera;
 mod editor;
 mod gallery;
 mod menu;
+mod music;
 mod paths;
 mod render;
 mod sim;
@@ -206,6 +207,7 @@ fn main() {
         ui::UiPlugin,
         menu::MenuPlugin,
         editor::EditorPlugin,
+        music::MusicPlugin,
     ))
     .add_systems(Update, screenshot_and_exit)
     .run();
