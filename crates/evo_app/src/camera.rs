@@ -265,7 +265,7 @@ fn camera_input(
         };
         let factor = 0.85f32.powf(lines);
         let old_zoom = cam.target_zoom;
-        let new_zoom = (old_zoom * factor).clamp(0.05, max_zoom(view_bounds(world), window));
+        let new_zoom = (old_zoom * factor).clamp(MIN_ZOOM, max_zoom(view_bounds(world), window));
         if let Some(cursor) = cursor_world {
             // Keep the point under the cursor fixed.
             let offset = cursor - cam.target_center;
@@ -422,7 +422,10 @@ fn follow_selection(mut cam: ResMut<CameraState>, selection: Res<Selection>, sta
 const SKY: f32 = 1600.0;
 
 /// The part of the world the camera may show: the ocean and a strip of sky.
-fn view_bounds(world: &evo_core::World) -> Rect {
+/// The closest zoom in (world units per screen pixel).
+pub(crate) const MIN_ZOOM: f32 = 0.05;
+
+pub(crate) fn view_bounds(world: &evo_core::World) -> Rect {
     let (w, h) = (world.config.world.width, world.config.world.height);
     // Room for the tallest land on a painted map, too.
     let land = world.terrain.land.iter().cloned().fold(0.0, f32::max);
@@ -432,7 +435,7 @@ fn view_bounds(world: &evo_core::World) -> Rect {
 /// The furthest zoom out (world units per pixel) at which the window still sees only `bounds`.
 /// UI panels float over the world and don't change it, so the world's edges stay put when
 /// they open and close.
-fn max_zoom(bounds: Rect, window: &Window) -> f32 {
+pub(crate) fn max_zoom(bounds: Rect, window: &Window) -> f32 {
     (bounds.width() / window.width().max(1.0)).min(bounds.height() / window.height().max(1.0))
 }
 

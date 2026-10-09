@@ -9,6 +9,7 @@ mod menu;
 mod music;
 mod paths;
 mod render;
+mod sfx;
 mod sim;
 mod ui;
 
@@ -208,6 +209,7 @@ fn main() {
         menu::MenuPlugin,
         editor::EditorPlugin,
         music::MusicPlugin,
+        sfx::SfxPlugin,
     ))
     .add_systems(Update, screenshot_and_exit)
     .run();
