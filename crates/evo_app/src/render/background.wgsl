@@ -106,6 +106,67 @@ fn fbm(p: vec2<f32>) -> f32 {
 
 const TAU: f32 = 6.2831853;
 
+// Like `fbm`, with fewer octaves (cheaper, for patterns whose finest detail wouldn't show).
+fn fbm3(p: vec2<f32>) -> f32 {
+    return 0.5 * value_noise(p) + 0.25 * value_noise(p * 2.03) + 0.125 * value_noise(p * 4.12);
+}
+
+fn fbm2(p: vec2<f32>) -> f32 {
+    return 0.65 * value_noise(p) + 0.35 * value_noise(p * 2.03);
+}
+
+// The rock's surface relief (for lighting it): broad lumps and smaller knobs.
+fn rock_height(p: vec2<f32>) -> f32 {
+    let q = p + (vec2<f32>(value_noise(p * 0.006), value_noise(p * 0.006 + 5.2)) - 0.5) * 70.0;
+    return fbm3(q * 0.014) + 0.3 * fbm3(q * 0.05 + 3.3);
+}
+
+// The colour of the rock everything is made of (seafloor, cave walls, vent stacks, the
+// mountain): mottled stone in broad patches of different tints (rusty, iron-rich; grey-green),
+// laid down in wavy, gently tilted beds of different shades and thicknesses, with a lumpy
+// surface lit from above, thin cracks, and lighter pebbles and grains set into it. The finer
+// details fade out when zoomed too far out to see them (`px`: world units per pixel).
+fn rock_albedo(wp: vec2<f32>, px: f32) -> vec3<f32> {
+    let n = fbm(wp * 0.006) * 0.55 + fbm3(wp * 0.03) * 0.3 + value_noise(wp * 0.15) * 0.15;
+    var col = mix(vec3<f32>(0.03, 0.028, 0.03), vec3<f32>(0.11, 0.095, 0.08), n);
+    // Patches of differently tinted stone. (The noise is turned at an angle so its grid
+    // doesn't show as boxy patches.)
+    let tilted = vec2<f32>(0.8 * wp.x - 0.6 * wp.y, 0.6 * wp.x + 0.8 * wp.y);
+    let rust = smoothstep(0.5, 0.78, fbm3(tilted * 0.0012 + vec2<f32>(7.3, 1.1)) * 1.15);
+    let green = smoothstep(0.52, 0.8, fbm3(tilted.yx * 0.0017 + vec2<f32>(-3.9, 12.4)) * 1.15);
+    col *= mix(vec3<f32>(1.0), vec3<f32>(1.3, 0.9, 0.7), rust * 0.8);
+    col *= mix(vec3<f32>(1.0), vec3<f32>(0.82, 0.98, 0.94), green * 0.7);
+    // Beds: thick and thin layers, each its own shade, wavy and gently tilted.
+    let bed_y = wp.y + wp.x * 0.05 + (fbm2(wp * 0.0025) - 0.5) * 140.0;
+    let beds = value_noise(vec2<f32>(bed_y * 0.018, 0.5)) * 0.65
+        + value_noise(vec2<f32>(bed_y * 0.07, 9.5)) * 0.35;
+    col *= 0.82 + 0.36 * beds;
+    // Relief, lit from above: brighter where the surface faces up toward the light.
+    let detail = 1.0 - smoothstep(2.0, 8.0, px);
+    let e = max(1.5, px);
+    let toward = vec2<f32>(-0.37, 0.93);
+    let slope = (rock_height(wp + toward * e) - rock_height(wp)) / e;
+    col *= 1.0 + clamp(-slope * 24.0, -0.22, 0.22) * (0.4 + 0.6 * detail);
+    // Cracks: thin dark fissures wandering through some areas.
+    // (Jagged at every scale, and broken into separate pieces rather than long loops.)
+    let cracked = smoothstep(0.62, 0.76, fbm2(wp * 0.002 + vec2<f32>(4.2, -6.1)))
+        * smoothstep(0.55, 0.68, value_noise(wp * 0.018 + vec2<f32>(-9.0, 3.0))) * detail;
+    if cracked > 0.0 {
+        let jag = (value_noise(wp * 0.13) - 0.5) * 0.035 + (value_noise(wp * 0.45 + 7.0) - 0.5) * 0.01;
+        let fissure = abs(fbm(wp * 0.008 + vec2<f32>(2.1, 8.7)) + jag - 0.5);
+        col *= 1.0 - 0.4 * (1.0 - smoothstep(0.0015, 0.007, fissure)) * cracked;
+    }
+    // Pebbles and grains of lighter stone, seen close up.
+    let fine = 1.0 - smoothstep(0.8, 3.0, px);
+    if fine > 0.0 {
+        let pebbles = specks(wp, 15.0, vec2<f32>(0.0), 0.15, 2.4, px, 3.7);
+        let pebble_shade = 0.75 + 0.6 * value_noise(wp * 0.5 + 31.0);
+        col = mix(col, col * pebble_shade * 1.3, pebbles * fine * 0.5);
+        col *= 1.0 + (value_noise(wp * 0.7) - 0.5) * 0.14 * fine;
+    }
+    return col;
+}
+
 // How much each season (spring, summer, autumn, winter) shows at this point of the year:
 // each peaks mid-season and blends into its neighbours.
 fn season_weights(phase: f32) -> vec4<f32> {
@@ -280,6 +341,66 @@ fn smoke_plume(p: vec2<f32>, size: f32, strength: f32, current: f32, roof: vec3<
     return out;
 }
 
+// A vent stack's growth ledges at `below` (distance down from its top), `across` its face:
+// (lip, undercut), each 0..1. Unevenly spaced (thick and thin layers), each its own strength,
+// some barely there, with lips of different widths. `wobble` tilts and roughens them.
+fn chimney_ledges(below: f32, across: f32, wobble: f32, seed: f32) -> vec2<f32> {
+    let t = below * 0.075
+        + (value_noise(vec2<f32>(across * 1.5, below * 0.05) + seed * 17.0) - 0.5) * 0.9 * wobble
+        + (value_noise(vec2<f32>(below * 0.018, seed * 31.0)) - 0.5) * 3.0;
+    let band = floor(t);
+    let ledge = fract(t);
+    let salt = u32(fract(seed) * 1000.0);
+    let size = cell_hash(vec2<f32>(band, 0.0), salt);
+    let strength = smoothstep(0.25, 0.6, size) * (0.5 + 0.5 * cell_hash(vec2<f32>(band, 1.0), salt));
+    let w = 0.12 + 0.2 * cell_hash(vec2<f32>(band, 2.0), salt);
+    let lip = smoothstep(0.0, 0.05, ledge) * (1.0 - smoothstep(0.05, w, ledge));
+    let undercut = smoothstep(w, w + 0.08, ledge) * (1.0 - smoothstep(w + 0.08, w + 0.3, ledge));
+    return vec2<f32>(lip, undercut) * strength;
+}
+
+// A vent stack's surface: sulfide-black stone built up in crusty growth ledges (a lit lip over
+// a shadowed undercut), stained rusty in patches and crusted pale near the hot mouth, pitted
+// close up, with glowing cracks where it's hot; shaded as a rounded column lit from the upper
+// left. `across`: -1..1 from its left edge to its right; `below`: distance down from its top;
+// `heat`: 0..1 how hot it is here; `stone`: the ground's rock here.
+fn chimney_color(wp: vec2<f32>, across: f32, below: f32, stone: vec3<f32>, heat: f32, seed: f32,
+                 flicker: f32, time: f32, lin: f32, px: f32) -> vec3<f32> {
+    // Sulfides: much darker than the ground's rock, a little warmer.
+    var col = mix(stone * 0.6, vec3<f32>(0.03, 0.024, 0.02), 0.3);
+    // Growth ledges: irregular bands, each with a lip catching the light and the undercut below
+    // it in shadow.
+    let rough = value_noise(vec2<f32>(across * 4.0, below * 0.3) + seed * 3.0) - 0.5;
+    let ledges = chimney_ledges(below + rough * 1.6, across, 1.0, seed);
+    col *= 1.0 + 0.35 * ledges.x - 0.35 * ledges.y + rough * 0.25;
+    // Rusty iron stains running down from the ledges, and pale crust (anhydrite) near the top.
+    let rust = smoothstep(0.5, 0.75, fbm3(vec2<f32>(across * 1.2 + seed * 9.0, below * 0.035)));
+    col = mix(col, vec3<f32>(0.16, 0.07, 0.025) * (0.6 + 0.6 * value_noise(wp * 0.2)), rust * 0.65);
+    let crust = smoothstep(0.7, 0.9, value_noise(vec2<f32>(across * 5.0, below * 0.2) + seed * 23.0))
+        * exp(-below / 35.0);
+    col = mix(col, vec3<f32>(0.13, 0.12, 0.095), crust * 0.4);
+    // Close up: fine vertical streaks and dark pores.
+    let fine = 1.0 - smoothstep(0.6, 2.5, px);
+    if fine > 0.0 {
+        col *= 1.0 + (value_noise(vec2<f32>(across * 9.0, below * 0.04) + seed * 5.0) - 0.5) * 0.35 * fine;
+        let pores = specks(wp, 5.0, vec2<f32>(0.0), 0.18, 0.6, px, seed * 11.0 + 2.0);
+        col *= 1.0 - 0.3 * pores * fine;
+    }
+    // Rounded, lit from the upper left: bright on the left of its face, dark on the right.
+    let s = clamp(across, -1.0, 1.0);
+    let facing = sqrt(max(1.0 - s * s, 0.0));
+    let diffuse = max(-0.55 * s + 0.8 * facing, 0.0);
+    col *= 0.5 + 0.7 * diffuse;
+    // A rim of light from above on the lit edge (as the terrain's edges get).
+    col += vec3<f32>(0.22, 0.28, 0.27) * smoothstep(0.75, 1.0, -s) * (0.04 + lin * 0.6);
+    // Heat: a dull glow, and bright cracks wandering through the hot crust.
+    let fissure = abs(fbm3(vec2<f32>(across * 2.5, below * 0.09) + seed * 7.0) - 0.5);
+    let cracks = (1.0 - smoothstep(0.01, 0.045, fissure)) * smoothstep(0.3, 0.6, heat);
+    let shimmer = 0.75 + 0.25 * value_noise(vec2<f32>(across * 4.0, below * 0.2 - time * 0.8));
+    col += vec3<f32>(1.1, 0.32, 0.05) * cracks * heat * flicker * shimmer + vec3<f32>(0.12, 0.035, 0.01) * heat;
+    return col;
+}
+
 fn sdf_at(uv: vec2<f32>) -> f32 {
     return (textureSample(terrain_tex, terrain_sampler, uv).r - 0.5) * 128.0;
 }
@@ -407,10 +528,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
                 + 4.0 * (fbm(vec2<f32>(wp.x * 0.05, 0.0)) - 0.5);
             let inside = 1.0 - smoothstep(-px, px, wp.y - ridge);
             if inside > 0.0 {
-                let n = fbm(wp * 0.006) * 0.55 + fbm(wp * 0.03) * 0.3 + value_noise(wp * 0.15) * 0.15;
                 // The same rock as below the waterline, a little brighter by day.
-                var land = mix(vec3<f32>(0.03, 0.028, 0.03), vec3<f32>(0.11, 0.095, 0.08), n);
-                land *= 0.92 + 0.08 * sin(wp.y * 0.018 + fbm(wp * 0.004) * 9.0);
+                var land = rock_albedo(wp, px);
                 let daylight = 0.55 + 0.55 * clamp(bg.sun.x, 0.0, 1.0);
                 let crest = 1.0 - smoothstep(0.0, 30.0, ridge - wp.y);
                 land *= daylight * (1.0 + 0.4 * crest);
@@ -453,9 +572,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // terrain but far darker, and darker still in the shadow of the rock around it.
     let cave = textureSample(terrain_tex, terrain_sampler, uv).g;
     if cave > 0.01 && !outside {
-        let cn = fbm(wp * 0.006) * 0.55 + fbm(wp * 0.03) * 0.3 + value_noise(wp * 0.15) * 0.15;
-        var wall = mix(vec3<f32>(0.03, 0.028, 0.03), vec3<f32>(0.11, 0.095, 0.08), cn);
-        wall *= 0.92 + 0.08 * sin(wp.y * 0.018 + fbm(wp * 0.004) * 9.0);
+        var wall = rock_albedo(wp, px);
         // Distance into the cave from its rock walls: deep shadow near them (an overhang's
         // shade), a little lighter toward the middle; most shadow under ceilings.
         let to_rock = sdf_at(uv);
@@ -630,9 +747,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
         // The ground's own rock (same as the terrain below), for the stacks to be made of.
         let rn = fbm(wp * 0.006) * 0.55 + fbm(wp * 0.03) * 0.3 + value_noise(wp * 0.15) * 0.15;
-        var stone = mix(vec3<f32>(0.03, 0.028, 0.03), vec3<f32>(0.11, 0.095, 0.08), rn);
-        stone *= 0.92 + 0.08 * sin(wp.y * 0.018 + fbm(wp * 0.004) * 9.0);
-        stone *= mix(1.0, 0.5, clamp(depth / size.y, 0.0, 1.0));
+        // (Worked out only where a stack is drawn: it's costly.)
+        let stone_fog = mix(1.0, 0.5, clamp(depth / size.y, 0.0, 1.0));
 
         // Clustered outlets: one chimney with three spires side by side. The middle spire is
         // the tallest, the right the lowest; a shallow notch splits the left and middle, a deeper
@@ -676,17 +792,20 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
                 heat += exp(-length(q0 - vec2<f32>(o.x, o.y)) / (9.0 * o.z));
             }
             if fill > 0.0 {
-                let band = 0.5 + 0.5 * sin(q0.y * 0.3 + value_noise(vec2<f32>(q0.x * 0.2, q0.y * 0.1)) * 4.0);
-                let dust = vec3<f32>(0.15, 0.115, 0.07) * mix(1.0, 0.5, clamp(depth / size.y, 0.0, 1.0));
-                var col = mix(stone, dust, 0.35 + 0.2 * value_noise(wp * 0.05 + seed * 3.0)) * (0.9 + 0.2 * band);
-                col = mix(col, vec3<f32>(0.09, 0.045, 0.02) * (0.6 + 0.4 * rn), smoothstep(0.72, 0.92, value_noise(wp * 0.08 + seed * 13.0)) * 0.25);
-                let hot = min(heat, 1.0) * strength;
-                let cracks = smoothstep(0.8, 0.95, value_noise(vec2<f32>(q0.x * 0.5, q0.y * 0.18 - time * 0.2) + seed * 7.0));
-                col += vec3<f32>(1.4, 0.4, 0.07) * cracks * hot * flicker + vec3<f32>(0.12, 0.035, 0.01) * hot;
-                // Rounded: darker toward the edges, with a rim catching the light.
-                let inner = clamp(-d / 7.0, 0.0, 1.0);
-                col *= 0.78 + 0.22 * inner;
-                col += vec3<f32>(0.22, 0.28, 0.27) * (1.0 - smoothstep(0.0, 0.3, inner)) * (0.04 + lin * 0.6);
+                // Rounded across the whole body; each spire rounds off on its own up top.
+                var across = (q0.x - 0.5 * (left + right)) / (0.5 * (right - left));
+                for (var k = 0u; k < 3u; k++) {
+                    let o = outlets[k];
+                    let hw = 7.5 * select(1.0, 1.1, k == 1u);
+                    let spire = smoothstep(top - 30.0, top - 8.0, y) * (1.0 - smoothstep(hw, hw * 1.6, abs(q0.x - o.x)));
+                    across = mix(across, (q0.x - o.x) / hw, spire);
+                }
+                let stone = rock_albedo(wp, px) * stone_fog;
+                // (Ledges run level across the whole body: measured down from its tallest spire.)
+                var col = chimney_color(wp, across, outlets[1].y - y, stone, min(heat, 1.0) * strength,
+                    seed, flicker, time, lin, px);
+                // Darkening right at the outline, so the spires read apart.
+                col *= 0.7 + 0.3 * clamp(-d / 3.0, 0.0, 1.0);
                 water = mix(water, col, fill);
             }
         }
@@ -702,8 +821,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             let below = max(-q.y, 0.0);
             let sk = seed + f32(k) * 0.37;
             let lean = sin(below * 0.02 + sk * 6.28) * 2.5 + below * (fract(sk * 7.3) - 0.5) * 0.06;
+            // Lumpy, with the lips of its growth ledges sticking out a little.
+            let lip = chimney_ledges(below, 0.0, 1.0, sk).x;
             let lumps = 1.0 + 0.3 * (value_noise(vec2<f32>(below * 0.09, sk * 50.0)) - 0.5)
-                + 0.15 * (value_noise(vec2<f32>(below * 0.3, sk * 90.0)) - 0.5);
+                + 0.15 * (value_noise(vec2<f32>(below * 0.3, sk * 90.0)) - 0.5) + 0.07 * lip;
             // Squat cones flare quickly; chimneys taper over a long stack.
             let flare = select(160.0, 45.0, variant == 3u);
             let half_w = (5.0 + 14.0 * pow(min(below / flare, 1.0), 0.8)) * o.z * lumps;
@@ -713,21 +834,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
                 * smoothstep(-root - aa, -root + aa, q0.y)
                 * select(1.0, 0.0, variant == 2u);
             if stack > 0.0 {
-                // Seafloor rock, darker and banded with sulfides, rusty in patches.
-                let band = 0.5 + 0.5 * sin(below * 0.3 + value_noise(vec2<f32>(q.x * 0.2, below * 0.1)) * 4.0);
-                // A dusting of the floor's sediment, as on the terrain, so it sits in the ground.
-                let dust = vec3<f32>(0.15, 0.115, 0.07) * mix(1.0, 0.5, clamp(depth / size.y, 0.0, 1.0));
-                var col = mix(stone, dust, 0.35 + 0.2 * value_noise(wp * 0.05 + sk * 3.0)) * (0.9 + 0.2 * band);
-                col = mix(col, vec3<f32>(0.09, 0.045, 0.02) * (0.6 + 0.4 * rn), smoothstep(0.72, 0.92, value_noise(wp * 0.08 + sk * 13.0)) * 0.25);
-                // Heat and glowing cracks near the mouth.
-                let heat = exp(-below / (10.0 * o.z)) * strength;
-                let cracks = smoothstep(0.8, 0.95, value_noise(vec2<f32>(q.x * 0.5, below * 0.18 - time * 0.2) + sk * 7.0));
-                col += vec3<f32>(1.4, 0.4, 0.07) * cracks * heat * flicker + vec3<f32>(0.12, 0.035, 0.01) * heat;
-                // Rounded: darker toward the edges, a rim catching the light from above (as
-                // the terrain's edges do).
-                let across = clamp(side / max(half_w, 1e-3), 0.0, 1.0);
-                col *= 0.78 + 0.22 * (1.0 - across * across);
-                col += vec3<f32>(0.22, 0.28, 0.27) * smoothstep(0.8, 1.0, across) * (0.04 + lin * 0.6);
+                let heat = exp(-below / (14.0 * o.z)) * strength;
+                let stone = rock_albedo(wp, px) * stone_fog;
+                let col = chimney_color(wp, (q.x - lean) / max(half_w, 1e-3), below, stone, heat,
+                    sk, flicker, time, lin, px);
                 water = mix(water, col, stack);
             }
             // The mouth: a small, bright, flickering glow.
@@ -786,10 +896,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let gx = sdf_at(uv + vec2<f32>(texel.x, 0.0)) - sdf_at(uv - vec2<f32>(texel.x, 0.0));
     let gy = sdf_at(uv - vec2<f32>(0.0, texel.y)) - sdf_at(uv + vec2<f32>(0.0, texel.y));
     let normal = normalize(vec2<f32>(gx, gy) + vec2<f32>(0.0, 1e-4));
-    let n = fbm(wp * 0.006) * 0.55 + fbm(wp * 0.03) * 0.3 + value_noise(wp * 0.15) * 0.15;
-    var rock = mix(vec3<f32>(0.03, 0.028, 0.03), vec3<f32>(0.11, 0.095, 0.08), n);
-    // Faint, wavy strata.
-    rock *= 0.92 + 0.08 * sin(wp.y * 0.018 + fbm(wp * 0.004) * 9.0);
+    // (Only worked out where there's rock to show: it's costly.)
+    var rock = vec3<f32>(0.0);
+    if sdf < px || outside {
+        rock = rock_albedo(wp, px);
+    }
     // Rim lit from above by the local light, plus sediment on upward faces.
     let rim = smoothstep(-18.0, 0.0, sdf);
     let up = max(normal.y, 0.0);
