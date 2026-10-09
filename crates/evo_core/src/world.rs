@@ -95,6 +95,8 @@ pub struct FxBody {
     pub seed: f32,
     /// The organism that swallowed it (so the viewer can follow it), if any.
     pub hunter: Option<u64>,
+    /// The swallower's radius (0 if none): bigger mouths make louder swallows.
+    pub hunter_radius: f32,
 }
 
 impl FxKind {
@@ -2198,6 +2200,7 @@ impl World {
                         heading: p.heading,
                         seed: ((p.id.wrapping_mul(2_654_435_761) >> 8) % 1000) as f32 / 1000.0,
                         hunter: Some(hunter.id),
+                        hunter_radius: hunter.radius,
                     }),
                 });
             } else if let Some((pos, radius)) = u.strike.fx {

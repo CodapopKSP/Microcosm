@@ -266,6 +266,7 @@ fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
                 heading: 0.0,
                 seed: col as f32 * 0.13,
                 hunter: Some(o.id),
+                hunter_radius: o.radius,
             }),
         });
         world.organisms.push(o);

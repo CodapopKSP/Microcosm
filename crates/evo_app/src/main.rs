@@ -16,7 +16,7 @@ mod ui;
 use std::path::PathBuf;
 
 use bevy::prelude::*;
-use bevy::window::{PresentMode, WindowResolution};
+use bevy::window::{MonitorSelection, PresentMode, WindowMode, WindowResolution};
 use bevy_egui::EguiPlugin;
 use clap::Parser;
 use evo_core::{Config, World};
@@ -166,10 +166,12 @@ fn main() {
         primary_window: Some(Window {
             title: "Microcosm".into(),
             resolution: WindowResolution::new(1600, 900),
+            // Strict vsync: `AutoVsync` picks relaxed vsync where it can, which shows a late
+            // frame at once and tears (on X11 a maximized window isn't composited, so it shows).
             present_mode: if args.no_vsync {
                 PresentMode::AutoNoVsync
             } else {
-                PresentMode::AutoVsync
+                PresentMode::Fifo
             },
             ..default()
         }),
@@ -211,7 +213,7 @@ fn main() {
         music::MusicPlugin,
         sfx::SfxPlugin,
     ))
-    .add_systems(Update, screenshot_and_exit)
+    .add_systems(Update, (screenshot_and_exit, toggle_fullscreen))
     .run();
 }
 
@@ -274,6 +276,23 @@ fn direct_world(args: &Args) -> World {
         world.trigger(*t);
     }
     world
+}
+
+/// F11: fullscreen on the window's current monitor, or back to a window.
+fn toggle_fullscreen(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
+) {
+    if !keys.just_pressed(KeyCode::F11) {
+        return;
+    }
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
+    window.mode = match window.mode {
+        WindowMode::Windowed => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
+        _ => WindowMode::Windowed,
+    };
 }
 
 /// `--screenshot`: capture the window once after a delay, then quit.

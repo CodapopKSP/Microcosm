@@ -124,6 +124,9 @@ pub struct BackgroundUniform {
     pub sky: Vec4,
     /// The sun's and moon's path: center x, half its width, its height above the surface, 0
     pub orbit: Vec4,
+    /// Rock over each vent: how far above it (`NO_CEILING` if none within reach), and how far
+    /// it reaches out to the left and right of the vent, 0. Its smoke spreads out under it.
+    pub vent_ceilings: [Vec4; MAX_VENTS],
 }
 
 impl Default for BackgroundUniform {
@@ -139,6 +142,7 @@ impl Default for BackgroundUniform {
             land_profile: [Vec4::ZERO; _],
             sky: Vec4::ZERO,
             orbit: Vec4::ZERO,
+            vent_ceilings: [Vec4::ZERO; _],
         }
     }
 }
@@ -425,13 +429,15 @@ fn update_background(
             world.env.vents.len().min(MAX_VENTS) as f32,
         );
         u.vents = [Vec4::ZERO; MAX_VENTS];
-        for (slot, vent) in u.vents.iter_mut().zip(world.env.vents.iter()) {
-            *slot = Vec4::new(
+        u.vent_ceilings = [Vec4::new(NO_CEILING, 0.0, 0.0, 0.0); MAX_VENTS];
+        for (i, vent) in world.env.vents.iter().take(MAX_VENTS).enumerate() {
+            u.vents[i] = Vec4::new(
                 vent.pos.x,
                 vent.pos.y,
                 vent.strength,
                 vent_root(&world.terrain, vent.pos),
             );
+            u.vent_ceilings[i] = vent_ceiling(&world.terrain, vent.pos);
         }
         let now = world.time();
         u.events = [Vec4::ZERO; MAX_EVENTS];
@@ -549,6 +555,44 @@ fn vent_root(terrain: &evo_core::terrain::Terrain, pos: glam::Vec2) -> f32 {
         d += 4.0;
     }
     INTO
+}
+
+/// A vent's ceiling when there's no rock within reach of its smoke overhead.
+const NO_CEILING: f32 = 1e4;
+
+/// The rock over a vent's smoke: (how far above the vent, how far it reaches to the left, to
+/// the right, 0). Looked for straight up from above its chimneys and a little to either side
+/// (the plume is wide), the lowest found; then followed sideways while there's rock just over
+/// that height.
+fn vent_ceiling(terrain: &evo_core::terrain::Terrain, pos: glam::Vec2) -> Vec4 {
+    const FROM: f32 = 70.0;
+    const MAX: f32 = 900.0;
+    const SPREAD: f32 = 420.0;
+    let mut lowest = NO_CEILING;
+    for dx in [-24.0, 0.0, 24.0] {
+        let mut d = FROM;
+        while d < MAX.min(lowest) {
+            if terrain.is_solid(pos + glam::Vec2::new(dx, d)) {
+                lowest = d;
+                break;
+            }
+            d += 4.0;
+        }
+    }
+    if lowest >= NO_CEILING {
+        return Vec4::new(NO_CEILING, 0.0, 0.0, 0.0);
+    }
+    let covered = |dx: f32| {
+        (0..10).any(|k| terrain.is_solid(pos + glam::Vec2::new(dx, lowest + 4.0 + 8.0 * k as f32)))
+    };
+    let reach = |dir: f32| {
+        let mut d = 0.0;
+        while d < SPREAD && covered(dir * (d + 8.0)) {
+            d += 8.0;
+        }
+        d
+    };
+    Vec4::new(lowest, reach(-1.0), reach(1.0), 0.0)
 }
 
 /// Days from one full moon to the next.

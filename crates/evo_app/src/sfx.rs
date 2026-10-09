@@ -7,6 +7,9 @@
 //! When a hunter on screen swallows its prey whole, one of the eat sounds plays (panned and
 //! faded with zoom like the splashes).
 //!
+//! Splashes and swallows are pitched by body size: as recorded at radius 15, up to two whole
+//! steps higher for the smallest bodies and two lower for the biggest (see [`pitch`]).
+//!
 //! Under them, a quiet loop of running water, and the rumble of any vents nearby (louder the
 //! stronger and nearer the middle of the screen they are, panned by where they are), heard at
 //! the same zooms.
@@ -86,11 +89,23 @@ const EATS: [[&[u8]; 5]; 7] = [
     panned!("eat6"),
     panned!("eat7"),
 ];
-/// Loudness of a swallow at the closest zoom (bigger prey are louder, up to this): 4 dB below
-/// the recording.
+/// Loudness of a swallow at the closest zoom (bigger hunters are louder, up to this): 4 dB
+/// below the recording.
 pub const EAT_VOLUME: f32 = 0.63;
-/// Prey this big (radius) or bigger make the full sound; smaller ones are quieter.
-const EAT_FULL_RADIUS: f32 = 6.0;
+/// Hunters this big (radius) or bigger make the full sound; smaller ones are quieter (see
+/// [`eat_size`]).
+const EAT_FULL_RADIUS: f32 = 30.0;
+/// Sounds play at their recorded pitch for a body this big (radius)…
+const PITCH_BASE_RADIUS: f32 = 15.0;
+/// …up to this many semitones higher for the smallest bodies (radius 1)…
+const PITCH_SMALL_RADIUS: f32 = 1.0;
+/// …and as many lower from this radius up.
+const PITCH_LARGE_RADIUS: f32 = 30.0;
+/// Two whole steps.
+const PITCH_SEMITONES: f32 = 4.0;
+/// Random pitch variation between sounds, ± this fraction (about half a semitone).
+const PITCH_JITTER: f32 = 0.03;
+
 /// At most this many eat sounds start each second.
 const MAX_EATS_PER_SECOND: usize = 8;
 
@@ -351,10 +366,10 @@ fn splashes(
         // Left or right by where it is on screen.
         let pan = pan_index(((p.x - cam.center.x) / half.x).clamp(-1.0, 1.0));
         let sound = sounds.splashes[rng.below(sounds.splashes.len() as u32) as usize][pan].clone();
-        // Harder strokes are louder; each splash a slightly different pitch.
+        // Harder strokes are louder; smaller bodies higher pitched, each a little different.
         let strength = (0.5 + 0.5 * (kick / (SPLASH_KICK * HARD_KICK)).min(1.0)).min(1.0);
         let mut settings = PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume * strength));
-        settings.speed = rng.range(0.9, 1.1);
+        settings.speed = pitch(o.radius) * rng.range(1.0 - PITCH_JITTER, 1.0 + PITCH_JITTER);
         commands.spawn((Splash, AudioPlayer(sound), settings));
         tracker.last_splash.insert(o.id, now);
         tracker.recent.push_back(now);
@@ -415,12 +430,36 @@ fn eats(
         }
         let pan = pan_index(rel.x);
         let sound = sounds[rng.below(sounds.len() as u32) as usize][pan].clone();
-        let size = 0.6 + 0.4 * (fx.radius / EAT_FULL_RADIUS).min(1.0);
+        let hunter = fx.body.map_or(0.0, |b| b.hunter_radius);
+        let size = eat_size(hunter);
+        if size <= 0.0 {
+            continue;
+        }
         let mut settings = PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume * size));
-        settings.speed = rng.range(0.92, 1.08);
+        settings.speed = pitch(hunter) * rng.range(1.0 - PITCH_JITTER, 1.0 + PITCH_JITTER);
         commands.spawn((Splash, AudioPlayer(sound), settings));
         recent.push_back(now);
     }
+}
+
+/// How loud a swallow is for its hunter's size, 0..1: full from `EAT_FULL_RADIUS` up, and
+/// gently quieter below it (the square root of its share of that radius: half the radius is
+/// about -3 dB, a tenth about -10 dB).
+fn eat_size(hunter_radius: f32) -> f32 {
+    (hunter_radius / EAT_FULL_RADIUS).clamp(0.0, 1.0).sqrt()
+}
+
+/// Playback speed (pitch) for a body of this radius: recorded pitch at `PITCH_BASE_RADIUS`,
+/// rising steadily to two whole steps up at radius 1 and falling to two whole steps down at 30.
+fn pitch(radius: f32) -> f32 {
+    let semitones = if radius < PITCH_BASE_RADIUS {
+        let t = (PITCH_BASE_RADIUS - radius) / (PITCH_BASE_RADIUS - PITCH_SMALL_RADIUS);
+        PITCH_SEMITONES * t.min(1.0)
+    } else {
+        let t = (radius - PITCH_BASE_RADIUS) / (PITCH_LARGE_RADIUS - PITCH_BASE_RADIUS);
+        -PITCH_SEMITONES * t.min(1.0)
+    };
+    2f32.powf(semitones / 12.0)
 }
 
 /// Leaving the game: stop the splashes still playing, the water and the vents.
@@ -453,6 +492,25 @@ mod tests {
         assert!(far.iter().all(|v| *v == 0.0));
         let out = vent_mix(&[(Vec2::ZERO, 1.0)], center, half, 0.0);
         assert!(out.iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn smaller_bodies_sound_higher() {
+        let semis = |r: f32| 12.0 * pitch(r).log2();
+        assert!(semis(15.0).abs() < 1e-4, "recorded pitch at the base radius");
+        assert!((semis(1.0) - 4.0).abs() < 1e-4, "two whole steps up");
+        assert!((semis(30.0) + 4.0).abs() < 1e-4, "two whole steps down");
+        assert!((semis(0.5) - 4.0).abs() < 1e-4 && (semis(200.0) + 4.0).abs() < 1e-4);
+        assert!(semis(5.0) > semis(10.0) && semis(20.0) > semis(25.0));
+    }
+
+    #[test]
+    fn bigger_hunters_swallow_louder() {
+        assert_eq!(eat_size(EAT_FULL_RADIUS), 1.0);
+        assert_eq!(eat_size(2.0 * EAT_FULL_RADIUS), 1.0, "full from 30 up");
+        assert!((eat_size(15.0) - 0.5f32.sqrt()).abs() < 1e-6, "half as big, about -3 dB");
+        assert!(eat_size(3.0) > 0.3, "small hunters still heard");
+        assert_eq!(eat_size(0.0), 0.0);
     }
 
     #[test]

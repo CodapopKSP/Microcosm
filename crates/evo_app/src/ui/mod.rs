@@ -762,6 +762,7 @@ fn help(ui: &mut egui::Ui) {
             |ui: &mut egui::Ui, keys: &[Key], what: &str| help_row_width(ui, keys, what, 100.0);
         help_section(ui, "Panels", HELP_PANELS);
         help_row(ui, &[K("Tab")], "Hide the UI (stream view)");
+        help_row(ui, &[K("F11")], "Fullscreen");
         help_row(ui, &[K("L")], "Species list");
         help_row(ui, &[K("G")], "Charts and family tree");
         help_row(ui, &[K("E")], "History");

@@ -16,6 +16,7 @@ struct Background {
     land_profile: array<vec4<f32>, 64>, // its height at each sample (4 per entry)
     sky: vec4<f32>,  // year phase (0 = start of spring), surface ice 0..1, moon phase (0 = full), snowfall 0..1
     orbit: vec4<f32>, // sun and moon path: center x, half width, height above the surface, 0
+    vent_ceilings: array<vec4<f32>, 16>, // rock over each vent: height (1e4 = none), reach left, right
 };
 
 fn land_sample(k: i32) -> f32 {
@@ -172,80 +173,109 @@ fn vent_outlets(variant: u32) -> array<vec3<f32>, 3> {
     return array<vec3<f32>, 3>(vec3<f32>(0.0, 44.0, 1.0), vec3<f32>(0.0), vec3<f32>(0.0));
 }
 
-struct Puff {
-    dist: f32,     // to the cloud's edge (< 0 inside)
-    lit: f32,      // to the edge of its lit side (each puff shifted toward the light)
-    radius: f32,   // of the puffs here (blended)
-    age: f32,      // of the puffs here (blended): 0 at the mouth .. 1 dissolved
+struct Plume {
+    density: f32, // smoke here (0 = none; not capped)
+    height: f32,  // fraction of the way to where it stops rising (0 at the mouth)
+    across: f32,  // across the plume: -1..1 edge to edge (0 = its middle)
+    lit: f32,     // -1..1: the underside of a billow (in its own shadow) .. its top (lit)
 };
 
-// Smoke puffs from a mouth at the origin, as a plume in water: puffs shoot up, slow as they
-// reach the height where they're no heavier than the water around them, then spread out,
-// drift with the current and swell until they dissolve. Returns the nearest puff and the
-// distance to the merged cloud.
-fn smoke_puffs(p: vec2<f32>, size: f32, strength: f32, time: f32, seed: f32) -> Puff {
-    var out: Puff;
-    out.dist = 1e3;
-    out.lit = 1e3;
-    out.radius = 1.0;
-    out.age = 0.0;
-    if p.y < -10.0 || strength <= 0.01 {
+// A steady smoke plume from a mouth at the origin, as black smokers vent: a jet that widens
+// as it takes in water, slows near the height where it's no heavier than the water around it
+// (`top`), then spreads out sideways and drifts with the current (`current`, -1..1) until it
+// dissolves. Rock overhead (`roof` above the mouth) stops it: it spreads out sideways in a
+// layer underneath instead. Its eddies ride up with it: each patch of smoke keeps its shape as it rises,
+// stretched sideways as the plume widens and squashed as it slows, and churns as it goes.
+fn smoke_plume(p: vec2<f32>, size: f32, strength: f32, current: f32, roof: vec3<f32>, time: f32, seed: f32) -> Plume {
+    var out: Plume;
+    out.density = 0.0;
+    out.height = 0.0;
+    out.across = 1.0;
+    out.lit = 0.0;
+    if p.y < -2.0 || strength <= 0.01 || p.y > roof.x + 16.0 {
         return out;
     }
-    let count = 12.0;
-    let life = 16.0;
-    // The current here pushes the top of the plume one way.
-    let current = (fract(seed * 9.13) - 0.5) * 9.0;
-    var best = 1e3;
-    var lit = 1e3;
-    var weight = 0.0;
-    var age_sum = 0.0;
-    var radius_sum = 0.0;
-    let to_light = normalize(vec2<f32>(-0.5, 0.85));
-    for (var k = 0; k < 12; k++) {
-        let fk = f32(k);
-        let age = fract(time / life + fk / count + seed);
-        // Each release (not each slot) gets its own speed, size and drift, so the plume
-        // never repeats.
-        let cycle = floor(time / life + fk / count + seed);
-        let j1 = hash21(vec2<f32>(fk + cycle * 13.0, seed * 31.0));
-        let j2 = hash21(vec2<f32>(fk * 3.7 + cycle, seed * 17.0 + 5.0));
-        let t = age * life;
-        // Rising, then levelling off; spreading sideways and drifting more the higher it is.
-        let speed = 0.75 + 0.5 * j1;
-        let rise = 210.0 * speed * (0.7 + 0.3 * size) * (1.0 - exp(-t / 4.5));
-        let spread = (j2 - 0.5) * 90.0 * age * age;
-        let drift = spread + current * pow(t, 1.4) * 0.35 + sin(t * 0.5 + j1 * 6.28) * 6.0 * age;
-        let c = vec2<f32>(drift, rise);
-        // Swelling a lot as it rises and mixes with the water.
-        let grow = (6.0 + 52.0 * pow(age, 0.75)) * size * (0.55 + 0.45 * strength);
-        let r = grow * (1.0 - 0.35 * smoothstep(0.7, 1.0, age)) * (0.75 + 0.5 * j2);
-        if r < 0.5 {
-            continue;
-        }
-        // Lumpy edges: a few bumps on each puff.
-        let d = p - c;
-        let ang = atan2(d.y, d.x);
-        // Cauliflower lumps: a few big ones and many small.
-        let bump = 1.0 + 0.05 * sin(ang * 6.0 + j1 * 20.0 + t * 0.6)
-            + 0.03 * sin(ang * 13.0 + j2 * 30.0 - t * 0.4);
-        let dist = length(d) - r * bump;
-        let blend = 7.0 + 10.0 * age;
-        best = smin(best, dist, blend);
-        // The lit side: the puff shifted toward the light (so the shadow is a crescent).
-        lit = smin(lit, length(d - to_light * r * 0.28) - r * 0.9 * bump, blend);
-        // Blend age and size smoothly between neighbouring puffs (no seams where the nearest
-        // one changes).
-        let w = exp(-2.0 * dot(d, d) / (r * r));
-        weight += w;
-        age_sum += age * w;
-        radius_sum += r * w;
+    let h = max(p.y, 0.0);
+    let top = 240.0 * (0.6 + 0.4 * size) * (0.6 + 0.4 * strength);
+    let s = h / top;
+    let rise = 55.0 * (0.7 + 0.3 * strength);
+    let amount = 0.5 + 0.5 * strength;
+    // Bent by the current more the higher it gets, with a slow sway.
+    let sway = value_noise(vec2<f32>(h * 0.005 - time * 0.07, seed * 50.0)) - 0.5;
+    let center = current * 80.0 * s * s + sway * (6.0 + 50.0 * s);
+    let dx = p.x - center;
+    // Half-width: widening steadily, much faster where it spreads out on top (or flares out
+    // as it meets rock overhead).
+    let rising = 7.0 * size + 0.17 * h + 0.25 * max(h - top, 0.0);
+    let layer = 20.0 + 0.12 * roof.x;
+    let pool = smoothstep(roof.x - 2.0 * layer, roof.x, h);
+    let w = rising * (1.0 + 0.8 * pool * pool);
+    let u = dx / w;
+    if abs(u) < 1.8 {
+        // When the smoke here left the mouth: it rises at `rise` there, slowing with height.
+        let slow = 900.0;
+        let launched = time - (h + h * h / (2.0 * slow)) / rise;
+        // The pattern rides with the smoke (fixed in launch time), churning more the longer
+        // it has been out. Eddies grow as the plume widens, but less than it does (more of
+        // them across a wide plume).
+        let v = launched * 1.5;
+        let x = dx / (10.0 + 0.4 * w);
+        let churn = fbm(vec2<f32>(x * 0.7 + seed * 7.0, v * 0.5 + time * 0.12 + 11.0)) - 0.5;
+        let uw = u + churn * (0.25 + 0.45 * min(s, 1.5));
+        let lp = vec2<f32>(x + churn * 1.2 + seed * 13.0, v * 0.8 + churn * 1.5);
+        let lumps = fbm(lp);
+        // A little higher up (toward the light): less smoke there means this is a billow's top.
+        let above = fbm(lp + vec2<f32>(0.08 * sign(uw), -0.22));
+        // Lumpy edges: the outline bulges into billows and breaks into wisps.
+        let edge = abs(uw) + (lumps - 0.5) * (1.5 + 0.5 * min(s, 1.0));
+        let soft = 0.06 + 0.22 * min(s, 1.5);
+        let profile = 1.0 - smoothstep(0.55 - soft, 0.55 + soft, edge);
+        // Thickest in the jet, thinning as it mixes, gone a while after it stops rising.
+        let dilute = 1.0 / (1.0 + h / 70.0);
+        let fade = (1.0 - smoothstep(1.0, 2.6, s)) * smoothstep(-2.0, 3.0, p.y)
+            * (1.0 - smoothstep(roof.x, roof.x + 16.0, h));
+        out.density = profile * (0.55 + 0.9 * lumps) * (0.35 + 2.4 * dilute) * fade * amount;
+        out.height = s;
+        out.across = uw;
+        out.lit = clamp((lumps - above) * 9.0, -1.0, 1.0);
     }
-    out.dist = best;
-    out.lit = lit;
-    if weight > 1e-4 {
-        out.age = age_sum / weight;
-        out.radius = radius_sum / weight;
+
+    // Under rock: the smoke that reaches it spreads out sideways in a layer beneath it, thick
+    // over the plume and thinning out toward the rock's edge on each side (`roof`: its height,
+    // reach left, reach right), flowing outward and slowing as it goes.
+    let below = roof.x - h;
+    if below < 3.0 * layer {
+        let sr = roof.x / top;
+        if sr < 2.4 {
+            let sway_r = value_noise(vec2<f32>(roof.x * 0.005 - time * 0.07, seed * 50.0)) - 0.5;
+            let at = p.x - (current * 80.0 * sr * sr + sway_r * (6.0 + 50.0 * sr));
+            let along = abs(at);
+            let reach = min(320.0 * (0.6 + 0.4 * size), 0.85 * select(roof.y, roof.z, at > 0.0));
+            if along < reach && reach > 1.0 {
+                let f = along / reach;
+                // Each side its own pattern, blended where they meet over the plume.
+                let side = smoothstep(-20.0, 20.0, at) * 5.3;
+                let flow = (time * rise * 0.5 - along - along * along / (2.0 * max(reach, 60.0))) / (0.9 * layer);
+                let lp = vec2<f32>(below / (0.8 * layer) + side + seed * 3.0, flow);
+                let lumps = fbm(lp);
+                let thick = layer * (1.25 - 0.75 * f);
+                let edge = below / thick + (lumps - 0.5) * 1.2;
+                let profile = 1.0 - smoothstep(0.55, 1.05, edge);
+                let dilute = 1.0 / (1.0 + roof.x / 70.0);
+                // Fed by the plume: none where the plume doesn't reach the rock.
+                let fed = 1.0 - smoothstep(1.0, 2.4, sr);
+                let d = profile * (0.55 + 0.9 * lumps) * (0.35 + 2.4 * dilute) * amount * fed
+                    * (1.0 - smoothstep(0.55, 1.0, f)) * (1.0 - smoothstep(-4.0, 16.0, -below));
+                if d > 0.0 {
+                    let total = out.density + d;
+                    out.height = (out.height * out.density + sr * d) / total;
+                    out.across = (out.across * out.density + 0.5 * d) / total;
+                    // The underside of the layer is in its own shadow.
+                    out.lit = (out.lit * out.density - 0.3 * d) / total;
+                    out.density = total;
+                }
+            }
+        }
     }
     return out;
 }
@@ -501,7 +531,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     water += vec3<f32>(0.0, 0.02, 0.004) * nutrients * brightness * select(1.0, 0.0, outside);
 
     // Vents: hydrothermal chimneys ("black smokers") of the same rock as the seafloor, with
-    // puffy, cel-shaded smoke billowing out and a hot glow at each mouth. Each vent picks one
+    // a steady plume of smoke rising out and a hot glow at each mouth. Each vent picks one
     // of four layouts from its position: a tall chimney, a twin, a chimney with
     // three spires, or a squat cone. The outlets are only looks; the vent works the same either way. Stacks
     // reach down to the first rock below the vent and a little into it (`root`), no further.
@@ -526,49 +556,44 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         water += halo;
         vent_glow += halo;
 
-        // Smoke from every outlet, merged into one cloud.
-        var cloud = 1e3;
-        var lit_cloud = 1e3;
-        var near: Puff;
-        near.dist = 1e3;
-        near.lit = 1e3;
-        near.radius = 1.0;
-        near.age = 0.0;
+        // Smoke from every outlet, merged into one plume.
+        let current = (fract(seed * 9.13) - 0.5) * 2.0;
+        let roof = bg.vent_ceilings[i];
+        let ceiling = roof.x;
+        var density = 0.0;
+        var height = 0.0;
+        var across = 0.0;
+        var lit = 0.0;
         for (var k = 0u; k < 3u; k++) {
             let o = outlets[k];
             if o.z <= 0.0 {
                 continue;
             }
             let mouth = vec2<f32>(o.x, o.y);
-            let puff = smoke_puffs(q0 - mouth, o.z, strength, time, seed + f32(k) * 0.37);
-            if puff.dist < near.dist {
-                near = puff;
-            }
-            cloud = smin(cloud, puff.dist, 8.0);
-            lit_cloud = smin(lit_cloud, puff.lit, 8.0);
+            let plume = smoke_plume(q0 - mouth, o.z, strength, current,
+                vec3<f32>(roof.x - o.y, roof.y + o.x, roof.z - o.x), time, seed + f32(k) * 0.37);
+            density += plume.density;
+            height += plume.height * plume.density;
+            across += abs(plume.across) * plume.density;
+            lit += plume.lit * plume.density;
         }
-        // Older smoke has mixed with the water: softer edged, hazier, and tinted by it.
-        let haze = smoothstep(0.2, 0.95, near.age);
-        let soft = aa + haze * near.radius * 0.05;
-        let inside = 1.0 - smoothstep(-soft, soft, cloud);
-        if inside > 0.0 {
-            // Cel shading: the cloud's lit side (each puff shifted toward the light) leaves a
-            // curved crescent of shadow underneath, as in drawn smoke.
-            let edge_w = aa + haze * near.radius * 0.03;
-            let lit = 1.0 - smoothstep(-edge_w, edge_w, lit_cloud);
-            // Sulfide-black and brown at the mouth, paling to grey as it mixes (as real black
-            // smokers do).
-            let shade_young = mix(vec3<f32>(0.011, 0.008, 0.007), vec3<f32>(0.036, 0.026, 0.02), lit);
-            let shade_old = mix(vec3<f32>(0.04, 0.043, 0.048), vec3<f32>(0.1, 0.105, 0.115), lit);
-            var smoke = mix(shade_young, shade_old, smoothstep(0.1, 0.7, near.age));
-            // Faintly lit by the hot mouth just above it.
-            let low = exp(-max(q0.y - 30.0, 0.0) / 18.0);
-            smoke += vec3<f32>(0.35, 0.12, 0.03) * low * strength * flicker * (1.0 - lit) * 0.6;
-            let outline = smoothstep(-2.5 * aa, -0.8 * aa, cloud) * (1.0 - haze);
-            smoke = mix(smoke, vec3<f32>(0.008, 0.007, 0.008), outline * 0.5);
-            // Taking on the water's colour as it spreads.
-            smoke = mix(smoke, water * 0.75 + vec3<f32>(0.01, 0.02, 0.025), haze * 0.45);
-            water = mix(water, smoke, inside * (0.95 - 0.6 * haze));
+        if density > 1e-3 {
+            height /= density;
+            across /= density;
+            lit /= density;
+            let cover = 1.0 - exp(-2.2 * density);
+            // Sulfide-black where it's thick and fresh; thin edges and older smoke pale to a
+            // brownish grey, lit a little from above and tinted by the water it's mixing into.
+            let thin = smoothstep(0.2, 1.0, across) * 0.6 + smoothstep(0.3, 1.6, height) * 0.4;
+            var smoke = mix(vec3<f32>(0.012, 0.010, 0.009), vec3<f32>(0.075, 0.068, 0.062), thin);
+            smoke += vec3<f32>(0.10, 0.11, 0.11) * (0.15 + lin) * thin * 0.35;
+            // Billows: tops catch the light, undersides sit in their own shadow.
+            smoke *= 1.0 + 0.45 * lit;
+            smoke = mix(smoke, water * 0.8 + vec3<f32>(0.012, 0.012, 0.01), smoothstep(0.6, 2.0, height) * 0.5);
+            // Glowing faintly from the hot mouth below.
+            let low = exp(-max(q0.y - 30.0, 0.0) / 22.0);
+            smoke += vec3<f32>(0.35, 0.12, 0.03) * low * strength * flicker * 0.5;
+            water = mix(water, smoke, cover * (0.97 - 0.4 * smoothstep(0.8, 2.2, height)));
         }
 
         // Bubbles streaming up from each mouth, faster than the smoke.
@@ -591,7 +616,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
                     );
                     let br = (1.2 + 1.6 * jb) * (0.6 + 0.4 * o.z);
                     let d = length(wp - v.xy - c);
-                    let fade = (1.0 - smoothstep(0.7, 1.0, age)) * smoothstep(0.0, 0.05, age) * strength;
+                    // Popping out of sight as they reach rock overhead.
+                    let fade = (1.0 - smoothstep(0.7, 1.0, age)) * smoothstep(0.0, 0.05, age) * strength
+                        * (1.0 - smoothstep(ceiling - 12.0, ceiling - 4.0, c.y));
                     let body = 1.0 - smoothstep(br - aa, br + aa, d);
                     let rim = smoothstep(br * 0.55 - aa, br * 0.55 + aa, d) * body;
                     let glint = 1.0 - smoothstep(br * 0.25, br * 0.25 + aa, length(wp - v.xy - c - vec2<f32>(-br * 0.35, br * 0.35)));
@@ -724,9 +751,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let dx = wp.x - e.x;
         let half_w = e.y * 0.5;
         if kind == 1u {
-            // Upwelling: a column of cold, mineral-rich water with streaks rising to the surface.
+            // Upwelling: a column of cold, mineral-rich water with streaks rising to the surface
+            // (in open water: hidden behind cave walls).
             let across = 1.0 - smoothstep(half_w * 0.6, half_w, abs(dx));
-            let strength = e.w * across * smoothstep(1800.0, 300.0, depth);
+            let strength = e.w * across * smoothstep(1800.0, 300.0, depth) * (1.0 - smoothstep(0.0, 1.0, cave));
             let streak = pow(0.5 + 0.5 * sin(dx * 0.03 + fbm(vec2<f32>(dx * 0.004, wp.y * 0.003 - time * 0.4)) * 6.0), 6.0);
             // Round bubbles rising and wobbling, in two sizes (bigger ones rise faster), fixed in
             // the water so they don't reshuffle on zoom; only drawn close enough to see.
