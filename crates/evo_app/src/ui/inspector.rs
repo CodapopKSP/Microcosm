@@ -443,7 +443,7 @@ fn body(ui: &mut egui::Ui, world: &World, o: &Organism) {
 
     section(ui, "Parts");
     if list.is_empty() {
-        ui.label(RichText::new("No body parts: it drifts, blind, smelling only the water around it.").size(12.5).color(MUTED));
+        ui.label(RichText::new("No body parts: it drifts, sensing only what's right around it.").size(12.5).color(MUTED));
     }
     for p in &list {
         ui.horizontal(|ui| {
@@ -499,31 +499,16 @@ fn abilities(world: &World, o: &Organism) -> Vec<String> {
         out.push(format!("Grips rock ({:.0}%)", t.grip * 100.0));
     }
     let cap = world.config.genes.sense_cap;
-    if t.eye_count > 0 {
-        let range = t.eyes[..t.eye_count as usize].iter().map(|e| e.range).fold(0.0, f32::max);
-        out.push(format!(
-            "{} eye{} see light, bodies and carcasses {:.0} u away over {:.0}°",
-            t.eye_count,
-            if t.eye_count == 1 { "" } else { "s" },
-            (range * o.radius).min(cap),
-            t.eyes_span_deg()
-        ));
-    } else {
-        out.push("Blind: can't see light or other bodies".into());
-    }
-    if t.smell_radii > 0.0 {
-        let mut text = format!("Smells the water {:.0} u around", (t.smell_radii * o.radius).min(cap));
-        if t.antenna_count > 0 {
-            let reach = t.antennae[..t.antenna_count as usize].iter().map(|a| a.range).fold(0.0, f32::max);
-            text += &format!(
-                ", and {:.0} u out along {} antenna{}",
-                (reach * o.radius).min(cap),
-                t.antenna_count,
-                if t.antenna_count == 1 { "" } else { "e" }
-            );
+    let organs = t.eye_count + t.antenna_count;
+    out.push(format!(
+        "Senses light, water, bodies and carcasses {:.0} u around{}",
+        (t.sense_radii * o.radius).min(cap),
+        match organs {
+            0 => String::new(),
+            1 => " (widened by 1 sense organ)".into(),
+            n => format!(" (widened by {n} sense organs)"),
         }
-        out.push(text);
-    }
+    ));
     if t.grasp_count > 0 {
         let reach = t.grasps[..t.grasp_count as usize].iter().map(|z| z.radius).fold(0.0, f32::max);
         out.push(format!("Tentacles grab within {:.0} u and pull to the mouth", reach * o.radius));

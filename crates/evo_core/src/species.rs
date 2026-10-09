@@ -356,7 +356,7 @@ fn features(t: &Traits, genome: &Genome) -> Vec<Feature> {
         f(
             &["sagax", "olfactor"],
             &[],
-            (t.smell_radii - 4.0) / 3.0 - 0.2,
+            (t.sense_radii - 4.0) / 12.0 - 0.2,
         ),
         f(
             &["lucifer", "lampadarius", "noctiluca", "lucens"],

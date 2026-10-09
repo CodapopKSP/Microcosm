@@ -1457,43 +1457,9 @@ fn draw_overlays(
     let p = o.prev_pos.lerp(o.pos, state.alpha);
     let center = Vec2::new(p.x, p.y);
     let color = Color::srgba(0.6, 0.9, 1.0, 0.25);
-    // Smell: a circle all round, and a cone out along each antenna.
-    let smell_color = Color::srgba(0.9, 0.8, 0.5, 0.25);
-    let smell = (t.smell_radii * o.radius).min(cap);
-    if smell > o.radius {
-        gizmos.circle_2d(Isometry2d::from_translation(center), smell, smell_color);
-    }
-    for a in &t.antennae[..t.antenna_count as usize] {
-        let range = (a.range * o.radius).min(cap);
-        let half = a.cos_half.acos();
-        let dir = o.heading + a.dir;
-        let arc_rotation = Rot2::radians(dir - half - std::f32::consts::FRAC_PI_2);
-        gizmos.arc_2d(
-            Isometry2d::new(center, arc_rotation),
-            half * 2.0,
-            range,
-            smell_color,
-        );
-        for side in [dir - half, dir + half] {
-            gizmos.line_2d(center, center + Vec2::from_angle(side) * range, smell_color);
-        }
-    }
-    // Sight: one cone per eye.
-    for eye in &t.eyes[..t.eye_count as usize] {
-        let range = (eye.range * o.radius).min(cap);
-        let half = eye.cos_half.acos();
-        let dir = o.heading + eye.dir;
-        let arc_rotation = Rot2::radians(dir - half - std::f32::consts::FRAC_PI_2);
-        gizmos.arc_2d(
-            Isometry2d::new(center, arc_rotation),
-            half * 2.0,
-            range,
-            color,
-        );
-        for a in [dir - half, dir + half] {
-            gizmos.line_2d(center, center + Vec2::from_angle(a) * range, color);
-        }
-    }
+    // Sense: a circle all round.
+    let sense = (t.sense_radii * o.radius).min(cap);
+    gizmos.circle_2d(Isometry2d::from_translation(center), sense, color);
     // What each tentacle can grasp (around its base).
     let rot = Vec2::from_angle(o.heading);
     let place = |x: f32, y: f32| center + rot.rotate(Vec2::new(x, y)) * o.radius;

@@ -1,7 +1,7 @@
 //! Decoded traits (phenotype) of a genome. Computed once at birth.
 //!
 //! Body parts (P chromosome) are laid out once here and summed into plain numbers
-//! (thrust, grip, eye cones, …), so the per-tick simulation never looks at parts.
+//! (thrust, grip, sense radius, …), so the per-tick simulation never looks at parts.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,8 +9,6 @@ use crate::config::Config;
 use crate::genome::{Genome, drive, gene};
 use crate::parts::{self, BodyShape, Instance, PartKind};
 
-/// Most eyes whose view cones the simulation tracks (the largest ones win).
-pub const MAX_EYES: usize = 6;
 /// Most tentacle grasps the simulation tracks (the widest ones win).
 pub const MAX_GRASPS: usize = 8;
 
@@ -25,17 +23,6 @@ pub struct Zone {
     pub strength: f32,
     /// Index of the part instance in the body layout (to draw the tentacle that's holding).
     pub part: u8,
-}
-
-/// One eye's view cone.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Eye {
-    /// Body-local direction (radians, 0 = forward).
-    pub dir: f32,
-    /// Cosine of half the view cone.
-    pub cos_half: f32,
-    /// Range in body radii.
-    pub range: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -117,18 +104,12 @@ pub struct Traits {
     /// Reserve fullness required to reproduce.
     pub repro_threshold: f32,
 
-    /// View cones of the eyes (`eye_count` used). Sight is the only way to see light, other
-    /// bodies and carcasses.
-    pub eyes: [Eye; MAX_EYES],
+    /// Eyes and antennae on the body (for descriptions; both just widen the sense).
     pub eye_count: u8,
-    /// Smell cones of the antennae (`antenna_count` used): each smells the water far out in
-    /// its direction.
-    pub antennae: [Eye; MAX_EYES],
     pub antenna_count: u8,
-    /// Smell range in body radii, in every direction: how far apart it compares the water
-    /// (temperature, minerals, oxygen, detritus). Antennae add a little.
-    pub smell_radii: f32,
-    /// Longest sight range in body radii (0 = blind).
+    /// Sense range in body radii, the same in every direction: everything the organism
+    /// detects (light, temperature, minerals, oxygen, detritus, other bodies, carcasses) is
+    /// within this far. Eyes and antennae widen it.
     pub sense_radii: f32,
 
     /// What each tentacle can grasp: a circle around its base. Each holds one thing at a time
@@ -290,15 +271,15 @@ struct PartSums {
     spines: [f32; 4],
     jaws: f32,
     shell: [f32; 4],
-    antennae: f32,
-    antenna_cones: Vec<Eye>,
+    senses: f32,
+    eye_count: u8,
+    antenna_count: u8,
     lure: f32,
     grasps: Vec<Zone>,
     filter: f32,
     fronds: f32,
     mass: f32,
     upkeep: f32,
-    eyes: Vec<Eye>,
 }
 
 fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
@@ -364,22 +345,14 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
             }
             PartKind::Holdfast => p.holdfast += s,
             PartKind::Stalk => {}
+            // Eyes and antennae work the same: each widens the sense all round.
             PartKind::Eye => {
-                let half = (55.0 - 20.0 * s).to_radians();
-                p.eyes.push(Eye {
-                    dir: inst.dir,
-                    cos_half: half.cos(),
-                    range: pc.eye_range * (0.15 + 0.85 * s) * raised,
-                });
+                p.senses += s * raised;
+                p.eye_count = p.eye_count.saturating_add(1);
             }
             PartKind::Antenna => {
-                p.antennae += s * raised;
-                let half = (45.0 - 15.0 * s).to_radians();
-                p.antenna_cones.push(Eye {
-                    dir: inst.dir,
-                    cos_half: half.cos(),
-                    range: pc.antenna_range * (0.2 + 0.8 * s) * raised,
-                });
+                p.senses += s * raised;
+                p.antenna_count = p.antenna_count.saturating_add(1);
             }
             PartKind::Lure => p.lure += s * raised,
             PartKind::Spine => {
@@ -527,25 +500,9 @@ impl Traits {
         let anchor = saturating(2.0 * p.holdfast);
         let grip = saturating(p.grip + 2.0 * p.holdfast);
 
-        // Senses: keep the longest-range eyes.
-        p.eyes.sort_by(|a, b| {
-            b.range
-                .partial_cmp(&a.range)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let mut eyes = [Eye::default(); MAX_EYES];
-        let eye_count = p.eyes.len().min(MAX_EYES);
-        eyes[..eye_count].copy_from_slice(&p.eyes[..eye_count]);
-        // Everyone smells the water around them; antennae add a little all round, and much more
-        // out along their cones.
-        let smell_radii = pc.base_smell + pc.smell_range * saturating(1.2 * p.antennae);
-        let mut antennae = [Eye::default(); MAX_EYES];
-        let antenna_count = p.antenna_cones.len().min(MAX_EYES);
-        antennae[..antenna_count].copy_from_slice(&p.antenna_cones[..antenna_count]);
-        let sense_radii = eyes[..eye_count]
-            .iter()
-            .map(|e| e.range)
-            .fold(0.0, f32::max);
+        // Everyone senses what's around them; eyes and antennae reach further, in every
+        // direction.
+        let sense_radii = pc.base_sense + pc.sense_range * saturating(1.2 * p.senses);
 
         let tolerance = f(gene::TEMP_TOL);
         let aerobic = f(gene::RESPIRATION);
@@ -628,11 +585,8 @@ impl Traits {
             birth_fraction,
             brood,
             repro_threshold,
-            eyes,
-            eye_count: eye_count as u8,
-            antennae,
-            antenna_count: antenna_count as u8,
-            smell_radii,
+            eye_count: p.eye_count,
+            antenna_count: p.antenna_count,
             sense_radii,
             grasps,
             grasp_count: grasp_count as u8,
@@ -714,14 +668,6 @@ impl Traits {
         best
     }
 
-    /// Widest angle any eye sees, in degrees (for display).
-    pub fn eyes_span_deg(&self) -> f32 {
-        self.eyes[..self.eye_count as usize]
-            .iter()
-            .map(|e| 2.0 * e.cos_half.acos().to_degrees())
-            .sum::<f32>()
-            .min(360.0)
-    }
 }
 
 /// Plain-English meaning of one gene value, for the inspector.
@@ -952,10 +898,9 @@ mod tests {
         assert!((t.birth_fraction - 0.5).abs() < 1e-6);
         assert!(t.buoyancy > 0.0);
         assert_eq!(t.eye_count, 0);
-        assert_eq!(t.sense_radii, 0.0, "it's blind");
         assert_eq!(
-            t.smell_radii, config.parts.base_smell,
-            "it smells what's close"
+            t.sense_radii, config.parts.base_sense,
+            "it senses what's close"
         );
         assert_eq!(t.part_count, 0);
         assert!(t.aerobic > 0.5 && t.oxygenic > 0.9);
@@ -1092,24 +1037,17 @@ mod tests {
             "fluke {fluke} flagellum {flagellum}"
         );
 
-        // A pair of eyes gives two view cones.
+        // Eyes and antennae widen the sense all round, exactly alike.
         let (g, config) = with_part(PartKind::Eye, 1, 0xC0, 3);
-        let t = Traits::decode(&g, &config);
-        assert_eq!(t.eye_count, 2);
-        assert!(t.sense_radii > 20.0);
-        assert!((t.eyes[0].dir + t.eyes[1].dir).abs() < 1e-4, "mirrored");
-
-        // Antennae: a little more smell all round, and long smell cones.
-        let (g, config) = with_part(PartKind::Antenna, 1, 0xFF, 2);
-        let t = Traits::decode(&g, &config);
-        assert_eq!(t.antenna_count, 2);
-        assert!(t.smell_radii > config.parts.base_smell);
-        assert!(t.smell_radii < config.parts.base_smell + config.parts.smell_range + 1e-3);
-        assert!(
-            t.antennae[0].range > 3.0 * t.smell_radii,
-            "the cones reach much farther"
-        );
-        assert_eq!(t.sense_radii, 0.0, "antennae don't see");
+        let eyes = Traits::decode(&g, &config);
+        assert_eq!(eyes.eye_count, 2);
+        let base = config.parts.base_sense;
+        assert!(eyes.sense_radii > base + 0.5 * config.parts.sense_range);
+        assert!(eyes.sense_radii < base + config.parts.sense_range + 1e-3);
+        let (g, config) = with_part(PartKind::Antenna, 1, 0xC0, 3);
+        let antennae = Traits::decode(&g, &config);
+        assert_eq!(antennae.antenna_count, 2);
+        assert_eq!(antennae.sense_radii, eyes.sense_radii);
 
         // Legs walk, holdfasts anchor, fronds widen the light catch.
         let (g, config) = with_part(PartKind::Leg, 1, 0xC0, 6 << 5 | 8);

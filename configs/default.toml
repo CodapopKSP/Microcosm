@@ -92,9 +92,7 @@ photo_scavenge_penalty = 0.2  # photosynthesis and scavenging also lose this x e
 small_swimmer_radius = 8.0   # flagella and cilia lose most of their push above this radius
 large_swimmer_radius = 6.0   # fins and flukes become efficient around this radius
 crawl_speed = 12.0           # walking speed on rock at full leg strength (x sqrt(radius))
-eye_range = 40.0             # sight range of a full-size eye, in body radii
-smell_range = 4.0            # smell range full antennae add all round, in body radii
-antenna_range = 30.0         # how far a full-size antenna smells out along its cone, in body radii
+sense_range = 16.0           # sense range eyes and antennae add all round, in body radii
 tentacle_reach = 1.0         # a tentacle grasps within this fraction of its length of its base
 frond_span = 0.45            # extra light-catching width per unit of frond length
 frond_uptake = 0.3           # extra nutrient-uptake surface per unit of frond length
@@ -103,9 +101,7 @@ lure_brightness = 0.3        # full lure light, as a fraction of surface noon li
 lure_radius = 160.0          # glow radius of a full lure
 contact_margin = 2.0         # distance from rock that still counts as touching
 shell_insulation = 1.0       # each full-size shell plate widens the tolerated temperatures by +-1 C
-base_smell = 4.0             # everyone smells the water this far around (body radii): temperature, minerals, oxygen, detritus
-eye_dark = 0.15              # eyes need light: in darkness they see this fraction of their range
-eye_light = 0.1              # full sight from this light level (fraction of surface noon)
+base_sense = 4.0             # everyone senses everything this far around (body radii): light, water, bodies, carcasses
 
 # Running cost of each capability at full strength, as a fraction of basal metabolism.
 [upkeep]

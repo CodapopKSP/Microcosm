@@ -613,12 +613,9 @@ pub struct PartsConfig {
     pub large_swimmer_radius: f32,
     /// Walking speed at full leg strength (× √radius), on rock or seafloor.
     pub crawl_speed: f32,
-    /// Sight range of a full-size eye, in body radii.
-    pub eye_range: f32,
-    /// Smell range full antennae add all round, in body radii (on top of `base_smell`).
-    pub smell_range: f32,
-    /// How far a full-size antenna smells out along its cone, in body radii.
-    pub antenna_range: f32,
+    /// Sense range that eyes and antennae add all round, in body radii (on top of
+    /// `base_sense`; a pair of full-size ones gives most of it).
+    pub sense_range: f32,
     /// A tentacle grasps anything within this fraction of its length of its base (it bends).
     pub tentacle_reach: f32,
     /// Extra light-catching width per unit of frond length (in body radii).
@@ -633,15 +630,23 @@ pub struct PartsConfig {
     pub lure_radius: f32,
     /// Distance from rock (beyond the body) that still counts as touching it.
     pub contact_margin: f32,
-    /// Every organism smells the water this far around it (in body radii), even without
-    /// antennae: temperature, minerals, oxygen and detritus.
-    pub base_smell: f32,
+    /// Every organism senses everything this far around it (in body radii), even without
+    /// eyes or antennae: light, temperature, minerals, oxygen, detritus, bodies, carcasses.
+    #[serde(alias = "base_smell")]
+    pub base_sense: f32,
     /// Temperature tolerance (± °C) each full-size shell plate adds; smaller plates add less.
     pub shell_insulation: f32,
-    /// Eyes need light: in darkness they see this fraction of their range…
-    pub eye_dark: f32,
-    /// …reaching full range at this light level (fraction of surface noon light).
-    pub eye_light: f32,
+    /// No longer used (eyes and antennae became one sense); still read from older saves.
+    #[serde(skip_serializing, rename = "eye_range")]
+    pub legacy_eye_range: Option<f32>,
+    #[serde(skip_serializing, rename = "smell_range")]
+    pub legacy_smell_range: Option<f32>,
+    #[serde(skip_serializing, rename = "antenna_range")]
+    pub legacy_antenna_range: Option<f32>,
+    #[serde(skip_serializing, rename = "eye_dark")]
+    pub legacy_eye_dark: Option<f32>,
+    #[serde(skip_serializing, rename = "eye_light")]
+    pub legacy_eye_light: Option<f32>,
 }
 
 impl Default for PartsConfig {
@@ -650,9 +655,7 @@ impl Default for PartsConfig {
             small_swimmer_radius: 8.0,
             large_swimmer_radius: 6.0,
             crawl_speed: 12.0,
-            eye_range: 40.0,
-            smell_range: 4.0,
-            antenna_range: 30.0,
+            sense_range: 16.0,
             tentacle_reach: 1.0,
             frond_span: 0.45,
             frond_uptake: 0.3,
@@ -660,10 +663,13 @@ impl Default for PartsConfig {
             lure_brightness: 0.3,
             lure_radius: 160.0,
             contact_margin: 2.0,
-            base_smell: 4.0,
+            base_sense: 4.0,
             shell_insulation: 1.0,
-            eye_dark: 0.15,
-            eye_light: 0.1,
+            legacy_eye_range: None,
+            legacy_smell_range: None,
+            legacy_antenna_range: None,
+            legacy_eye_dark: None,
+            legacy_eye_light: None,
         }
     }
 }

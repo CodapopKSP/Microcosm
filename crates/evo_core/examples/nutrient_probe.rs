@@ -28,7 +28,7 @@ fn main() {
         let sd = (vals.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / vals.len() as f32).sqrt();
         println!("depth {lo:>5}-{hi:<5}: mean {mean:.3} sd {sd:.3} (cv {:.2}) p5 {:.3} p50 {:.3} p95 {:.3}", sd / mean.max(1e-6), pct(&mut vals, 0.05), pct(&mut vals, 0.5), pct(&mut vals, 0.95));
     }
-    // At the organisms: concentration, and the steering pull a smell-based drive would feel.
+    // At the organisms: concentration, and the steering pull a sense-based drive would feel.
     let mut here = Vec::new();
     let mut pull = Vec::new();
     let mut starved = 0;
@@ -38,7 +38,7 @@ fn main() {
         let p = o.pos;
         let c = f.sample(p);
         here.push(c);
-        let d = (o.traits.smell_radii * o.radius).max(f.cell);
+        let d = (o.traits.sense_radii * o.radius).max(f.cell);
         let g = f.gradient(p, d) / (c + 1e-3);
         pull.push((g.length() * 30.0).min(1.0));
         let cap = o.max_nutrients(&w.config);

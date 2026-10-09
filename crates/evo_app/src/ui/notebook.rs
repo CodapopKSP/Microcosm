@@ -558,7 +558,7 @@ fn observations(t: &Traits) -> Vec<String> {
         add(0.85, format!("{n} eye{}", if n == 1 { "" } else { "s" }));
     }
     if t.antenna_count > 0 {
-        add(0.6, "feels the water with antennae".into());
+        add(0.6, "feels around with antennae".into());
     }
     add(t.toxin * 1.5, "poisonous".into());
     add(t.armor * 1.6, "armoured with shell plates".into());

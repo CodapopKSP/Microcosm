@@ -26,7 +26,7 @@ use crate::rng::{Rng, mix64};
 use crate::species::{SpeciesEvent, SpeciesRegistry};
 use crate::stats::{Event, EventKind, EventLog, StatSample, Stats};
 use crate::terrain::Terrain;
-use crate::traits::{MAX_EYES, MAX_GRASPS, Traits};
+use crate::traits::{MAX_GRASPS, Traits};
 
 /// Field (minerals, detritus, vents) update interval in ticks.
 const FIELD_INTERVAL: u64 = 3;
@@ -664,54 +664,30 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     let env = ctx.env;
     let cap = cfg.genes.sense_cap;
 
-    // Smell: the water (temperature, minerals, oxygen, detritus), compared across the smell
-    // radius all round, and far out along each antenna.
-    let smell_d = (t.smell_radii * r).min(cap);
-    let antenna_count = t.antenna_count as usize;
-    let mut antennae = [(Vec2::ZERO, 0.0f32); MAX_EYES];
-    for (a, cone) in antennae.iter_mut().zip(&t.antennae[..antenna_count]) {
-        *a = (
-            Vec2::from_angle(o.heading + cone.dir),
-            (cone.range * r).min(cap),
-        );
-    }
-    let smell = |field: &crate::field::Field, here: f32| {
-        let mut g = field.gradient(pos, smell_d.max(field.cell));
-        // Along each antenna (a third of the way, two thirds, its tip): the strongest change
-        // from here, per unit of distance.
-        for &(axis, reach) in &antennae[..antenna_count] {
-            let mut best = 0.0f32;
-            for k in 1..=3 {
-                let dist = (reach * k as f32 / 3.0).max(field.cell);
-                let change = (field.sample(pos + axis * dist) - here) / dist;
-                if change.abs() > best.abs() {
-                    best = change;
-                }
-            }
-            g += axis * best;
-        }
-        g
-    };
+    // Sense: everything it detects (the water, light, other bodies, carcasses) is within one
+    // radius all round, widened by eyes and antennae.
+    let sense_d = (t.sense_radii * r).min(cap);
+    let sense = |field: &crate::field::Field| field.gradient(pos, sense_d.max(field.cell));
     let mut foraging = Vec2::ZERO;
     if d[drive::MINERALS].abs() > MIN_DRIVE {
         let here = env.minerals.sample(pos);
-        let g = smell(&env.minerals, here) / (here + 1e-3);
+        let g = sense(&env.minerals) / (here + 1e-3);
         foraging += d[drive::MINERALS] * food * gradient_drive(g, 30.0);
     }
     let mut carrion = Vec2::ZERO;
     if d[drive::CARRION].abs() > MIN_DRIVE {
         let here = env.detritus.sample(pos);
-        let g = smell(&env.detritus, here) / (here + 1e-3);
+        let g = sense(&env.detritus) / (here + 1e-3);
         carrion += gradient_drive(g, 30.0);
     }
     let mut steer = Vec2::ZERO;
     if d[drive::WARMTH].abs() > MIN_DRIVE {
-        let g = smell(&env.temperature, env.temperature.sample(pos));
+        let g = sense(&env.temperature);
         steer += d[drive::WARMTH] * gradient_drive(g, 20.0);
     }
     if d[drive::OXYGEN].abs() > MIN_DRIVE {
         let here = env.oxygen.sample(pos);
-        let g = smell(&env.oxygen, here) / (here + 0.05);
+        let g = sense(&env.oxygen) / (here + 0.05);
         steer += d[drive::OXYGEN] * gradient_drive(g, 30.0);
     }
     // Crowding (touch): which way the bodies packed right around it are.
@@ -732,24 +708,8 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
         steer += crowding;
     }
 
-    // Sight: eyes see within their cones, less far in the dark. Only eyes see light, other
-    // bodies and carcasses.
-    let eye_count = t.eye_count as usize;
-    let mut cones = [(Vec2::ZERO, 0.0f32, 0.0f32); MAX_EYES];
-    if eye_count > 0 {
-        let pc = &cfg.parts;
-        let brightness = env.light.level_at(pos) / cfg.light.surface_intensity.max(1e-6);
-        let sight = pc.eye_dark + (1.0 - pc.eye_dark) * (brightness / pc.eye_light).min(1.0);
-        for (cone, eye) in cones.iter_mut().zip(&t.eyes[..eye_count]) {
-            *cone = (
-                Vec2::from_angle(o.heading + eye.dir),
-                eye.cos_half,
-                (eye.range * r * sight).min(cap),
-            );
-        }
-    }
-    if eye_count > 0 && d[drive::LIGHT].abs() > MIN_DRIVE {
-        // Brighter out along an eye than here: that way. Lures count as light (the anglerfish
+    if d[drive::LIGHT].abs() > MIN_DRIVE {
+        // Brighter on one side than the other: that way. Lures count as light (the anglerfish
         // trick).
         let level = |p: Vec2| {
             env.light.level_at(p)
@@ -760,11 +720,12 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
                 }
         };
         let here = level(pos).max(1e-4);
-        let mut g = Vec2::ZERO;
-        for &(axis, _, reach) in &cones[..eye_count] {
-            let dist = reach.clamp(env.light.cell, 400.0);
-            g += axis * (0.5 * (level(pos + axis * dist) - here) / here);
-        }
+        let dist = sense_d.clamp(env.light.cell, 400.0);
+        let (dx, dy) = (Vec2::X * dist, Vec2::Y * dist);
+        let g = Vec2::new(
+            level(pos + dx) - level(pos - dx),
+            level(pos + dy) - level(pos - dy),
+        ) * (0.25 / here);
         foraging += d[drive::LIGHT] * food * gradient_drive(g, 8.0);
     }
     steer += foraging;
@@ -772,13 +733,8 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     let mut hunting = Vec2::ZERO;
     let mut fleeing = Vec2::ZERO;
     let mut schooling = Vec2::ZERO;
-    let range = cones[..eye_count].iter().map(|c| c.2).fold(0.0, f32::max);
+    let range = sense_d;
     if range > r {
-        let perceives = |dir: Vec2, dist: f32, other: f32| {
-            cones[..eye_count]
-                .iter()
-                .any(|&(axis, cos_half, reach)| dist < reach + other && dir.dot(axis) >= cos_half)
-        };
         let mut nearest_smaller = f32::MAX;
         let mut seen = 0u32;
         ctx.grid.query(pos, range, r / 8.0, |e| {
@@ -793,9 +749,6 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             }
             let dist = dist2.sqrt();
             let dir = delta / dist;
-            if !perceives(dir, dist, e.radius) {
-                return true;
-            }
             seen += 1;
             let closeness = 1.0 - dist / reach;
             if spares(e) {
@@ -815,7 +768,7 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             ctx.carcass_grid.query(pos, range, 0.0, |e| {
                 let delta = e.pos - pos;
                 let dist = delta.length();
-                if dist < best && dist > 1e-4 && perceives(delta / dist, dist, e.radius) {
+                if dist < best && dist > 1e-4 && dist < range + e.radius {
                     best = dist;
                     carrion = delta / dist;
                 }
@@ -3226,39 +3179,31 @@ mod tests {
     }
 
     #[test]
-    fn only_eyes_see_the_light() {
-        let run = |eyes: bool| {
-            let mut world = empty_world();
-            let h = world.config.world.height;
-            let mut g = with_part(world.ancestor, 0, PartKind::Flagellum, 0, 0xFF, 16);
-            if eyes {
-                g = with_part(g, 1, PartKind::Eye, 0, 0xFF, 0);
-            }
-            g.0[gene::DRIVES + drive::LIGHT] = 0xFF;
-            let i = add(&mut world, g, Vec2::new(2000.0, h - 700.0));
-            // Facing up, toward the light.
-            world.organisms[i].heading = std::f32::consts::FRAC_PI_2;
-            world.organisms[i].steer_heading = std::f32::consts::FRAC_PI_2;
-            world.step();
-            world.step();
-            let o = &world.organisms[i];
-            (o.activity, Vec2::from_angle(o.steer_heading))
-        };
-        let (seeing, heading) = run(true);
-        assert_eq!(seeing, Activity::Foraging, "with an eye it seeks the light");
-        assert!(heading.y > 0.5);
-        let (blind, _) = run(false);
-        assert_ne!(blind, Activity::Foraging, "without eyes it can't");
+    fn everyone_senses_the_light_all_round() {
+        // No eyes, facing down, away from the light: it still turns up toward it.
+        let mut world = empty_world();
+        let h = world.config.world.height;
+        let mut g = with_part(world.ancestor, 0, PartKind::Flagellum, 0, 0xFF, 16);
+        g.0[gene::DRIVES + drive::LIGHT] = 0xFF;
+        let i = add(&mut world, g, Vec2::new(2000.0, h - 700.0));
+        world.organisms[i].heading = -std::f32::consts::FRAC_PI_2;
+        world.organisms[i].steer_heading = -std::f32::consts::FRAC_PI_2;
+        world.step();
+        world.step();
+        let o = &world.organisms[i];
+        assert_eq!(o.activity, Activity::Foraging);
+        assert!(Vec2::from_angle(o.steer_heading).y > 0.5);
     }
 
     #[test]
-    fn antennae_smell_far_out_along_their_cones() {
-        let run = |antenna: bool| {
+    fn eyes_and_antennae_widen_the_sense() {
+        let run = |part: Option<PartKind>| {
             let mut world = empty_world();
             let h = world.config.world.height;
             let mut g = with_part(world.ancestor, 0, PartKind::Flagellum, 0, 0xFF, 16);
-            if antenna {
-                g = with_part(g, 1, PartKind::Antenna, 0, 0xFF, 0);
+            if let Some(kind) = part {
+                // Facing backward: direction doesn't matter.
+                g = with_part(g, 1, kind, 0, 0xFF, 16);
             }
             g.0[gene::SIZE] = 0x40;
             g.0[gene::DRIVES + drive::MINERALS] = 0xFF;
@@ -3266,21 +3211,18 @@ mod tests {
             let i = add(&mut world, g, pos);
             world.organisms[i].heading = 0.0;
             world.organisms[i].steer_heading = 0.0;
-            // Clean water, with minerals well beyond the all-round smell, straight ahead.
+            // Clean water, with minerals well beyond the basic sense, straight ahead.
             world.env.minerals.data.fill(0.0);
             world.env.vents.clear();
             let r = world.organisms[i].radius;
-            world.env.minerals.add(pos + Vec2::new(25.0 * r, 0.0), 5.0);
+            world.env.minerals.add(pos + Vec2::new(12.0 * r, 0.0), 5.0);
             world.step();
             world.step();
             world.organisms[i].activity
         };
-        assert_eq!(run(true), Activity::Foraging, "the antenna smells it");
-        assert_ne!(
-            run(false),
-            Activity::Foraging,
-            "too far to smell without one"
-        );
+        assert_eq!(run(Some(PartKind::Eye)), Activity::Foraging, "an eye senses it");
+        assert_eq!(run(Some(PartKind::Antenna)), Activity::Foraging, "so does an antenna");
+        assert_ne!(run(None), Activity::Foraging, "too far without either");
     }
 
     #[test]
@@ -3317,7 +3259,7 @@ mod tests {
     }
 
     #[test]
-    fn eyes_see_only_where_they_look() {
+    fn bodies_are_sensed_in_every_direction() {
         let run = |eye_angle: u8| {
             let mut world = empty_world();
             let h = world.config.world.height;
@@ -3338,8 +3280,8 @@ mod tests {
             world.step();
             world.organisms[i].activity
         };
-        assert_eq!(run(0), Activity::Hunting, "an eye facing the prey sees it");
-        assert_ne!(run(16), Activity::Hunting, "an eye facing away doesn't");
+        assert_eq!(run(0), Activity::Hunting, "an eye facing the prey senses it");
+        assert_eq!(run(16), Activity::Hunting, "so does one facing away");
     }
 
     #[test]

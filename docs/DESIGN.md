@@ -109,7 +109,7 @@ With the default penalty of 0.4, a specialist (one gene only) gets `c = x`. Taki
 
 ### Example: the ancestor
 
-A tiny, floating, green photosynthesizer with no body parts, so it can't move, and it's blind: it only smells the water around it. Every other ability has to evolve.
+A tiny, floating, green photosynthesizer with no body parts, so it can't move, and it senses only what's within 4 body radii of it. Every other ability has to evolve.
 
 ```
 B: 20 A0 50 20 00 00   radius 2, floats gently, modest reserves, lives ~10 min, round
@@ -149,7 +149,7 @@ Each part is three bytes in chromosome P:
 | Byte | Meaning |
 |------|---------|
 | Type | Low 4 bits: kind (0 = empty slot). High 4 bits: symmetry: 0 single, 1 mirrored pair, 2–5 a ring of 3–6 |
-| Size | Strength, length, and how elaborate it looks (a small eye is a pigment spot, a big one a camera eye) |
+| Size | Strength, length, and how elaborate it looks (a small eye is a pigment spot, a big one a camera eye; looks only, for eyes) |
 | Place | High 3 bits: segment 1–6, 6 = every segment, 7 = on the tip of the previous part. Low 5 bits: angle around the body (0 = forward, 16 = back) |
 
 Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-segment body is 8 legs. Parts attached "on the previous part" make trees: an eye on a stalk, fronds on stems, claws on legs.
@@ -165,8 +165,8 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 | Leg | Rowing through open water and walking on rock, both across its axis (legs pointing down move forward), like a copepod's; grip against currents | Walks faster than it rows; turns best while walking |
 | Holdfast | Anchors to rock on contact; draws extra nutrients there | Anchored organisms can't be moved by currents |
 | Stalk | Raises whatever is attached to its tip | Parts on a stalk work 30% better |
-| Eye | Sight in a cone where it faces: the only way to see light, other bodies and carcasses | Bigger = farther, narrower; needs light |
-| Antenna | Smell (temperature, minerals, oxygen, detritus) far out in a cone where it points, and a little farther all round | Works in the dark |
+| Eye | Widens the sense all round (exactly like an antenna) | Bigger = farther; costs the same as an antenna |
+| Antenna | Widens the sense all round (exactly like an eye) | Bigger = farther |
 | Lure | Glows; anything drawn to light swims toward it | The anglerfish trick |
 | Spine | Hurts attackers | |
 | Jaw | Bite strength | Works best facing forward |
@@ -178,7 +178,7 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 - **Moving and facing.** Each tick an organism moves in whichever direction its organs allow that gets it closest to where it wants to go, and turns so that its best direction points there. Forward swimmers face their target; a body that swims best sideways travels sideways.
 - **Turning** needs an organ to turn with: fins, cilia, flagella, flukes and tentacles, or legs while walking on rock. A body without one keeps its orientation forever. Long and segmented bodies turn more slowly.
 - **Walking** speed from legs, **grip** from legs, tentacles and holdfasts, **anchoring** from holdfasts. Only organisms with such parts check whether they touch rock.
-- **Senses**: each eye is a view cone, and each antenna a smell cone (up to six of each are tracked). Everyone smells the water around it; without eyes it's blind to light and other bodies (touch only).
+- **Sense**: one radius, the same in every direction. Eyes and antennae add to it alike.
 - **Grasps**: one circle around each tentacle's base (up to 8), each with its own pull strength; **light span** and nutrient-uptake surface from fronds; **filtering** from cilia and tentacles; **glow** from lures.
 - **Armor** from shell plates and **spikes** from spines, **per side** (front, left, back, right): a plate or spine mostly guards the side it faces, so a shell on the back protects against chasers but not a head-on attack. **Jaws** from jaws, strongest facing forward. All with diminishing returns (1 − e^(−x)).
 - Every part costs **upkeep** and has **mass**: building a body with parts costs more, and heavy parts sink it.
@@ -303,24 +303,23 @@ Motile organisms (anything that can swim or walk) steer by a weighted sum of **d
 
 | Gene | Drive | Stimulus |
 |------|-------|----------|
-| N0 | Light | Light, seen (eyes only) |
-| N1 | Warmth | Temperature, smelled |
-| N2 | Minerals | Minerals, smelled |
-| N3 | Carrion | Detritus, smelled, and carcasses, seen |
+| N0 | Light | Light, sensed |
+| N1 | Warmth | Temperature, sensed |
+| N2 | Minerals | Minerals, sensed |
+| N3 | Carrion | Detritus and carcasses, sensed |
 | N4 | Smaller | Seen organisms of other species under 80% of own radius |
 | N5 | Larger | Seen organisms of other species over 125% of own radius |
 | N6 | Kin | Seen members of its own species (schooling or spacing) |
 | N7 | Crowding | Bodies packed within 3 body radii, felt by touch: toward them (clumping) or away (spacing out) |
-| N8 | Oxygen | Oxygen, smelled |
+| N8 | Oxygen | Oxygen, sensed |
 
 - Food-related drives (light, minerals, carrion, smaller) are scaled by **hunger**, so fed organisms relax.
 - When nothing is sensed, restlessness (N9) sets a cruising throttle and random turning.
-- **Smell** reads the water: temperature, minerals, oxygen and detritus. Everyone compares the water across 4 body radii all round, without organs. Each **antenna** adds a little to that (full antennae: +4 radii) and smells much farther out along its cone (30 body radii for a full-size one), so it can catch a plume ahead long before the body reaches it. Smell works in the dark.
-- **Sight** is the only way to sense **light** (phototaxis needs eyes), **other organisms** and **carcasses**. Eyes see within their view cones and **need light**: in darkness they see only 15% as far (full sight from 10% of surface noon light). Light is judged by looking: brighter out along an eye than here means that way. So the surface favors eyes and the deep favors antennae. Eyes only pick out individuals at least ~1/8 of their own size — a whale doesn't track single bacteria; it swims toward dense food fields instead.
+- **Sense** is the only sense, and it has no direction: everything an organism detects (light, temperature, minerals, oxygen, detritus, other organisms, carcasses) is within its sense radius, all round. Everyone senses 4 body radii around, without organs. Eyes and antennae work exactly alike: each widens the radius by its size (a stalk raises it 30%), up to +16 radii (`parts.sense_range`; a pair of full-size ones gives most of it). Fields (light, water chemistry, temperature) are compared across the radius to find which way is better; bodies and carcasses are noticed anywhere inside it. Only individuals at least ~1/8 of the organism's own size are picked out — a whale doesn't track single bacteria; it swims toward dense food fields instead.
 - **Lures** count as light: anything with a positive light drive swims toward them.
 - **Kin** = the same species. Hunters spare their own species unless they're hungry (below half-full reserves they turn cannibal); a look-alike of another species is prey.
 
-Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Minerals, +Warmth), hunting (+Smaller), fleeing (−Larger), schooling (+Kin), mats and clumps (+Crowding) or spacing out (−Crowding). There's no drive to swim up or down: bodies float or sink by buoyancy, and only eyes find the light.
+Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Minerals, +Warmth), hunting (+Smaller), fleeing (−Larger), schooling (+Kin), mats and clumps (+Crowding) or spacing out (−Crowding). There's no drive to swim up or down: bodies float or sink by buoyancy, and the light drive finds the light.
 
 ---
 
