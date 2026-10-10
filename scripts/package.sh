@@ -37,10 +37,18 @@ case "$os" in
         mkdir -p "$app/MacOS"
         cp target/dist/evo_app "$app/MacOS/Microcosm"
         sed "s/@VERSION@/$version/g" packaging/Info.plist > "$app/Info.plist"
+        # Sign the whole bundle ad hoc (no Apple account needed). The linker only signs the
+        # bare program; a bundle without its own signature looks tampered with, and macOS
+        # calls a downloaded one "damaged" and won't open it at all.
+        codesign --force --deep --sign - "$out/Microcosm.app"
+        codesign --verify --deep --strict "$out/Microcosm.app"
         ;;
 esac
 
-(cd dist && if command -v zip >/dev/null; then
+(cd dist && if [ "$os" = macos ]; then
+    # Apple's own zipper keeps the bundle (and its signature) intact.
+    ditto -c -k --keepParent "$name" "$name.zip"
+elif command -v zip >/dev/null; then
     zip -qr "$name.zip" "$name"
 else
     7z a -tzip "$name.zip" "$name" >/dev/null

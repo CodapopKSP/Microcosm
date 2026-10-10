@@ -55,7 +55,11 @@ Each tagged release then pushes the zips to the `windows`, `mac` and `linux` cha
 
 ## Notes
 
-- **macOS** builds aren't signed or notarized (that needs Apple's paid developer membership), so
-  the first time, players right-click the app and choose Open.
+- **macOS** builds are signed ad hoc (`codesign --sign -` in `package.sh`), not with an Apple
+  Developer ID, and aren't notarized (that needs Apple's paid developer membership). The ad-hoc
+  signature is required: without it macOS calls the downloaded app "damaged" and only offers the
+  Trash. With it, the first launch is blocked as "can't be verified", and players allow it in
+  System Settings → Privacy & Security → Open Anyway (on macOS 14 and older, right-click → Open
+  also works). The macOS build is Apple silicon only.
 - **Windows** builds run without a console window, so command-line messages aren't shown.
 - The Linux build is made on Ubuntu 22.04 so it runs on that and newer distributions.

@@ -3,8 +3,11 @@ An evolution simulator: a living ocean, grown from a single microbe.
 
 HOW TO RUN
   Windows: double-click Microcosm.exe
-  macOS:   open Microcosm.app (the first time, right-click it and choose Open,
-           because the app isn't signed by Apple)
+  macOS:   open Microcosm.app. The first time, macOS says it can't check it
+           (the app isn't registered with Apple): click Done, then go to
+           System Settings > Privacy & Security, scroll down and click
+           "Open Anyway" next to Microcosm. (On macOS 14 and older you can
+           instead right-click the app and choose Open.)
   Linux:   run ./microcosm
 
 Press H in the game for the controls.
