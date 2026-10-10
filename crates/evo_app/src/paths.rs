@@ -1,6 +1,7 @@
 //! Where the game keeps things, so it runs from anywhere (an install folder, a download):
-//! the default settings and the built-in maps are built into the program, and saves and the
-//! player's own maps go in the system's per-user data folder:
+//! the default settings and the built-in maps are built into the program, and saves, the
+//! player's own maps and the organisms they make in the genome editor go in the system's
+//! per-user data folder:
 //!
 //! - Windows: `%APPDATA%\Microcosm`
 //! - macOS: `~/Library/Application Support/Microcosm`
@@ -8,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use evo_core::Config;
+use evo_core::{Config, Genome};
 use evo_core::config::MapSource;
 use evo_core::map::PaintedMap;
 
@@ -52,6 +53,80 @@ pub fn user_maps_dir() -> PathBuf {
 /// A user map's file.
 pub fn user_map_path(name: &str) -> PathBuf {
     user_maps_dir().join(format!("{name}.map"))
+}
+
+/// Where organisms made in the genome editor are saved (one `.toml` file each).
+pub fn organisms_dir() -> PathBuf {
+    data_dir().join("organisms")
+}
+
+/// An organism made in the genome editor: a starting preset for new worlds.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedOrganism {
+    pub name: String,
+    pub description: String,
+    pub genome: Genome,
+}
+
+impl SavedOrganism {
+    fn to_toml(&self) -> String {
+        let mut t = toml::Table::new();
+        t.insert("name".into(), self.name.clone().into());
+        t.insert("description".into(), self.description.clone().into());
+        t.insert("genome".into(), self.genome.to_string().into());
+        toml::to_string(&t).unwrap_or_default()
+    }
+
+    fn from_toml(text: &str) -> Result<Self, String> {
+        let t: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
+        let field = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        Ok(Self {
+            name: field("name"),
+            description: field("description"),
+            genome: Genome::parse(&field("genome"))?,
+        })
+    }
+}
+
+/// The file an organism named `name` is saved in.
+fn organism_path(name: &str) -> PathBuf {
+    organisms_dir().join(format!("{name}.toml"))
+}
+
+/// The player's saved organisms, sorted by name (files that can't be read are skipped).
+pub fn list_organisms() -> Vec<SavedOrganism> {
+    let mut out: Vec<SavedOrganism> = std::fs::read_dir(organisms_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            (path.extension()? == "toml").then_some(())?;
+            let mut o = SavedOrganism::from_toml(&std::fs::read_to_string(&path).ok()?).ok()?;
+            if o.name.is_empty() {
+                o.name = path.file_stem()?.to_str()?.to_string();
+            }
+            Some(o)
+        })
+        .collect();
+    out.sort_by_key(|o| o.name.to_lowercase());
+    out
+}
+
+/// Save an organism under its name (replacing one of the same name).
+pub fn save_organism(o: &SavedOrganism) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(organisms_dir()).map_err(|e| e.to_string())?;
+    let path = organism_path(&o.name);
+    std::fs::write(&path, o.to_toml()).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(path)
+}
+
+pub fn delete_organism(name: &str) -> Result<(), String> {
+    std::fs::remove_file(organism_path(name)).map_err(|e| e.to_string())
+}
+
+pub fn organism_exists(name: &str) -> bool {
+    organism_path(name).exists()
 }
 
 /// Whether a map of this name comes with the game.
@@ -176,6 +251,16 @@ pub fn all_map_names() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_organisms_read_back() {
+        let o = SavedOrganism {
+            name: "Glow worm".into(),
+            description: "Lures prey \"in\" the dark.\nSecond line.".into(),
+            genome: Genome::parse(&Config::default().population.ancestor).unwrap(),
+        };
+        assert_eq!(SavedOrganism::from_toml(&o.to_toml()).unwrap(), o);
+    }
 
     #[test]
     fn the_built_in_settings_and_maps_load() {

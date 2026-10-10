@@ -138,6 +138,10 @@ struct Menu {
     card_height: f32,
     /// The Map editor button was pressed.
     open_editor: bool,
+    /// Open the genome editor, with this organism (genome, name, description) if given.
+    open_genome_editor: Option<Option<(Genome, String, String)>>,
+    /// Organisms made in the genome editor (presets after the built-in ones).
+    user_presets: Vec<crate::paths::SavedOrganism>,
     /// The map the last picture was of (so coming back from the editor doesn't reset the
     /// chosen start area).
     preview_map: Option<String>,
@@ -174,6 +178,8 @@ impl Default for Menu {
             preview: None,
             card_height: 0.0,
             open_editor: false,
+            open_genome_editor: None,
+            user_presets: crate::paths::list_organisms(),
             preview_map: None,
         }
     }
@@ -203,6 +209,22 @@ const PRESETS: [Preset; 4] = [
         about: "Lives on vent minerals without oxygen. Start it near a vent.",
     },
 ];
+
+/// The built-in starting organisms, as (name, about, genome), for the genome editor's New list.
+pub(crate) fn builtin_presets(config: &Config) -> Vec<(&'static str, &'static str, Genome)> {
+    PRESETS.iter().map(|p| (p.name, p.about, p.genome(config))).collect()
+}
+
+/// The name of preset `i`: a built-in one, then the player's own.
+fn preset_name(i: usize, users: &[crate::paths::SavedOrganism]) -> String {
+    match PRESETS.get(i) {
+        Some(p) => p.name.to_string(),
+        None => users
+            .get(i - PRESETS.len())
+            .map(|o| o.name.clone())
+            .unwrap_or_default(),
+    }
+}
 
 /// The vent lineage's genome (also the "Vent chemotroph" preset).
 const VENT_ANCESTOR: &str = "B:207060300000 C:10C040 D:00FF0000 G:400080000000 H:2030 \
@@ -374,6 +396,12 @@ fn drift(
 fn refresh(mut menu: ResMut<Menu>, launch: Res<Launch>) {
     menu.saves = list_saves(&launch.0.save_dir);
     menu.setup.maps = list_maps();
+    // An organism may have been saved (or deleted) in the genome editor.
+    menu.user_presets = crate::paths::list_organisms();
+    let count = PRESETS.len() + menu.user_presets.len();
+    if menu.setup.preset >= count {
+        menu.setup.preset = 0;
+    }
     menu.error = None;
     // A map may have been saved (or changed) in the editor: redraw its picture.
     menu.preview = None;
@@ -428,6 +456,10 @@ fn draw_menu(
     }
     if std::mem::take(&mut menu.open_editor) {
         next.set(AppState::Editor);
+    }
+    if let Some(request) = menu.open_genome_editor.take() {
+        commands.insert_resource(crate::genome_editor::EditGenome(request));
+        next.set(AppState::GenomeEditor);
     }
     Ok(())
 }
@@ -826,6 +858,10 @@ fn splash(
             menu.open_editor = true;
         }
         ui.add_space(10.0);
+        if big_button(ui, "Genome editor").clicked() {
+            menu.open_genome_editor = Some(None);
+        }
+        ui.add_space(10.0);
         if big_button(ui, "Quit").clicked() {
             exit.write(AppExit::Success);
         }
@@ -934,6 +970,8 @@ fn new_world(
         preview,
         error,
         card_height,
+        user_presets,
+        open_genome_editor,
         ..
     } = menu;
     // Both cards are drawn as tall as the taller one was last frame.
@@ -955,7 +993,10 @@ fn new_world(
                 });
                 card().show(&mut cols[1], |ui| {
                     let top = ui.cursor().min.y;
-                    ancestor_column(ui, setup, preview.as_ref());
+                    if ancestor_column(ui, setup, preview.as_ref(), user_presets) {
+                        let name = preset_name(setup.preset, user_presets);
+                        *open_genome_editor = Some(Some((setup.genome, name, String::new())));
+                    }
                     // Pad up to the taller card's height (measured last frame).
                     let used = ui.cursor().min.y - top;
                     tallest = tallest.max(used);
@@ -1367,26 +1408,59 @@ fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>)
     });
 }
 
-fn ancestor_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>) {
+/// The ancestor's card. Returns whether "Edit in genome editor" was pressed.
+fn ancestor_column(
+    ui: &mut egui::Ui,
+    setup: &mut Setup,
+    preview: Option<&Preview>,
+    users: &[crate::paths::SavedOrganism],
+) -> bool {
     heading(ui, "The ancestor");
     let config = preview.map(|p| p.config.clone()).unwrap_or_default();
     caption(ui, "Preset");
     let mut preset = setup.preset;
-    egui::ComboBox::from_id_salt("preset")
-        .width(220.0)
-        .selected_text(PRESETS[preset.min(PRESETS.len() - 1)].name)
-        .show_ui(ui, |ui| {
-            for (i, p) in PRESETS.iter().enumerate() {
-                ui.selectable_value(&mut preset, i, p.name)
-                    .on_hover_text(p.about);
-            }
-        });
+    let mut edit = false;
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("preset")
+            .width(220.0)
+            .selected_text(preset_name(preset, users))
+            .show_ui(ui, |ui| {
+                for (i, p) in PRESETS.iter().enumerate() {
+                    ui.selectable_value(&mut preset, i, p.name)
+                        .on_hover_text(p.about);
+                }
+                if !users.is_empty() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Your organisms").size(12.0).color(MUTED));
+                    for (i, o) in users.iter().enumerate() {
+                        let r = ui.selectable_value(&mut preset, PRESETS.len() + i, &o.name);
+                        if !o.description.is_empty() {
+                            r.on_hover_text(&o.description);
+                        }
+                    }
+                }
+            });
+        edit = ui
+            .button("Edit in genome editor")
+            .on_hover_text("Open this organism in the genome editor, to change it and save it as your own preset")
+            .clicked();
+    });
     if preset != setup.preset {
         setup.preset = preset;
-        setup.genome = PRESETS[preset].genome(&config);
+        setup.genome = match PRESETS.get(preset) {
+            Some(p) => p.genome(&config),
+            None => users[preset - PRESETS.len()].genome,
+        };
         setup.sync_text();
     }
-    ui.label(egui::RichText::new(PRESETS[setup.preset].about).color(MUTED));
+    let about = match PRESETS.get(setup.preset) {
+        Some(p) => p.about.to_string(),
+        None => match users.get(setup.preset - PRESETS.len()) {
+            Some(o) if !o.description.is_empty() => o.description.clone(),
+            _ => "Made in the genome editor.".to_string(),
+        },
+    };
+    ui.label(egui::RichText::new(about).color(MUTED));
 
     let traits = Traits::decode(&setup.genome, &config);
     ui.add_space(8.0);
@@ -1526,6 +1600,7 @@ fn ancestor_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Previe
 
     ui.add_space(6.0);
     ui.checkbox(&mut setup.vent_life, "Add vent chemotrophs at each vent");
+    edit
 }
 
 /// Build the world from the setup. An existing autosave is set aside under a dated name first.

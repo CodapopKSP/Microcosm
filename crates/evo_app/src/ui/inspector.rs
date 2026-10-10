@@ -418,7 +418,7 @@ fn overview(ui: &mut egui::Ui, world: &World, o: &Organism) {
     }
 }
 
-fn body(ui: &mut egui::Ui, world: &World, o: &Organism) {
+pub(crate) fn body(ui: &mut egui::Ui, world: &World, o: &Organism) {
     let t = &o.traits;
     let shape = BodyShape::from_genome(&o.genome);
     let list = parts::decode_parts(&o.genome);

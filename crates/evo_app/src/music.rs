@@ -1,5 +1,5 @@
-//! Music: the menu track loops on the menus and in the map editor, and fades out when a world
-//! starts. It's built into the program (`assets/audio/menu.ogg`).
+//! Music: the menu track loops on the menus, and fades out when a world starts or an editor
+//! opens (they're quiet). It's built into the program (`assets/audio/menu.ogg`).
 
 use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume};
 use bevy::prelude::*;
@@ -17,7 +17,8 @@ pub struct MusicPlugin;
 impl Plugin for MusicPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::Menu), start_menu_music)
-            .add_systems(OnEnter(AppState::Editor), start_menu_music)
+            .add_systems(OnEnter(AppState::Editor), fade_out_menu_music)
+            .add_systems(OnEnter(AppState::GenomeEditor), fade_out_menu_music)
             .add_systems(OnEnter(AppState::Running), fade_out_menu_music)
             .add_systems(Update, fade);
     }
@@ -35,8 +36,7 @@ struct FadingOut;
 #[derive(Resource)]
 struct MenuTrack(Handle<AudioSource>);
 
-/// Start the menu track, unless it's already playing (going between the menu and the editor
-/// keeps it going).
+/// Start the menu track, unless it's already playing.
 fn start_menu_music(
     mut commands: Commands,
     playing: Query<(), (With<MenuMusic>, Without<FadingOut>)>,

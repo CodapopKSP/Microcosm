@@ -65,6 +65,10 @@ The main techniques:
 | `camera.rs` | Pan/zoom/follow, click-to-select, the auto-camera "director" for streaming |
 | `render/` | One dynamic mesh with a quad per visible body and one oriented quad per body part, shaded procedurally in `organism.wgsl` (each part kind has its own art that grows more elaborate with its size). Parts are laid out once per genome and cached, and only drawn once a body is a few pixels across. A world-sized quad with `background.wgsl` draws water, light, shadows, rock, vents, marine snow, dead zones, red tides and oxygen bubbles from field textures, plus the chemistry map (M). HDR + bloom. |
 | (effects) | `World::fx` holds short-lived visual events from the last few seconds (gulps, bites, carcass bites, impact shockwaves); the renderer draws them as extra quads. Organisms also carry `ate_tick`/`hurt_tick` for feeding and hurt flashes. |
+| `menu.rs` | The main menu (a live backdrop world behind it) and the New world screen: map, start area, seed, population, and the ancestor (built-in presets and the player's saved organisms) |
+| `editor.rs` | The map editor (`--editor`) |
+| `genome_editor.rs` | The genome editor (`--genome-editor`): every gene as a slider and hex value, part-slot pickers, the organism drawn live by the renderer in a small paused world, saved as presets (`paths.rs`) |
+| `paths.rs` | Where files live: the user data folder (saves, maps, organisms), the built-in config and maps |
 | `ui/` | egui: HUD (clock and speed, weather, life, round panel buttons), organism inspector (a card beside the toolbar with Overview / Body / Chemistry / Genome tabs), species list, charts, event ticker, field notebook (`notebook.rs`, with pencil sketches of organisms drawn part by part in `sketch.rs`, handwritten in the Kalam font from `assets/fonts`), stream overlay |
 
 The viewer interpolates organism positions between ticks, so motion stays smooth at any speed.

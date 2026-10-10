@@ -159,7 +159,7 @@ fn new_flat() -> PaintedMap {
 }
 
 /// A name that's safe as a file name (letters, digits, spaces, - and _).
-fn clean_name(name: &str) -> String {
+pub(crate) fn clean_name(name: &str) -> String {
     name.trim()
         .chars()
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' { c } else { '-' })
@@ -896,7 +896,7 @@ fn tool_tile(ui: &mut egui::Ui, tool: Tool, name: &str, key: &str, on: bool, wid
 }
 
 /// A small round button with a painted icon.
-fn round_icon(
+pub(crate) fn round_icon(
     ui: &mut egui::Ui,
     enabled: bool,
     icon: impl FnOnce(&egui::Painter, Pos2, Color32),
@@ -923,7 +923,7 @@ fn round_icon(
 }
 
 /// An arrow curling round (undo, or redo when `forward`).
-fn icon_curl(p: &egui::Painter, c: Pos2, color: Color32, forward: bool) {
+pub(crate) fn icon_curl(p: &egui::Painter, c: Pos2, color: Color32, forward: bool) {
     let sign = if forward { -1.0 } else { 1.0 };
     let pts: Vec<Pos2> = (0..=12)
         .map(|i| {
@@ -938,7 +938,7 @@ fn icon_curl(p: &egui::Painter, c: Pos2, color: Color32, forward: bool) {
 }
 
 /// Four corners (fit the view).
-fn icon_fit(p: &egui::Painter, c: Pos2, color: Color32) {
+pub(crate) fn icon_fit(p: &egui::Painter, c: Pos2, color: Color32) {
     let s = 6.0;
     let k = 3.0;
     let stroke = Stroke::new(1.6, color);
@@ -949,13 +949,13 @@ fn icon_fit(p: &egui::Painter, c: Pos2, color: Color32) {
     }
 }
 
-fn icon_back(p: &egui::Painter, c: Pos2, color: Color32) {
+pub(crate) fn icon_back(p: &egui::Painter, c: Pos2, color: Color32) {
     let stroke = Stroke::new(2.0, color);
     p.line_segment([c + vec2(3.0, -6.0), c + vec2(-3.0, 0.0)], stroke);
     p.line_segment([c + vec2(-3.0, 0.0), c + vec2(3.0, 6.0)], stroke);
 }
 
-fn hint(ui: &mut egui::Ui, text: &str) {
+pub(crate) fn hint(ui: &mut egui::Ui, text: &str) {
     ui.label(egui::RichText::new(text).size(12.0).color(MUTED));
 }
 

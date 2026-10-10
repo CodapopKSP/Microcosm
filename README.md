@@ -66,7 +66,8 @@ cargo run --release -- --stream
 
 ### Files and releases
 
-Saves (autosave, quicksave) and maps made in the map editor live in your user data folder, not
+Saves (autosave, quicksave), maps made in the map editor and organisms made in the genome editor
+(`organisms/<name>.toml`) live in your user data folder, not
 the project: `~/.local/share/microcosm` on Linux, `%APPDATA%\Microcosm` on Windows,
 `~/Library/Application Support/Microcosm` on macOS (`--save-dir` overrides the saves folder).
 The default settings and built-in maps are built into the program. To build zips for players
@@ -93,6 +94,8 @@ cargo run --release -- --load saves/two_hours.bin
 All tunable numbers live in [`configs/default.toml`](configs/default.toml), with comments. Copy it, edit it, and pass it with `--config`. Every key is optional.
 
 Maps can also be painted in the **Map editor** (from the main menu, or `--editor`): paint rock, open water or cave with a round or square brush of any size (caves are open water that's dark and keeps filling with detritus and nutrients: a home for anaerobic scavengers), place permanent vents and vent spawn points (temporary vents only open there), draw named start areas (offered on the New world screen as places for life to start), set the water level (rock above it stands out as land) and the map's size, then name and save it. Saved maps (`configs/maps/<name>.map`) appear in the New world map list.
+
+Starting organisms can be built in the **Genome editor** (from the main menu, or `--genome-editor`; or "Edit in genome editor" next to the ancestor on the New world screen): every gene has a slider and a typed hex value with what it means, the eight part slots have pickers for the kind, symmetry, size, placement and angle, and the whole genome can be copied or pasted as text. The organism is drawn live by the game's own renderer, with the inspector's readout of its parts and abilities beside it. Undo/redo, a Mutate button, and New (start from a built-in preset) / Open (your saved organisms). Saved organisms appear under Preset on the New world screen, after the built-in ones.
 
 The world's size and terrain live in map files in [`configs/maps/`](configs/maps/). The game ships with one map, **Deep Ocean** (`Deep Ocean.map`, painted in the editor). Maps you paint and save appear beside it. A config picks one with `[world] map = "Deep Ocean"`, and `--world-map NAME` overrides that. The map is the same for every world seed. A map can also be a `.toml` file naming a terrain generator and its settings (see `TerrainConfig`); without any map file the built-in generated ocean is used.
 

@@ -223,6 +223,10 @@ impl Plugin for RenderPlugin {
         )
         .add_systems(OnEnter(crate::AppState::Menu), setup.in_set(WorldViewSetup))
         .add_systems(
+            OnEnter(crate::AppState::GenomeEditor),
+            setup.in_set(WorldViewSetup),
+        )
+        .add_systems(
             PostUpdate,
             (update_background, update_organisms, draw_overlays)
                 .before(bevy::transform::TransformSystems::Propagate)

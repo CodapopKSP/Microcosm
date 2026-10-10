@@ -2,7 +2,7 @@
 
 mod charts;
 mod hud;
-mod inspector;
+pub(crate) mod inspector;
 mod notebook;
 mod probe;
 mod sketch;

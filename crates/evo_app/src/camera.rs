@@ -75,7 +75,10 @@ impl Plugin for CameraPlugin {
                 Update,
                 apply_camera
                     .after(crate::sim::SimStep)
-                    .run_if(in_state(crate::AppState::Menu))
+                    .run_if(
+                        in_state(crate::AppState::Menu)
+                            .or_else(in_state(crate::AppState::GenomeEditor)),
+                    )
                     .run_if(resource_exists::<CameraState>)
                     .run_if(resource_exists::<SimState>),
             );

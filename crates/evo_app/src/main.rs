@@ -4,6 +4,7 @@
 
 mod camera;
 mod editor;
+mod genome_editor;
 mod gallery;
 mod menu;
 mod music;
@@ -73,6 +74,9 @@ pub struct Args {
     /// Open the map editor.
     #[arg(long)]
     pub editor: bool,
+    /// Open the genome editor.
+    #[arg(long)]
+    pub genome_editor: bool,
     /// Open the charts window at startup.
     #[arg(long)]
     pub charts: bool,
@@ -104,6 +108,8 @@ pub enum AppState {
     Running,
     /// The map editor.
     Editor,
+    /// The genome editor.
+    GenomeEditor,
 }
 
 /// The command line, for starting worlds later (from the menu).
@@ -149,6 +155,8 @@ fn main() {
         AppState::Running
     } else if args.editor {
         AppState::Editor
+    } else if args.genome_editor {
+        AppState::GenomeEditor
     } else {
         AppState::Menu
     };
@@ -210,6 +218,7 @@ fn main() {
         ui::UiPlugin,
         menu::MenuPlugin,
         editor::EditorPlugin,
+        genome_editor::GenomeEditorPlugin,
         music::MusicPlugin,
         sfx::SfxPlugin,
     ))

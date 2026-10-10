@@ -13,8 +13,9 @@ HOW TO RUN
 Press H in the game for the controls.
 
 WHERE YOUR FILES GO
-Saves and the maps you make in the map editor are kept in your user folder,
-not next to the game, so you can update or move the game freely:
+Saves, the maps you make in the map editor and the organisms you make in the
+genome editor are kept in your user folder, not next to the game, so you can
+update or move the game freely:
   Windows: %APPDATA%\Microcosm
   macOS:   ~/Library/Application Support/Microcosm
   Linux:   ~/.local/share/microcosm

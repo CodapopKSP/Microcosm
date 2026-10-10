@@ -37,7 +37,7 @@ const HARD_KICK: f32 = 4.0;
 pub const AUDIBLE_ZOOM: f32 = 1.2;
 /// How much quieter sounds are (decibels) by the far end of that range: they fall steadily,
 /// the same number of decibels per zoom step (see [`splash_volume`]).
-const FALLOFF_DB: f32 = 24.0;
+const FALLOFF_DB: f32 = 15.0;
 /// Loudness at the closest zoom (1 = as recorded).
 const MAX_VOLUME: f32 = 1.0;
 /// At most this many splashes start each second, and this many play at once.
