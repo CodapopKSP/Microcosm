@@ -88,6 +88,7 @@ fn pill(
         .size()
         .x;
     let (rect, response) = ui.allocate_exact_size(vec2(width + 38.0, 28.0), Sense::click());
+    crate::ui_sfx::hover_sound(&response);
     let hovered = response.hovered();
     let fill = if on {
         Color32::from_rgb(38, 86, 77)
@@ -206,35 +207,7 @@ fn bullet(ui: &mut egui::Ui, text: impl Into<String>, color: Color32) {
 
 /// The tab bar: one rounded track with the open tab lit.
 fn tabs(ui: &mut egui::Ui, tab: &mut Tab) {
-    let w = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(vec2(w, 28.0), Sense::hover());
-    ui.painter().rect_filled(rect, 14.0, Color32::from_rgba_unmultiplied(255, 255, 255, 10));
-    let seg = rect.width() / TABS.len() as f32;
-    for (i, (t, name)) in TABS.iter().enumerate() {
-        let r = Rect::from_min_size(
-            Pos2::new(rect.left() + seg * i as f32, rect.top()),
-            vec2(seg, rect.height()),
-        )
-        .shrink(2.0);
-        let response = ui.interact(r, ui.id().with(("tab", i)), Sense::click());
-        let on = *tab == *t;
-        let p = ui.painter();
-        if on {
-            p.rect(r, 12.0, Color32::from_rgb(38, 86, 77), Stroke::new(1.0, ACCENT.gamma_multiply(0.6)), egui::StrokeKind::Inside);
-        } else if response.hovered() {
-            p.rect_filled(r, 12.0, Color32::from_rgba_unmultiplied(255, 255, 255, 14));
-        }
-        p.text(
-            r.center(),
-            egui::Align2::CENTER_CENTER,
-            *name,
-            FontId::proportional(12.5),
-            if on { ACCENT } else { TEXT },
-        );
-        if response.clicked() {
-            *tab = *t;
-        }
-    }
+    hud::tab_bar(ui, tab, &TABS);
 }
 
 // ---- The card ----
@@ -694,44 +667,53 @@ fn genome(ui: &mut egui::Ui, world: &World, o: &Organism) {
             p.add(egui::Shape::line(pts, Stroke::new(1.5, MUTED)));
             resp
         });
+        crate::ui_sfx::silent(&header.inner);
         if header.inner.clicked() {
             state.toggle(ui);
         }
         state.show_body_unindented(ui, |ui| {
-            egui::Grid::new(("genes", c.letter))
-                .num_columns(4)
-                .spacing([8.0, 2.0])
-                .show(ui, |ui| {
-                    for (k, i) in c.range().enumerate() {
-                        let info = c.genes[k];
-                        let value = o.genome.0[i];
-                        let mutated = o.mutations & (1 << i) != 0;
-                        let color = if mutated { MUTATED } else { TEXT };
-                        ui.label(RichText::new(gene_code(i)).monospace().size(11.0).color(MUTED));
-                        ui.label(RichText::new(info.name).size(12.5).color(color));
+            // Each gene on two lines: its code, name, a bar and its value; then what it means
+            // underneath (descriptions can be long, so they get the card's whole width).
+            for (k, i) in c.range().enumerate() {
+                let info = c.genes[k];
+                let value = o.genome.0[i];
+                let mutated = o.mutations & (1 << i) != 0;
+                let color = if mutated { MUTATED } else { TEXT };
+                ui.add_space(3.0);
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [28.0, 16.0],
+                        egui::Label::new(RichText::new(gene_code(i)).monospace().size(11.0).color(MUTED)),
+                    );
+                    ui.label(RichText::new(info.name).size(12.5).color(color));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(4.0);
                         ui.label(RichText::new(format!("{value:02X}")).monospace().size(12.0).color(color));
-                        let desc = describe_gene(i, &o.genome, t, &world.config);
-                        ui.horizontal(|ui| {
-                            let (rect, _) = ui.allocate_exact_size(vec2(40.0, 6.0), Sense::hover());
-                            let painter = ui.painter();
-                            painter.rect_filled(rect, 3.0, TRACK);
-                            if info.signed() {
-                                let mid = rect.center().x;
-                                let v = o.genome.signed(i);
-                                let x = mid + v * rect.width() * 0.5;
-                                let r = Rect::from_min_max(egui::pos2(mid.min(x), rect.top()), egui::pos2(mid.max(x), rect.bottom()));
-                                let c = if v >= 0.0 { Color32::from_rgb(110, 200, 130) } else { DANGER };
-                                painter.rect_filled(r, 3.0, c);
-                            } else {
-                                let mut r = rect;
-                                r.set_width(rect.width() * value as f32 / 255.0);
-                                painter.rect_filled(r, 3.0, ACCENT.gamma_multiply(0.75));
-                            }
-                            ui.label(RichText::new(desc).size(11.0).color(MUTED));
-                        });
-                        ui.end_row();
-                    }
+                        let (rect, _) = ui.allocate_exact_size(vec2(56.0, 6.0), Sense::hover());
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, 3.0, TRACK);
+                        if info.signed() {
+                            let mid = rect.center().x;
+                            let v = o.genome.signed(i);
+                            let x = mid + v * rect.width() * 0.5;
+                            let r = Rect::from_min_max(egui::pos2(mid.min(x), rect.top()), egui::pos2(mid.max(x), rect.bottom()));
+                            let c = if v >= 0.0 { Color32::from_rgb(110, 200, 130) } else { DANGER };
+                            painter.rect_filled(r, 3.0, c);
+                        } else {
+                            let mut r = rect;
+                            r.set_width(rect.width() * value as f32 / 255.0);
+                            painter.rect_filled(r, 3.0, ACCENT.gamma_multiply(0.75));
+                        }
+                    });
                 });
+                let desc = describe_gene(i, &o.genome, t, &world.config);
+                ui.horizontal(|ui| {
+                    // Lined up under the gene's name (after its code and the gap).
+                    ui.add_space(28.0 + ui.spacing().item_spacing.x);
+                    ui.add(egui::Label::new(RichText::new(desc).size(11.5).color(MUTED)).wrap());
+                });
+            }
+            ui.add_space(2.0);
         });
     }
 }

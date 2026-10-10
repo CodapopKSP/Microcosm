@@ -848,10 +848,23 @@ pub fn format_game_duration(seconds: f32, time: &crate::config::TimeConfig) -> S
 
 /// A moment, as the clock shows it: "Year 3 · Day 14" (days count from the start).
 pub fn format_game_date(seconds: f64, time: &crate::config::TimeConfig) -> String {
-    let day = time.day_length.max(1e-3) as f64;
-    let days = (seconds + 0.3 * day) / day;
-    let years = days / time.year_length.max(1e-3) as f64;
-    format!("Year {} · Day {}", years as u64 + 1, days as u64 + 1)
+    let (year, season, day) = game_date(seconds, time);
+    format!("{} · Year {year} · Day {day}", crate::environment::SEASONS[season])
+}
+
+/// The calendar date `seconds` into a world: (year from 1, season 0..4 from spring, day of that
+/// season from 1). Days turn over at midnight, as the clock does; a season can begin partway
+/// through a day, and that day is its first.
+pub fn game_date(seconds: f64, time: &crate::config::TimeConfig) -> (u64, usize, u64) {
+    let day_len = time.day_length.max(1e-3) as f64;
+    let year_len = time.year_length.max(1e-3) as f64;
+    let days = seconds / day_len + crate::environment::DAY_START;
+    let year = (days / year_len).floor();
+    let in_year = days - year * year_len;
+    let season = ((in_year / year_len * 4.0) as usize).min(3);
+    let season_start = season as f64 * year_len / 4.0;
+    let day = in_year.floor() - season_start.floor() + 1.0;
+    (year as u64 + 1, season, day.max(1.0) as u64)
 }
 
 pub fn format_duration(seconds: f32) -> String {
@@ -882,8 +895,34 @@ mod tests {
         assert_eq!(format_game_duration(3600.0, &t), "1 year");
         assert_eq!(format_game_duration(4800.0, &t), "1 year, 2 days");
         assert_eq!(format_game_duration(36_000.0, &t), "10 years");
-        assert_eq!(format_game_date(0.0, &t), "Year 1 · Day 1");
-        assert_eq!(format_game_date(3600.0, &t), "Year 2 · Day 7");
+        assert_eq!(format_game_date(0.0, &t), "Spring · Year 1 · Day 1");
+        // A year later (6 days of 600 s), same time of day: spring again, in year 2.
+        assert_eq!(format_game_date(3600.0, &t), "Spring · Year 2 · Day 1");
+    }
+
+    #[test]
+    fn dates_count_days_within_the_season() {
+        let t = crate::config::TimeConfig::default(); // 600 s days, 6-day years: 1.5-day seasons
+        let at = |day_of_year: f64| {
+            // From midnight on day 0 (the world starts at 07:00).
+            let s = (day_of_year - crate::environment::DAY_START) * 600.0;
+            let (y, season, d) = game_date(s + 3.0 * 3600.0, &t); // in year 4
+            (y, crate::environment::SEASONS[season], d)
+        };
+        assert_eq!(at(0.5), (4, "Spring", 1));
+        assert_eq!(at(1.2), (4, "Spring", 2));
+        // Summer begins at noon on the second day: that day is summer's first.
+        assert_eq!(at(1.6), (4, "Summer", 1));
+        assert_eq!(at(2.4), (4, "Summer", 2));
+        assert_eq!(at(3.5), (4, "Autumn", 1));
+        assert_eq!(at(4.2), (4, "Autumn", 2));
+        assert_eq!(at(4.7), (4, "Winter", 1));
+        assert_eq!(at(5.9), (4, "Winter", 2));
+        // Never a day number bigger than a season has.
+        for k in 0..6000 {
+            let (_, _, d) = game_date(k as f64 * 7.3, &t);
+            assert!((1..=2).contains(&d), "day {d}");
+        }
     }
 
     #[test]

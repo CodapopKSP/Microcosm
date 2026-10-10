@@ -1,12 +1,13 @@
 //! The heads-up display over the world: clock and speed, weather, life, what's happening now
 //! (top left), and round panel buttons down the right edge.
 
-use bevy::prelude::Vec2;
+use bevy::prelude::{ResMut, Vec2};
 use bevy_egui::egui::{self, Color32, Pos2, Rect, Stroke, vec2};
 use evo_core::World;
 
 use super::{MapMode, UiState};
 use crate::camera::CameraState;
+use crate::settings::Settings;
 use crate::sim::{SPEEDS, Selection, SimState};
 
 pub(super) const TEXT: Color32 = Color32::from_rgb(222, 238, 236);
@@ -155,7 +156,7 @@ fn icon_branches(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     }
 }
 
-fn icon_chart(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
+pub(super) fn icon_chart(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     let base = c.y + s * 0.75;
     for (i, h) in [0.55f32, 1.0, 0.75, 1.4].iter().enumerate() {
         let x = c.x - s * 0.75 + i as f32 * s * 0.5;
@@ -169,14 +170,6 @@ fn icon_chart(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
         ],
         Stroke::new(1.2, color.gamma_multiply(0.7)),
     );
-}
-
-fn icon_clock(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
-    let stroke = Stroke::new(1.6, color);
-    p.circle_stroke(c, s * 0.85, stroke);
-    p.line_segment([c, c + vec2(0.0, -s * 0.55)], stroke);
-    p.line_segment([c, c + vec2(s * 0.4, s * 0.15)], stroke);
-    p.circle_filled(c, 1.6, color);
 }
 
 /// A closed notebook with an elastic band (the field notebook).
@@ -282,6 +275,54 @@ fn icon_play(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
 }
 
 /// A round button with a painted icon. `on` = its panel is open.
+/// A cross (close).
+pub(super) fn icon_close(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
+    let stroke = Stroke::new(1.8, color);
+    let d = s * 0.6;
+    p.line_segment([c + vec2(-d, -d), c + vec2(d, d)], stroke);
+    p.line_segment([c + vec2(d, -d), c + vec2(-d, d)], stroke);
+}
+
+/// A tab bar: one rounded track across the card with the open tab lit (as in the organism
+/// card and the charts).
+pub(super) fn tab_bar<T: PartialEq + Copy>(ui: &mut egui::Ui, current: &mut T, tabs: &[(T, &str)]) {
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(w, 28.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 14.0, Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+    let seg = rect.width() / tabs.len().max(1) as f32;
+    for (i, (t, name)) in tabs.iter().enumerate() {
+        let r = Rect::from_min_size(
+            Pos2::new(rect.left() + seg * i as f32, rect.top()),
+            vec2(seg, rect.height()),
+        )
+        .shrink(2.0);
+        let response = ui.interact(r, ui.id().with(("tab", i)), egui::Sense::click());
+        let on = *current == *t;
+        let p = ui.painter();
+        if on {
+            p.rect(
+                r,
+                12.0,
+                Color32::from_rgb(38, 86, 77),
+                Stroke::new(1.0, ACCENT.gamma_multiply(0.6)),
+                egui::StrokeKind::Inside,
+            );
+        } else if response.hovered() {
+            p.rect_filled(r, 12.0, Color32::from_rgba_unmultiplied(255, 255, 255, 14));
+        }
+        p.text(
+            r.center(),
+            egui::Align2::CENTER_CENTER,
+            *name,
+            egui::FontId::proportional(12.5),
+            if on { ACCENT } else { TEXT },
+        );
+        if response.clicked() {
+            *current = *t;
+        }
+    }
+}
+
 pub(super) fn round_button(
     ui: &mut egui::Ui,
     on: bool,
@@ -290,6 +331,7 @@ pub(super) fn round_button(
 ) -> egui::Response {
     let (rect, response) =
         ui.allocate_exact_size(vec2(radius * 2.0, radius * 2.0), egui::Sense::click());
+    crate::ui_sfx::hover_sound(&response);
     let p = ui.painter();
     let c = rect.center();
     let hovered = response.hovered();
@@ -354,12 +396,7 @@ fn clock_card(ui: &mut egui::Ui, sim: &mut SimState) {
                     .strong(),
             );
             ui.label(
-                egui::RichText::new(format!(
-                    "Year {} · {} · Day {}",
-                    c.year + 1,
-                    c.season_name(),
-                    c.day + 1
-                ))
+                egui::RichText::new(evo_core::traits::format_game_date(c.time, &world.config.time))
                 .size(12.5)
                 .color(MUTED),
             );
@@ -394,6 +431,7 @@ fn speed_controls(ui: &mut egui::Ui, sim: &mut SimState) {
         let mut hovered_index = None;
         for (i, speed) in SPEEDS.iter().enumerate().skip(1) {
             let (rect, response) = ui.allocate_exact_size(vec2(14.0, 26.0), egui::Sense::click());
+            crate::ui_sfx::hover_sound(&response);
             if response.hovered() {
                 hovered_index = Some(i);
             }
@@ -583,6 +621,9 @@ fn now_card(ui: &mut egui::Ui, world: &World, goto: &mut Option<Vec2>) {
                 .stroke(Stroke::new(1.0, color.gamma_multiply(0.6)))
                 .corner_radius(10);
             let response = ui.add(chip);
+            if target.is_some() {
+                crate::ui_sfx::hover_sound(&response);
+            }
             let response = if target.is_some() {
                 response.on_hover_text("Click to look")
             } else {
@@ -618,6 +659,7 @@ pub fn draw(
     sim: &mut SimState,
     cam: &mut CameraState,
     selection: &mut Selection,
+    settings: &mut ResMut<Settings>,
 ) -> f32 {
     // Top left: clock and speed, weather, life. A card that doesn't fit beside the previous
     // one (narrow window, side panels open) goes on the next row.
@@ -707,7 +749,7 @@ pub fn draw(
         }
     }
 
-    toolbar(ctx, view, ui_state, cam);
+    toolbar(ctx, view, ui_state, cam, settings);
 
     // Bottom right: performance, and the last save.
     egui::Area::new(egui::Id::new("hud_perf"))
@@ -741,8 +783,15 @@ pub fn draw(
 }
 
 /// Round buttons down the right edge of the view.
-fn toolbar(ctx: &egui::Context, view: Rect, ui_state: &mut UiState, cam: &mut CameraState) {
+fn toolbar(
+    ctx: &egui::Context,
+    view: Rect,
+    ui_state: &mut UiState,
+    cam: &mut CameraState,
+    settings: &mut ResMut<Settings>,
+) {
     let mut map_button = None;
+    let mut menu_button = None;
     egui::Area::new(egui::Id::new("hud_toolbar"))
         .fixed_pos(view.right_top() + vec2(-GAP, GAP))
         .pivot(egui::Align2::RIGHT_TOP)
@@ -761,12 +810,6 @@ fn toolbar(ctx: &egui::Context, view: Rect, ui_state: &mut UiState, cam: &mut Ca
                     .clicked()
                 {
                     ui_state.show_charts = !ui_state.show_charts;
-                }
-                if round_button(ui, ui_state.show_history, r, icon_clock)
-                    .on_hover_text("History (E)")
-                    .clicked()
-                {
-                    ui_state.show_history = !ui_state.show_history;
                 }
                 if round_button(ui, ui_state.show_notebook, r, icon_book)
                     .on_hover_text("Field notebook (N)")
@@ -793,23 +836,32 @@ fn toolbar(ctx: &egui::Context, view: Rect, ui_state: &mut UiState, cam: &mut Ca
                 {
                     cam.director = !cam.director;
                 }
-                if round_button(ui, ui_state.show_help, r, |p, c, s, col| {
-                    icon_text(p, c, s, col, "?")
-                })
-                .on_hover_text("Help (H)")
-                .clicked()
-                {
-                    ui_state.show_help = !ui_state.show_help;
-                }
                 ui.add_space(10.0);
-                if round_button(ui, false, r, icon_menu)
-                    .on_hover_text("Save, and go back to the main menu")
-                    .clicked()
-                {
-                    ui_state.to_menu = true;
+                let response = round_button(ui, ui_state.game_menu, r, icon_menu)
+                    .on_hover_text("Menu: main menu, help and volume");
+                if response.clicked() {
+                    ui_state.game_menu = !ui_state.game_menu;
                 }
+                menu_button = Some(response.rect);
             });
         });
+
+    // The menu flies out to the left of its button, level with its bottom.
+    if let (true, Some(button)) = (ui_state.game_menu, menu_button) {
+        let response = egui::Area::new(egui::Id::new("hud_game_menu"))
+            .fixed_pos(button.left_bottom() + vec2(-GAP, 0.0))
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .show(ctx, |ui| game_menu(ui, ui_state, settings))
+            .response;
+        // Clicking elsewhere closes it.
+        let pointer = ctx.pointer_hover_pos().unwrap_or_default();
+        if ctx.input(|i| i.pointer.any_click())
+            && !response.rect.contains(pointer)
+            && !button.contains(pointer)
+        {
+            ui_state.game_menu = false;
+        }
+    }
 
     // The map's choices fly out to the left of its button.
     if let (true, Some(button)) = (ui_state.map_menu, map_button) {
@@ -840,5 +892,150 @@ fn toolbar(ctx: &egui::Context, view: Rect, ui_state: &mut UiState, cam: &mut Ca
         {
             ui_state.map_menu = false;
         }
+    }
+}
+
+/// The menu: back to the main menu, help, and the master volume (kept between sessions).
+fn game_menu(ui: &mut egui::Ui, ui_state: &mut UiState, settings: &mut ResMut<Settings>) {
+    card().show(ui, |ui| {
+        ui.set_width(220.0);
+        ui.style_mut().visuals.override_text_color = Some(TEXT);
+        let w = ui.available_width();
+        if menu_item(ui, w, "Main menu", icon_door)
+            .on_hover_text("Save, and go back to the main menu")
+            .clicked()
+        {
+            ui_state.game_menu = false;
+            ui_state.to_menu = true;
+        }
+        ui.add_space(2.0);
+        if menu_item(ui, w, "Help", |p, c, s, col| icon_text(p, c, s, col, "?"))
+            .on_hover_text("Controls and keys (H)")
+            .clicked()
+        {
+            ui_state.game_menu = false;
+            ui_state.show_help = true;
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            // The speaker mutes and unmutes.
+            let (rect, speaker) = ui.allocate_exact_size(vec2(24.0, 22.0), egui::Sense::click());
+            crate::ui_sfx::hover_sound(&speaker);
+            let color = if speaker.hovered() { ACCENT } else { MUTED };
+            icon_speaker(ui.painter(), rect.center(), 8.0, color, settings.level());
+            let speaker = speaker.on_hover_text(if settings.muted { "Unmute" } else { "Mute" });
+            if speaker.clicked() {
+                settings.muted = !settings.muted;
+                settings.save();
+            }
+            ui.label(egui::RichText::new("Volume").size(14.0));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let text = if settings.muted {
+                    "Muted".to_string()
+                } else {
+                    format!("{:.0}%", settings.volume * 100.0)
+                };
+                ui.label(egui::RichText::new(text).size(13.0).color(MUTED));
+            });
+        });
+        let mut percent = settings.volume * 100.0;
+        ui.spacing_mut().slider_width = w;
+        // In the game's colours: a dark rail filled teal up to the handle.
+        let v = &mut ui.style_mut().visuals;
+        // (Greyed while muted.)
+        let fill = if settings.muted { MUTED.gamma_multiply(0.45) } else { ACCENT };
+        v.selection.bg_fill = fill.gamma_multiply(0.75);
+        v.widgets.inactive.bg_fill = Color32::from_rgb(30, 44, 48);
+        v.widgets.inactive.fg_stroke = Stroke::new(1.0, fill);
+        v.widgets.hovered.bg_fill = ACCENT;
+        v.widgets.active.bg_fill = ACCENT;
+        let slider = ui.add(
+            egui::Slider::new(&mut percent, 0.0..=100.0)
+                .show_value(false)
+                .trailing_fill(true),
+        );
+        if slider.changed() {
+            settings.volume = (percent / 100.0).clamp(0.0, 1.0);
+            // Turning it up (or down) means wanting to hear it.
+            settings.muted = false;
+        }
+        // Saved once it's let go of (not on every step of a drag).
+        if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+            settings.save();
+        }
+    });
+}
+
+/// One of the menu's choices: an icon and a name on a dark rounded tile that lights up under the
+/// pointer, like the game's other buttons.
+fn menu_item(
+    ui: &mut egui::Ui,
+    width: f32,
+    text: &str,
+    icon: impl FnOnce(&egui::Painter, Pos2, f32, Color32),
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 36.0), egui::Sense::click());
+    crate::ui_sfx::hover_sound(&response);
+    let hovered = response.hovered();
+    let p = ui.painter();
+    p.rect(
+        rect,
+        10.0,
+        if hovered { Color32::from_rgb(32, 49, 56) } else { Color32::from_rgb(22, 32, 36) },
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(150, 240, 210, if hovered { 120 } else { 40 })),
+        egui::StrokeKind::Inside,
+    );
+    let color = if hovered { ACCENT } else { TEXT };
+    icon(p, rect.left_center() + vec2(20.0, 0.0), 7.0, color);
+    p.text(
+        rect.left_center() + vec2(38.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        text,
+        egui::FontId::proportional(15.0),
+        color,
+    );
+    response
+}
+
+/// A door with an arrow leaving through it (back to the main menu).
+fn icon_door(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    let door = Rect::from_center_size(c + vec2(-s * 0.35, 0.0), vec2(s * 1.1, s * 2.0));
+    p.line_segment([door.right_top(), door.left_top()], stroke);
+    p.line_segment([door.left_top(), door.left_bottom()], stroke);
+    p.line_segment([door.left_bottom(), door.right_bottom()], stroke);
+    let tip = c + vec2(s * 1.1, 0.0);
+    p.line_segment([c + vec2(-s * 0.2, 0.0), tip], stroke);
+    p.line_segment([tip, tip + vec2(-s * 0.45, -s * 0.45)], stroke);
+    p.line_segment([tip, tip + vec2(-s * 0.45, s * 0.45)], stroke);
+}
+
+/// A speaker with as many sound waves as the volume is loud.
+fn icon_speaker(p: &egui::Painter, c: Pos2, s: f32, color: Color32, volume: f32) {
+    let body = [
+        c + vec2(-s, -s * 0.35),
+        c + vec2(-s * 0.45, -s * 0.35),
+        c + vec2(0.0, -s * 0.85),
+        c + vec2(0.0, s * 0.85),
+        c + vec2(-s * 0.45, s * 0.35),
+        c + vec2(-s, s * 0.35),
+    ];
+    p.add(egui::Shape::convex_polygon(body.to_vec(), color, Stroke::NONE));
+    let waves = if volume <= 0.0 { 0 } else { 1 + (volume * 2.99) as usize };
+    for k in 0..waves {
+        let r = s * (0.45 + 0.35 * k as f32);
+        let points: Vec<Pos2> = (0..=8)
+            .map(|i| {
+                let a = -0.8 + 1.6 * i as f32 / 8.0;
+                c + vec2(s * 0.15 + a.cos() * r, a.sin() * r)
+            })
+            .collect();
+        p.add(egui::Shape::line(points, Stroke::new(1.4, color)));
+    }
+    if waves == 0 {
+        let x = c + vec2(s * 0.6, 0.0);
+        let d = s * 0.35;
+        p.line_segment([x + vec2(-d, -d), x + vec2(d, d)], Stroke::new(1.4, color));
+        p.line_segment([x + vec2(-d, d), x + vec2(d, -d)], Stroke::new(1.4, color));
     }
 }

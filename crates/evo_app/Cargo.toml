@@ -21,5 +21,8 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "tonemapping_luts",
     "bevy_audio",
     "vorbis",
+    "wav",
 ] }
 bevy_egui = { version = "0.42", default-features = false, features = ["render", "default_fonts"] }
+# The button sounds' own audio output (see ui_sfx.rs); the same version Bevy plays sound with.
+rodio = { version = "0.22", default-features = false, features = ["playback", "tracing"] }

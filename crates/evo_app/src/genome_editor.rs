@@ -16,6 +16,7 @@ use evo_core::traits::describe_gene;
 use evo_core::{Config, Genome, Organism, Traits, World};
 
 use crate::AppState;
+use crate::ui_sfx::HoverSound;
 use crate::camera::CameraState;
 use crate::editor::{clean_name, hint, icon_back, icon_curl, icon_fit, round_icon};
 use crate::menu::{ACCENT, ERROR, MUTED, TEXT, caption, card, rgba, style_menu};
@@ -426,6 +427,7 @@ fn header(ui: &mut egui::Ui, ed: &mut GenomeEditor, history: &mut Option<bool>, 
         ui.spacing_mut().item_spacing.x = 6.0;
         if ui
             .add(file_button("Save", false))
+            .on_hover_sound()
             .on_hover_text("Save as a starting organism for new worlds (Ctrl+S)")
             .clicked()
         {
@@ -434,17 +436,19 @@ fn header(ui: &mut egui::Ui, ed: &mut GenomeEditor, history: &mut Option<bool>, 
         let (r, _) = egui::containers::menu::MenuButton::from_button(file_button("New", true)).ui(ui, |ui| {
             ui.label(egui::RichText::new("Start from").size(12.0).color(MUTED));
             for (name, about, genome) in crate::menu::builtin_presets(config) {
-                if ui.button(name).on_hover_text(about).clicked() {
+                if ui.button(name).on_hover_sound().on_hover_text(about).clicked() {
                     ed.load(genome, name, about);
                     ui.close();
                 }
             }
         });
         chevron(ui, &r);
+        crate::ui_sfx::hover_sound(&r);
         r.on_hover_text("Start over from a built-in organism");
         let (r, _) = egui::containers::menu::MenuButton::from_button(file_button("Open", true))
             .ui(ui, |ui| open_menu(ui, ed));
         chevron(ui, &r);
+        crate::ui_sfx::hover_sound(&r);
         r.on_hover_text("Open one of your saved organisms");
         ui.add_space(6.0);
         if round_icon(ui, !ed.undo.is_empty(), |p, c, col| icon_curl(p, c, col, false))
@@ -499,7 +503,7 @@ fn open_menu(ui: &mut egui::Ui, ed: &mut GenomeEditor) {
     let mut delete: Option<String> = None;
     for o in &ed.saved {
         ui.horizontal(|ui| {
-            let r = ui.add_sized([200.0, 24.0], egui::Button::new(&o.name));
+            let r = ui.add_sized([200.0, 24.0], egui::Button::new(&o.name)).on_hover_sound();
             if r.clicked() {
                 open = Some(o.clone());
             }
@@ -577,7 +581,7 @@ fn genes_panel(ui: &mut egui::Ui, ed: &mut GenomeEditor, traits: &Traits, config
     });
     for c in CHROMOSOMES.iter() {
         let open = matches!(c.letter, 'B' | 'D' | 'P');
-        egui::CollapsingHeader::new(
+        let section = egui::CollapsingHeader::new(
             egui::RichText::new(format!("{}  {}", c.letter, c.name)).size(15.0).color(TEXT),
         )
         .id_salt(("chromosome", c.letter))
@@ -589,12 +593,13 @@ fn genes_panel(ui: &mut egui::Ui, ed: &mut GenomeEditor, traits: &Traits, config
                 gene_rows(ui, c, &mut ed.genome, traits, config);
             }
         });
+        crate::ui_sfx::silent(&section.header_response);
     }
 
     caption(ui, "Whole genome");
     hint(ui, "Copy it to share, or paste one in.");
     ui.horizontal(|ui| {
-        if ui.button("Copy").clicked() {
+        if ui.button("Copy").on_hover_sound().clicked() {
             ui.ctx().copy_text(ed.genome.to_string());
             ed.say("Genome copied", false);
         }
@@ -804,11 +809,12 @@ fn save_dialog(ctx: &egui::Context, ed: &mut GenomeEditor) {
                     let ok = !file_name.is_empty();
                     let save = ui
                         .add_enabled(ok, egui::Button::new("Save").min_size(vec2(120.0, 32.0)))
+                        .on_hover_sound()
                         .clicked();
                     if (save || (enter && ok)) && ed.save() {
                         ed.save_open = false;
                     }
-                    if ui.add_sized([120.0, 32.0], egui::Button::new("Cancel")).clicked() {
+                    if ui.add_sized([120.0, 32.0], egui::Button::new("Cancel")).on_hover_sound().clicked() {
                         ed.save_open = false;
                     }
                 });

@@ -111,6 +111,9 @@ const MAX_EATS_PER_SECOND: usize = 8;
 
 /// Loudness of a full-strength vent in the middle of the screen at the closest zoom.
 pub const VENT_VOLUME: f32 = 3.0;
+/// Most a vent loop is ever played at, all told (master volume included): its recording peaks
+/// at about 0.31, so this keeps it just under full scale, where it would distort.
+const VENT_LIMIT: f32 = 0.95 / 0.31;
 /// How far from the middle of the screen a vent is still heard, in half-screens (1 = at the
 /// screen's edge); it fades toward there.
 const VENT_REACH: f32 = 2.6;
@@ -212,10 +215,11 @@ fn vent_volume(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut sinks: Query<(&VentLoop, &mut AudioSink)>,
     time: Res<Time<Real>>,
+    settings: Res<crate::settings::Settings>,
 ) {
     let Ok(window) = windows.single() else { return };
     let world = &state.world;
-    let zoom_volume = splash_volume(cam.zoom) / MAX_VOLUME;
+    let zoom_volume = splash_volume(cam.zoom) / MAX_VOLUME * settings.level();
     let half = Vec2::new(window.width(), window.height()) * 0.5 * cam.zoom;
     let vents: Vec<(Vec2, f32)> = world
         .env
@@ -223,7 +227,15 @@ fn vent_volume(
         .iter()
         .map(|v| (Vec2::new(v.pos.x, v.pos.y + VENT_SOUND_HEIGHT), v.strength))
         .collect();
-    let mix = vent_mix(&vents, cam.center, half, zoom_volume);
+    let mut mix = vent_mix(&vents, cam.center, half, zoom_volume);
+    // The pan copies add up (a vent between two pans plays in both): keep the total under
+    // full scale.
+    let total: f32 = mix.iter().sum();
+    if total > VENT_LIMIT {
+        for v in &mut mix {
+            *v *= VENT_LIMIT / total;
+        }
+    }
     let k = 1.0 - (-WATER_EASE * time.delta_secs()).exp();
     for (VentLoop(i), mut sink) in &mut sinks {
         let now = sink.volume().to_linear();
@@ -249,8 +261,9 @@ fn water_volume(
     cam: Res<CameraState>,
     mut sinks: Query<&mut AudioSink, With<Water>>,
     time: Res<Time<Real>>,
+    settings: Res<crate::settings::Settings>,
 ) {
-    let target = WATER_VOLUME * splash_volume(cam.zoom) / MAX_VOLUME;
+    let target = WATER_VOLUME * splash_volume(cam.zoom) / MAX_VOLUME * settings.level();
     let k = 1.0 - (-WATER_EASE * time.delta_secs()).exp();
     for mut sink in &mut sinks {
         let now = sink.volume().to_linear();
@@ -312,11 +325,12 @@ fn splashes(
     mut sounds: Local<Option<Sounds>>,
     mut tracker: Local<Tracker>,
     mut rng: Local<Option<Rng>>,
+    settings: Res<crate::settings::Settings>,
 ) {
     let Ok(window) = windows.single() else { return };
     let world = &state.world;
     let now = time.elapsed_secs_f64();
-    let volume = splash_volume(cam.zoom);
+    let volume = splash_volume(cam.zoom) * settings.level();
     // Out of earshot or paused: just forget the speeds, so zooming in doesn't set off a burst.
     if volume <= 0.0 || state.paused() {
         tracker.speed.clear();
@@ -394,13 +408,14 @@ fn eats(
     mut heard_up_to: Local<Option<u64>>,
     mut recent: Local<VecDeque<f64>>,
     mut rng: Local<Option<Rng>>,
+    settings: Res<crate::settings::Settings>,
 ) {
     let Ok(window) = windows.single() else { return };
     let world = &state.world;
     // Swallows already in the effects list when the game starts aren't new.
     let after = heard_up_to.unwrap_or(world.tick);
     *heard_up_to = Some(world.tick);
-    let volume = EAT_VOLUME * splash_volume(cam.zoom) / MAX_VOLUME;
+    let volume = EAT_VOLUME * splash_volume(cam.zoom) / MAX_VOLUME * settings.level();
     if volume <= 0.0 {
         return;
     }

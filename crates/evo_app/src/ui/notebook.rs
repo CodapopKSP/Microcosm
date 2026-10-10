@@ -200,6 +200,7 @@ pub fn draw(
                 let w = text_width(&painter, text, font.clone());
                 let rect = Rect::from_center_size(at, vec2(w + 50.0, 26.0));
                 let r = ui.interact(rect, ui.id().with(text), Sense::click());
+                crate::ui_sfx::hover_sound(&r);
                 let color = if r.hovered() { RED_PENCIL } else { GRAPHITE };
                 painter.text(at, egui::Align2::CENTER_CENTER, text, font, color);
                 let sign = if forward { 1.0 } else { -1.0 };
@@ -323,6 +324,7 @@ fn contents(
         let name = format!("{}.  {}", i + 1, e.name);
         let row = Rect::from_min_size(pos2(r.left(), y), vec2(r.width(), LINE - 2.0));
         let resp = ui.interact(row, ui.id().with(("contents", i)), Sense::click());
+        crate::ui_sfx::silent(&resp);
         let color = if resp.hovered() { RED_PENCIL } else { GRAPHITE };
         write(painter, row.min, &name, hand(17.0), color, r.width() - 60.0);
         let num = format!("p. {page}");

@@ -10,7 +10,9 @@ mod menu;
 mod music;
 mod paths;
 mod render;
+mod settings;
 mod sfx;
+mod ui_sfx;
 mod sim;
 mod ui;
 
@@ -220,7 +222,9 @@ fn main() {
         editor::EditorPlugin,
         genome_editor::GenomeEditorPlugin,
         music::MusicPlugin,
+        settings::SettingsPlugin,
         sfx::SfxPlugin,
+        ui_sfx::UiSfxPlugin,
     ))
     .add_systems(Update, (screenshot_and_exit, toggle_fullscreen))
     .run();

@@ -9,6 +9,7 @@ use egui::{Color32, Pos2, Rect, Stroke, Vec2, pos2, vec2};
 use evo_core::map::PaintedMap;
 
 use crate::AppState;
+use crate::ui_sfx::HoverSound;
 use crate::menu::{ACCENT, ERROR, MUTED, TEXT, caption, card, pill, rgba, style_menu};
 
 pub struct EditorPlugin;
@@ -871,6 +872,7 @@ fn tool_icon(p: &egui::Painter, tool: Tool, c: Pos2, s: f32, color: Color32) {
 /// A tool tile: icon, name, and its key in the corner.
 fn tool_tile(ui: &mut egui::Ui, tool: Tool, name: &str, key: &str, on: bool, width: f32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(width, 58.0), egui::Sense::click());
+    crate::ui_sfx::hover_sound(&response);
     let hovered = response.hovered();
     let p = ui.painter();
     let fill = if on { TILE_ON } else if hovered { TILE_HOVER } else { TILE_FILL };
@@ -903,6 +905,7 @@ pub(crate) fn round_icon(
 ) -> egui::Response {
     let sense = if enabled { egui::Sense::click() } else { egui::Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), sense);
+    crate::ui_sfx::hover_sound(&response);
     let hovered = enabled && response.hovered();
     let p = ui.painter();
     p.circle(
@@ -1032,7 +1035,7 @@ fn tools_panel(ui: &mut egui::Ui, ed: &mut Editor) {
                     ui.painter().rect_filled(r.shrink(2.0), 2.0, AREA.gamma_multiply(0.35));
                     ui.label(egui::RichText::new(&area.name).size(13.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Remove").clicked() {
+                        if ui.small_button("Remove").on_hover_sound().clicked() {
                             remove = Some(i);
                         }
                     });
@@ -1130,6 +1133,7 @@ fn tools_panel(ui: &mut egui::Ui, ed: &mut Editor) {
         let w = (ui.available_width() - 8.0) / 2.0;
         if ui
             .add_sized([w, 36.0], egui::Button::new(egui::RichText::new("Save").size(15.0)))
+            .on_hover_sound()
             .clicked()
         {
             ed.save_open = true;
@@ -1137,6 +1141,7 @@ fn tools_panel(ui: &mut egui::Ui, ed: &mut Editor) {
         }
         if ui
             .add_sized([w, 36.0], egui::Button::new(egui::RichText::new("New / open").size(15.0)))
+            .on_hover_sound()
             .clicked()
         {
             ed.new_open = true;
@@ -1188,11 +1193,11 @@ fn new_dialog(ctx: &egui::Context, ed: &mut Editor) {
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.add_sized([120.0, 32.0], egui::Button::new("Create")).clicked() {
+                    if ui.add_sized([120.0, 32.0], egui::Button::new("Create")).on_hover_sound().clicked() {
                         ed.create();
                         ed.new_open = false;
                     }
-                    if ui.add_sized([120.0, 32.0], egui::Button::new("Cancel")).clicked() {
+                    if ui.add_sized([120.0, 32.0], egui::Button::new("Cancel")).on_hover_sound().clicked() {
                         ed.new_open = false;
                     }
                 });
@@ -1236,14 +1241,14 @@ fn save_dialog(ctx: &egui::Context, ed: &mut Editor) {
                 let enter = name.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.horizontal(|ui| {
                     let ok = !path_name.is_empty();
-                    if ui.add_enabled_ui(ok, |ui| ui.add_sized([120.0, 32.0], egui::Button::new("Save"))).inner.clicked()
+                    if ui.add_enabled_ui(ok, |ui| ui.add_sized([120.0, 32.0], egui::Button::new("Save"))).inner.on_hover_sound().clicked()
                         || (enter && ok)
                     {
                         if ed.save() {
                             ed.save_open = false;
                         }
                     }
-                    if ui.add_sized([120.0, 32.0], egui::Button::new("Cancel")).clicked() {
+                    if ui.add_sized([120.0, 32.0], egui::Button::new("Cancel")).on_hover_sound().clicked() {
                         ed.save_open = false;
                     }
                 });
@@ -1279,6 +1284,7 @@ fn area_dialog(ctx: &egui::Context, ed: &mut Editor) {
                     let ok = !name.is_empty();
                     let add = ui
                         .add_enabled(ok, egui::Button::new("Add").min_size(vec2(120.0, 32.0)))
+                        .on_hover_sound()
                         .clicked();
                     if (add || (enter && ok))
                         && let Some((min, max)) = ed.area_pending.take()
@@ -1286,7 +1292,7 @@ fn area_dialog(ctx: &egui::Context, ed: &mut Editor) {
                         ed.checkpoint();
                         ed.map.spawn_areas.push(evo_core::map::SpawnArea { name, min, max });
                     }
-                    if ui.add_sized([120.0, 32.0], egui::Button::new("Cancel")).clicked() {
+                    if ui.add_sized([120.0, 32.0], egui::Button::new("Cancel")).on_hover_sound().clicked() {
                         ed.area_pending = None;
                     }
                 });

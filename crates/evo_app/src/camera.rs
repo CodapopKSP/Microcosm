@@ -204,6 +204,7 @@ fn camera_input(
     mut selection: ResMut<Selection>,
     state: Res<SimState>,
     time: Res<Time<Real>>,
+    mut sound: ResMut<crate::ui_sfx::UiSoundRequest>,
 ) {
     let Ok(window) = windows.single() else { return };
     let Ok((camera, cam_transform)) = cameras.single() else {
@@ -331,6 +332,7 @@ fn camera_input(
             selection.organism = world.pick(glam::Vec2::new(p.x, p.y), slack);
             if selection.organism.is_some() {
                 selection.follow = true;
+                sound.0 = Some(crate::ui_sfx::UiSound::OrganismSelect);
             }
         }
     }

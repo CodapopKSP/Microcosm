@@ -14,6 +14,7 @@ use evo_core::traits::{format_game_date, format_game_duration};
 use super::{DIET_NAMES, color32, diet_color};
 use crate::camera::CameraState;
 use crate::sim::Selection;
+use crate::ui_sfx::HoverSound;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChartTab {
@@ -33,6 +34,40 @@ pub struct ChartState {
     pinned: Option<f64>,
 }
 
+/// The charts' header, as the other cards have: icon, title, what they cover, and a close
+/// button. Returns false when closed.
+pub fn header(ui: &mut egui::Ui, world: &World) -> bool {
+    use super::hud::{self, ACCENT, MUTED};
+    let mut open = true;
+    let samples = &world.stats.samples;
+    let covers = match (samples.first(), samples.last()) {
+        (Some(a), Some(b)) if samples.len() >= 2 => format!(
+            "The last {} · hover a chart to read it, click to pick a moment",
+            format_game_duration((b.time - a.time) as f32, &world.config.time)
+        ),
+        _ => "Population, family tree, ecology and environment over time".to_string(),
+    };
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+        hud::icon_chart(ui.painter(), r.center(), 10.0, ACCENT);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.label(egui::RichText::new("Charts").size(17.0).strong());
+            ui.label(egui::RichText::new(covers).size(12.0).color(MUTED));
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            if hud::round_button(ui, false, 14.0, hud::icon_close)
+                .on_hover_text("Close the charts (G)")
+                .clicked()
+            {
+                open = false;
+            }
+        });
+    });
+    ui.add_space(8.0);
+    open
+}
+
 pub fn draw(
     ui: &mut egui::Ui,
     world: &World,
@@ -40,30 +75,26 @@ pub fn draw(
     state: &mut ChartState,
     cam: &mut CameraState,
 ) {
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.tab, ChartTab::Population, "Population");
-        ui.selectable_value(&mut state.tab, ChartTab::Tree, "Family tree");
-        ui.selectable_value(&mut state.tab, ChartTab::Ecology, "Ecology");
-        ui.selectable_value(&mut state.tab, ChartTab::Environment, "Environment");
-    });
-    ui.separator();
+    super::hud::tab_bar(
+        ui,
+        &mut state.tab,
+        &[
+            (ChartTab::Population, "Population"),
+            (ChartTab::Tree, "Family tree"),
+            (ChartTab::Ecology, "Ecology"),
+            (ChartTab::Environment, "Environment"),
+        ],
+    );
+    ui.add_space(6.0);
     if state.tab == ChartTab::Tree {
         tree(ui, world, selection, &mut state.tree, cam);
         return;
     }
     let samples = &world.stats.samples;
     if samples.len() < 2 {
-        ui.label("Collecting data…");
+        ui.label(egui::RichText::new("Collecting data…").color(super::hud::MUTED));
         return;
     }
-    let span = samples.last().unwrap().time - samples[0].time;
-    ui.label(
-        egui::RichText::new(format!(
-            "The last {} · hover a chart to read it, click to pick a moment",
-            format_game_duration(span as f32, &world.config.time)
-        ))
-        .weak(),
-    );
     // Charts grow with the window.
     let h = (ui.available_height() / 3.3).clamp(100.0, 600.0);
     let pinned = &mut state.pinned;
@@ -150,6 +181,7 @@ fn chart(
         egui::vec2(ui.available_width(), height),
         egui::Sense::click(),
     );
+    crate::ui_sfx::silent(&response);
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 3.0, egui::Color32::from_gray(20));
     let t0 = samples[0].time;
@@ -374,6 +406,7 @@ fn species_share(
         egui::vec2(ui.available_width(), h * 1.2),
         egui::Sense::click(),
     );
+    crate::ui_sfx::silent(&response);
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 3.0, egui::Color32::from_gray(20));
     // The top species over the whole window; the rest are left as the gap at the top.
@@ -484,7 +517,7 @@ fn moment(ui: &mut egui::Ui, world: &World, selection: &mut Selection, pinned: &
     let s = &samples[nearest(samples, t)];
     ui.horizontal(|ui| {
         ui.heading(format_game_date(s.time, &world.config.time));
-        if ui.button("Clear").clicked() {
+        if ui.button("Clear").on_hover_sound().clicked() {
             *pinned = None;
         }
     });
@@ -888,6 +921,7 @@ fn tree(
         ui.separator();
         if ui
             .button("Fold dead lineages")
+            .on_hover_sound()
             .on_hover_text("Fold every lineage with nothing left alive in it")
             .clicked()
         {
@@ -897,7 +931,7 @@ fn tree(
                 }
             }
         }
-        if ui.button("Unfold all").clicked() {
+        if ui.button("Unfold all").on_hover_sound().clicked() {
             state.folded.clear();
         }
         ui.checkbox(&mut state.hide_extinct, "Hide dead lineages");
@@ -906,6 +940,7 @@ fn tree(
         if let Some(sel) = selection.species
             && ui
                 .button("Show selected")
+                .on_hover_sound()
                 .on_hover_text("Unfold the way to the highlighted species and scroll to it")
                 .clicked()
         {
@@ -956,6 +991,7 @@ fn tree(
                 egui::vec2(ui.available_width(), height),
                 egui::Sense::click(),
             );
+            crate::ui_sfx::silent(&response);
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, 3.0, egui::Color32::from_gray(18));
             // Leave room on the right for names.
@@ -1177,6 +1213,7 @@ fn tree(
             {
                 let id = rows[row];
                 if on_arrow(p, row) {
+                    crate::ui_sfx::silent(&response);
                     if !state.folded.remove(&id) {
                         state.folded.insert(id);
                     }

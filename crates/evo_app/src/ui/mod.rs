@@ -61,7 +61,8 @@ pub struct UiState {
     pub show_charts: bool,
     pub show_help: bool,
     pub show_events: bool,
-    pub show_history: bool,
+    /// The event ticker is expanded into the full history.
+    pub ticker_expanded: bool,
     pub show_notebook: bool,
     notebook: notebook::NotebookState,
     inspector_tab: inspector::Tab,
@@ -72,6 +73,8 @@ pub struct UiState {
     pub map_mode: MapMode,
     /// The map button's list of overlays is open.
     map_menu: bool,
+    /// The menu (main menu, help, volume) is open.
+    game_menu: bool,
     charts: charts::ChartState,
     fps: f64,
     /// The egui style has been set up (quicker tooltips, the handwriting font).
@@ -90,7 +93,7 @@ impl Default for UiState {
             show_charts: false,
             show_help: false,
             show_events: true,
-            show_history: false,
+            ticker_expanded: false,
             show_notebook: false,
             notebook: Default::default(),
             inspector_tab: Default::default(),
@@ -99,6 +102,7 @@ impl Default for UiState {
             show_senses: true,
             map_mode: MapMode::None,
             map_menu: false,
+            game_menu: false,
             charts: charts::ChartState::default(),
             fps: 0.0,
             styled: false,
@@ -164,7 +168,10 @@ fn ui_keys(
         ui.show_species = !ui.show_species;
     }
     if keys.just_pressed(KeyCode::KeyE) {
-        ui.show_history = !ui.show_history;
+        ui.ticker_expanded = !ui.ticker_expanded;
+        if ui.ticker_expanded {
+            ui.show_events = true;
+        }
     }
     if keys.just_pressed(KeyCode::KeyT) {
         ui.show_events = !ui.show_events;
@@ -195,22 +202,19 @@ pub fn color32(rgb: [f32; 3]) -> egui::Color32 {
 
 pub fn swatch(ui: &mut egui::Ui, rgb: [f32; 3], size: f32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    crate::ui_sfx::silent(&response);
     ui.painter()
         .circle_filled(rect.center(), size * 0.5, color32(rgb));
     response
 }
 
-/// "Day 3, 14:20" style clock.
+/// "Summer · Year 4 · Day 2 · 14:20".
 pub fn clock_text(world: &World) -> String {
     let c = &world.env.clock;
     let (h, m) = c.time_of_day();
     format!(
-        "Year {} · {} · Day {} · {:02}:{:02}",
-        c.year + 1,
-        c.season_name(),
-        c.day + 1,
-        h,
-        m
+        "{} · {h:02}:{m:02}",
+        format_game_date(c.time, &world.config.time)
     )
 }
 
@@ -232,6 +236,8 @@ fn draw_ui(
     mut cam: ResMut<CameraState>,
     time: Res<Time<Real>>,
     mut next: ResMut<NextState<crate::AppState>>,
+    mut sound: ResMut<crate::ui_sfx::UiSoundRequest>,
+    mut settings: ResMut<crate::settings::Settings>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     if std::mem::take(&mut ui_state.to_menu) {
@@ -305,6 +311,7 @@ fn draw_ui(
         &mut sim,
         &mut cam,
         &mut selection,
+        &mut settings,
     );
     if ui_state.show_species {
         // Down to the event ticker (last frame's), or the bottom of the view.
@@ -342,34 +349,36 @@ fn draw_ui(
     }
 
     if ui_state.show_events && !sim.world.events.entries.is_empty() {
-        event_ticker(ctx, content, &sim.world, &mut selection, &mut cam);
+        let mut filter = ui_state.history_filter;
+        event_ticker(
+            ctx,
+            content,
+            &sim.world,
+            &mut ui_state.ticker_expanded,
+            &mut filter,
+            &mut selection,
+            &mut cam,
+        );
+        ui_state.history_filter = filter;
     }
 
     if ui_state.show_charts {
         let mut open = true;
         let charts_state = &mut ui_state.charts;
+        // A card like the others (no window title bar): drag its background to move it, its
+        // corner to resize it.
         egui::Window::new("Charts")
-            .open(&mut open)
+            .title_bar(false)
+            .frame(hud::card())
             .default_size([760.0, 560.0])
-            .min_size([360.0, 240.0])
+            .min_size([440.0, 320.0])
             .resizable(true)
             .show(ctx, |ui| {
+                ui.style_mut().visuals.override_text_color = Some(hud::TEXT);
+                open = charts::header(ui, &sim.world);
                 charts::draw(ui, &sim.world, &mut selection, charts_state, &mut cam)
             });
         ui_state.show_charts = open;
-    }
-
-    if ui_state.show_history {
-        let mut open = true;
-        let mut filter = ui_state.history_filter;
-        egui::Window::new("History")
-            .open(&mut open)
-            .default_size([520.0, 480.0])
-            .show(ctx, |ui| {
-                history(ui, &sim.world, &mut filter, &mut selection, &mut cam)
-            });
-        ui_state.history_filter = filter;
-        ui_state.show_history = open;
     }
 
     if let Some(id) = record {
@@ -389,6 +398,7 @@ fn draw_ui(
             };
             if let Some(msg) = msg {
                 ui_state.toast = Some((msg, std::time::Instant::now()));
+                sound.0 = Some(crate::ui_sfx::UiSound::NotebookLog);
             }
             ui_state.notebook.show_entry(i);
         }
@@ -418,40 +428,107 @@ fn draw_ui(
     Ok(())
 }
 
+/// The event ticker, bottom left: the latest few events. Hovering it shows a chevron beside its
+/// top corner that expands it into the whole history (filters and the full log), larger; the
+/// chevron stays while it's expanded, to shrink it back.
 fn event_ticker(
     ctx: &egui::Context,
     view: egui::Rect,
     world: &World,
+    expanded: &mut bool,
+    filter: &mut [bool; 4],
     selection: &mut Selection,
     cam: &mut CameraState,
 ) {
-    egui::Area::new(egui::Id::new("events"))
+    const CHEVRON: f32 = 26.0;
+    let id = egui::Id::new("events");
+    // Hovered: the pointer over last frame's ticker (chevron slot included).
+    let hovered = ctx
+        .memory(|m| m.area_rect(id))
+        .zip(ctx.pointer_hover_pos())
+        .is_some_and(|(r, p)| r.expand(6.0).contains(p));
+    egui::Area::new(id)
         .fixed_pos(view.left_bottom() + egui::vec2(10.0, -10.0))
         .pivot(egui::Align2::LEFT_BOTTOM)
         .interactable(true)
         .show(ctx, |ui| {
-            hud::card().show(ui, |ui| {
-                ui.set_max_width(520.0);
-                for e in world.events.entries.iter().rev().take(6).rev() {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new(format_game_date(e.time, &world.config.time))
-                                .weak()
-                                .monospace(),
-                        );
-                        let response = ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&e.text).color(event_color(e.kind)),
-                            )
-                            .sense(egui::Sense::click()),
-                        );
-                        if response.clicked() {
-                            goto_event(e, world, selection, cam);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                hud::card().show(ui, |ui| {
+                    // (Rows top to bottom inside, though the card and its chevron sit side by side.)
+                    ui.vertical(|ui| {
+                        if *expanded {
+                            let width = (view.width() - 120.0).clamp(360.0, 760.0);
+                            let height = (view.height() * 0.5).clamp(200.0, 520.0);
+                            ui.set_width(width);
+                            history(ui, world, filter, height, selection, cam);
+                        } else {
+                            ui.set_max_width(600.0);
+                            recent_events(ui, world, selection, cam);
                         }
                     });
+                });
+                // The chevron's slot is always there (so the ticker doesn't shift), drawn only
+                // when it's wanted. It makes no sound, like the other expand/fold controls.
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(CHEVRON, CHEVRON), egui::Sense::click());
+                crate::ui_sfx::silent(&response);
+                if *expanded || hovered {
+                    let lit = response.hovered();
+                    let p = ui.painter();
+                    p.circle(
+                        rect.center(),
+                        CHEVRON * 0.5,
+                        if lit { egui::Color32::from_rgb(32, 49, 56) } else { hud::CARD_FILL },
+                        egui::Stroke::new(1.0, hud::ACCENT.gamma_multiply(if lit { 0.6 } else { 0.25 })),
+                    );
+                    // Up to expand, down to shrink back.
+                    let c = rect.center();
+                    let dir = if *expanded { 1.0 } else { -1.0 };
+                    let color = if lit { hud::ACCENT } else { hud::TEXT };
+                    let stroke = egui::Stroke::new(1.8, color);
+                    let (w, h) = (5.0, 2.8 * dir);
+                    p.line_segment([c + egui::vec2(-w, -h), c + egui::vec2(0.0, h)], stroke);
+                    p.line_segment([c + egui::vec2(0.0, h), c + egui::vec2(w, -h)], stroke);
+                    let tip = if *expanded { "Shrink the history (E)" } else { "Show the whole history (E)" };
+                    if response.on_hover_text(tip).clicked() {
+                        *expanded = !*expanded;
+                    }
                 }
             });
         });
+}
+
+/// The ticker's latest few events.
+fn recent_events(ui: &mut egui::Ui, world: &World, selection: &mut Selection, cam: &mut CameraState) {
+    for e in world.events.entries.iter().rev().take(6).rev() {
+        event_row(ui, world, e, selection, cam);
+    }
+}
+
+/// One event: its date, and what happened (click to go there).
+fn event_row(
+    ui: &mut egui::Ui,
+    world: &World,
+    e: &evo_core::stats::Event,
+    selection: &mut Selection,
+    cam: &mut CameraState,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new(format_game_date(e.time, &world.config.time))
+                .weak()
+                .monospace(),
+        );
+        let response = ui.add(
+            egui::Label::new(egui::RichText::new(&e.text).color(event_color(e.kind)))
+                .sense(egui::Sense::click()),
+        );
+        crate::ui_sfx::silent(&response);
+        if response.clicked() {
+            goto_event(e, world, selection, cam);
+        }
+    });
 }
 
 const EVENT_KINDS: [(EventKind, &str); 4] = [
@@ -461,31 +538,37 @@ const EVENT_KINDS: [(EventKind, &str); 4] = [
     (EventKind::Environment, "Environment"),
 ];
 
-/// Full event log with filters.
+/// The expanded ticker: the whole event log, `height` tall, with filters.
 fn history(
     ui: &mut egui::Ui,
     world: &World,
     filter: &mut [bool; 4],
+    height: f32,
     selection: &mut Selection,
     cam: &mut CameraState,
 ) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("History").size(17.0).color(hud::TEXT));
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "{} events so far (the oldest are trimmed) · click one to go there",
+                world.events.count
+            ))
+            .size(12.0)
+            .weak(),
+        );
+    });
     ui.horizontal_wrapped(|ui| {
         for (i, (kind, name)) in EVENT_KINDS.iter().enumerate() {
-            ui.checkbox(
-                &mut filter[i],
-                egui::RichText::new(*name).color(event_color(*kind)),
-            );
+            ui.checkbox(&mut filter[i], egui::RichText::new(*name).color(event_color(*kind)));
         }
     });
-    ui.label(
-        egui::RichText::new(format!(
-            "{} events so far (the oldest are trimmed). Click an event to find the species.",
-            world.events.count
-        ))
-        .weak(),
-    );
     ui.separator();
     egui::ScrollArea::vertical()
+        .max_height(height)
+        .min_scrolled_height(height)
+        .auto_shrink([false, false])
         .stick_to_bottom(true)
         .show(ui, |ui| {
             for e in &world.events.entries {
@@ -494,23 +577,9 @@ fn history(
                     .position(|(k, _)| *k == e.kind)
                     .map(|i| filter[i])
                     .unwrap_or(true);
-                if !shown {
-                    continue;
+                if shown {
+                    event_row(ui, world, e, selection, cam);
                 }
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(format_game_date(e.time, &world.config.time))
-                            .monospace()
-                            .weak(),
-                    );
-                    let response = ui.add(
-                        egui::Label::new(egui::RichText::new(&e.text).color(event_color(e.kind)))
-                            .sense(egui::Sense::click()),
-                    );
-                    if response.clicked() {
-                        goto_event(e, world, selection, cam);
-                    }
-                });
             }
         });
 }
@@ -765,7 +834,7 @@ fn help(ui: &mut egui::Ui) {
         help_row(ui, &[K("F11")], "Fullscreen");
         help_row(ui, &[K("L")], "Species list");
         help_row(ui, &[K("G")], "Charts and family tree");
-        help_row(ui, &[K("E")], "History");
+        help_row(ui, &[K("E")], "History (expand the event ticker)");
         help_row(ui, &[K("N")], "Field notebook");
         help_row(ui, &[K("T")], "Event ticker");
         help_row(

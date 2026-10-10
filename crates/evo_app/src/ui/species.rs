@@ -107,6 +107,7 @@ fn row(
 ) {
     let selected = selection.species == Some(s.id);
     let (r, response) = ui.allocate_exact_size(vec2(width, ROW), Sense::click());
+    crate::ui_sfx::silent(&response);
     let p = ui.painter();
     let hovered = response.hovered();
     // Background: lit when highlighted on the map.

@@ -40,6 +40,11 @@ pub fn data_dir() -> PathBuf {
     base.unwrap_or_else(|| PathBuf::from("microcosm-data"))
 }
 
+/// The player's settings (master volume and so on).
+pub fn settings_path() -> PathBuf {
+    data_dir().join("settings.toml")
+}
+
 /// Where worlds are saved (unless `--save-dir` says otherwise).
 pub fn saves_dir() -> PathBuf {
     data_dir().join("saves")

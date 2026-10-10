@@ -982,7 +982,7 @@ fn push_parts(
         }
         // The swaying tip: the midline's end, and its slope there.
         let m = if inst.mirror < 0.0 { -1.0 } else { 1.0 };
-        let part_seed = seed.wrapping_add(inst.slot as u8 * 37) as f32 / 255.0;
+        let part_seed = seed.wrapping_add((inst.slot as u8).wrapping_mul(37)) as f32 / 255.0;
         let phase = part_seed * 40.0 + inst.index.min(100) as f32 * 1.9;
         let arch = unorm(0.5 + 0.5 * bend * m / 0.75) as f32 / 255.0 * 1.5 - 0.75;
         let grip_q = unorm(grip) as f32 / 255.0;
@@ -1028,7 +1028,7 @@ fn push_parts(
             inst.kind.code(),
             unorm(inst.size),
             mirror | inst.index.min(100) << 1,
-            seed.wrapping_add(inst.slot as u8 * 37),
+            seed.wrapping_add((inst.slot as u8).wrapping_mul(37)),
         ];
         quad.state[2] |= FLAG_PART;
         b.push_oriented(center, glam::Vec2::new(hx, hy) * chord, axis, quad);

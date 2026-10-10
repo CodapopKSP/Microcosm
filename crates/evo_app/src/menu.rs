@@ -16,6 +16,7 @@ use glam::Vec2;
 
 use crate::sim::SimState;
 use crate::{AppState, Launch};
+use crate::ui_sfx::HoverSound;
 
 pub struct MenuPlugin;
 
@@ -28,6 +29,15 @@ impl Plugin for MenuPlugin {
                     refresh,
                     create_backdrop.before(crate::render::WorldViewSetup),
                 ),
+            )
+            // Leaving a world goes back to the title screen, not the page last open. (Coming
+            // back from an editor keeps it: "Edit in genome editor" returns to New world.)
+            .add_systems(
+                OnTransition {
+                    exited: AppState::Running,
+                    entered: AppState::Menu,
+                },
+                back_to_title,
             )
             .add_systems(
                 Update,
@@ -131,6 +141,8 @@ struct Preview {
 struct Menu {
     page: Page,
     saves: Vec<SaveFile>,
+    /// What's in each save (read in the background, for the Load page).
+    save_info: SaveInfos,
     error: Option<String>,
     setup: Setup,
     preview: Option<Preview>,
@@ -173,6 +185,7 @@ impl Default for Menu {
         Self {
             page: Page::Splash,
             saves: Vec::new(),
+            save_info: SaveInfos::default(),
             error: None,
             setup,
             preview: None,
@@ -194,7 +207,7 @@ struct Preset {
 const PRESETS: [Preset; 4] = [
     Preset {
         name: "Drifting plankton",
-        about: "A tiny floating photosynthesizer. It can't move or see.",
+        about: "A tiny floating photosynthesizer. It can't move, and senses only what's right around it.",
     },
     Preset {
         name: "Swimming plankton",
@@ -391,6 +404,11 @@ fn drift(
             o.prev_pos = p;
         }
     }
+}
+
+fn back_to_title(mut menu: ResMut<Menu>) {
+    menu.page = Page::Splash;
+    menu.error = None;
 }
 
 fn refresh(mut menu: ResMut<Menu>, launch: Res<Launch>) {
@@ -717,6 +735,7 @@ pub(crate) fn pill(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
         .x;
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width + 26.0, 30.0), egui::Sense::click());
+    crate::ui_sfx::hover_sound(&response);
     let hovered = response.hovered();
     let fill = if on {
         egui::Color32::from_rgb(38, 86, 77)
@@ -745,6 +764,7 @@ pub(crate) fn pill(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
 /// A round button with a die on it (for a random seed).
 fn dice_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+    crate::ui_sfx::hover_sound(&response);
     let hovered = response.hovered();
     let color = if hovered { ACCENT } else { TEXT };
     let p = ui.painter();
@@ -797,18 +817,21 @@ pub(crate) fn card() -> egui::Frame {
 
 /// The Back button at the top left of a page.
 fn back_button(ui: &mut egui::Ui) -> bool {
-    ui.add_sized(
+    let r = ui.add_sized(
         [92.0, 36.0],
         egui::Button::new(egui::RichText::new("Back").size(17.0)),
-    )
-    .clicked()
+    );
+    crate::ui_sfx::hover_sound(&r);
+    r.clicked()
 }
 
 fn big_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add_sized(
+    let r = ui.add_sized(
         [300.0, 44.0],
         egui::Button::new(egui::RichText::new(text).size(20.0)),
-    )
+    );
+    crate::ui_sfx::hover_sound(&r);
+    r
 }
 
 fn splash(
@@ -872,58 +895,234 @@ fn splash(
     });
 }
 
+/// What a save holds, for its tile on the Load page.
+#[derive(Clone)]
+struct SaveInfo {
+    map: String,
+    date: String,
+    organisms: usize,
+    species: usize,
+}
+
+/// Saves' contents, read on a background thread (each is a whole world, many MB) and kept
+/// until the file changes.
+#[derive(Default, Clone)]
+struct SaveInfos {
+    read: std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<PathBuf, (Option<SystemTime>, Result<SaveInfo, String>)>,
+        >,
+    >,
+    busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl SaveInfos {
+    /// What's known about `save` (None while it's still being read).
+    fn get(&self, save: &SaveFile) -> Option<Result<SaveInfo, String>> {
+        let read = self.read.lock().ok()?;
+        read.get(&save.path)
+            .filter(|(modified, _)| *modified == save.modified)
+            .map(|(_, info)| info.clone())
+    }
+
+    /// Start reading the saves not read yet (or changed since), unless that's under way.
+    fn request(&self, saves: &[SaveFile]) {
+        use std::sync::atomic::Ordering;
+        let missing: Vec<(PathBuf, Option<SystemTime>)> = saves
+            .iter()
+            .filter(|s| self.get(s).is_none())
+            .map(|s| (s.path.clone(), s.modified))
+            .collect();
+        if missing.is_empty() || self.busy.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (read, busy) = (self.read.clone(), self.busy.clone());
+        std::thread::spawn(move || {
+            for (path, modified) in missing {
+                let info = World::load(&path).map(|w| SaveInfo {
+                    map: w.config.world.map.clone(),
+                    date: evo_core::traits::format_game_date(w.time(), &w.config.time),
+                    organisms: w.organisms.len(),
+                    species: w.species.living().count(),
+                });
+                if let Ok(mut read) = read.lock() {
+                    read.insert(path, (modified, info));
+                }
+            }
+            busy.store(false, Ordering::Release);
+        });
+    }
+}
+
+/// A save's name for people: "Autosave", "Quicksave (previous)", "Set aside on 9 Oct 2026"…
+fn save_title(file: &str) -> String {
+    let stem = file.strip_suffix(".bin").unwrap_or(file);
+    let (stem, older) = match stem.rsplit_once('.') {
+        Some((s, "prev")) => (s, " (previous)"),
+        Some((s, "old")) => (s, " (older)"),
+        _ => (stem, ""),
+    };
+    let base = match stem {
+        "autosave" => "Autosave".to_string(),
+        "quicksave" => "Quicksave".to_string(),
+        _ => match stem.strip_prefix("world-").and_then(|d| d.get(..10)) {
+            Some(date) => {
+                let months = [
+                    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov",
+                    "Dec",
+                ];
+                let mut parts = date.split('-').map(|p| p.parse::<usize>().unwrap_or(0));
+                match (parts.next(), parts.next(), parts.next()) {
+                    (Some(y), Some(m @ 1..=12), Some(d)) => {
+                        format!("Earlier world, set aside {d} {} {y}", months[m - 1])
+                    }
+                    _ => stem.to_string(),
+                }
+            }
+            None => stem.to_string(),
+        },
+    };
+    format!("{base}{older}")
+}
+
+/// 18916 → "18,916".
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn load(ui: &mut egui::Ui, menu: &mut Menu, start: &mut Option<World>) {
+    menu.save_info.request(&menu.saves);
     let full = ui.available_rect_before_wrap();
-    let width = 640.0f32.min(full.width());
+    let width = 720.0f32.min(full.width());
     let column = egui::Rect::from_min_size(
         egui::pos2(full.center().x - width * 0.5, full.top()),
         egui::vec2(width, full.height()),
     );
     ui.scope_builder(egui::UiBuilder::new().max_rect(column), |ui| {
-        card().show(ui, |ui| load_list(ui, menu, start));
+        ui.horizontal(|ui| {
+            if back_button(ui) {
+                menu.page = Page::Splash;
+            }
+            ui.add_space(10.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.label(egui::RichText::new("Load").size(30.0).color(TEXT));
+                let n = menu.saves.len();
+                ui.label(
+                    egui::RichText::new(match n {
+                        0 => "No saved worlds".to_string(),
+                        1 => "1 saved world".to_string(),
+                        n => format!("{n} saved worlds, newest first"),
+                    })
+                    .size(13.0)
+                    .color(MUTED),
+                );
+            });
+        });
+        ui.add_space(14.0);
+        if let Some(e) = &menu.error {
+            ui.colored_label(ERROR, e);
+            ui.add_space(6.0);
+        }
+        if menu.saves.is_empty() {
+            card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    egui::RichText::new(
+                        "Nothing saved yet. Start one with New world: a world saves itself every \
+                         few minutes and when you leave it.",
+                    )
+                    .color(MUTED),
+                );
+            });
+            return;
+        }
+        let mut chosen = None;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            for (i, s) in menu.saves.iter().enumerate() {
+                if save_tile(ui, s, menu.save_info.get(s)).clicked() {
+                    chosen = Some(i);
+                }
+            }
+        });
+        if let Some(i) = chosen {
+            match World::load(&menu.saves[i].path) {
+                Ok(w) => *start = Some(w),
+                Err(e) => menu.error = Some(e),
+            }
+        }
     });
 }
 
-fn load_list(ui: &mut egui::Ui, menu: &mut Menu, start: &mut Option<World>) {
-    ui.horizontal(|ui| {
-        if back_button(ui) {
-            menu.page = Page::Splash;
-        }
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Load").size(26.0).color(TEXT));
-    });
-    ui.add_space(12.0);
-    if let Some(e) = &menu.error {
-        ui.colored_label(egui::Color32::from_rgb(240, 120, 110), e);
-    }
-    if menu.saves.is_empty() {
-        ui.label("No saves yet.");
-        return;
-    }
-    let mut chosen = None;
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        egui::Grid::new("saves")
-            .num_columns(4)
-            .spacing([24.0, 8.0])
-            .striped(true)
-            .show(ui, |ui| {
-                for (i, s) in menu.saves.iter().enumerate() {
-                    ui.label(egui::RichText::new(&s.name).strong());
-                    ui.label(ago(s.modified));
-                    ui.label(format!("{:.1} MB", s.bytes as f64 / 1e6));
-                    if ui.button("Load").clicked() {
-                        chosen = Some(i);
-                    }
-                    ui.end_row();
-                }
-            });
-    });
-    if let Some(i) = chosen {
-        match World::load(&menu.saves[i].path) {
-            Ok(w) => *start = Some(w),
-            Err(e) => menu.error = Some(e),
-        }
-    }
+/// One save: its name, what world it holds (map, date, life), and when it was saved. The whole
+/// tile is the button.
+fn save_tile(
+    ui: &mut egui::Ui,
+    save: &SaveFile,
+    info: Option<Result<SaveInfo, String>>,
+) -> egui::Response {
+    let w = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(w, 72.0), egui::Sense::click());
+    crate::ui_sfx::hover_sound(&response);
+    let hovered = response.hovered();
+    let p = ui.painter();
+    p.rect(
+        rect,
+        14.0,
+        if hovered { rgba(22, 44, 50, 1.0) } else { rgba(10, 20, 26, 1.0) },
+        egui::Stroke::new(1.0, rgba(150, 240, 210, if hovered { 0.5 } else { 0.14 })),
+        egui::StrokeKind::Inside,
+    );
+    let left = rect.left() + 18.0;
+    let font = |size: f32| egui::FontId::proportional(size);
+    p.text(
+        egui::pos2(left, rect.top() + 14.0),
+        egui::Align2::LEFT_TOP,
+        save_title(&save.name),
+        font(17.0),
+        if hovered { ACCENT } else { TEXT },
+    );
+    let (line1, line2, color) = match &info {
+        Some(Ok(i)) => (
+            format!("{} · {}", i.map, i.date),
+            format!("{} organisms · {} species", thousands(i.organisms), i.species),
+            MUTED,
+        ),
+        Some(Err(e)) => (format!("Can't read this save: {e}"), String::new(), ERROR),
+        None => ("Reading…".to_string(), String::new(), MUTED),
+    };
+    p.text(egui::pos2(left, rect.top() + 37.0), egui::Align2::LEFT_TOP, line1, font(13.0), color);
+    p.text(egui::pos2(left, rect.top() + 53.0), egui::Align2::LEFT_TOP, line2, font(12.0), MUTED);
+    // Right: when it was saved and how big it is, and an arrow (it opens).
+    let right = rect.right() - 46.0;
+    p.text(
+        egui::pos2(right, rect.top() + 20.0),
+        egui::Align2::RIGHT_TOP,
+        format!("saved {}", ago(save.modified)),
+        font(13.0),
+        TEXT,
+    );
+    p.text(
+        egui::pos2(right, rect.top() + 39.0),
+        egui::Align2::RIGHT_TOP,
+        format!("{:.1} MB", save.bytes as f64 / 1e6),
+        font(12.0),
+        MUTED,
+    );
+    let c = egui::pos2(rect.right() - 24.0, rect.center().y);
+    let stroke = egui::Stroke::new(2.0, if hovered { ACCENT } else { MUTED });
+    p.line_segment([c + egui::vec2(-3.0, -6.0), c + egui::vec2(3.0, 0.0)], stroke);
+    p.line_segment([c + egui::vec2(3.0, 0.0), c + egui::vec2(-3.0, 6.0)], stroke);
+    response.on_hover_text("Load this world")
 }
 
 fn new_world(
@@ -1019,6 +1218,7 @@ fn new_world(
                     egui::Button::new(egui::RichText::new("Start").size(22.0))
                         .min_size([260.0, 48.0].into()),
                 );
+                crate::ui_sfx::hover_sound(&button);
                 if button.clicked() {
                     match create_world(config_path.as_deref(), setup, &launch.0.save_dir) {
                         Ok(w) => *start = Some(w),
@@ -1339,7 +1539,7 @@ fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>)
         .color(TEXT),
     );
     let depth_max = preview.map(|p| p.config.world.height).unwrap_or(6000.0);
-    egui::CollapsingHeader::new(egui::RichText::new("Fine-tune").size(13.0).color(MUTED))
+    let fine_tune = egui::CollapsingHeader::new(egui::RichText::new("Fine-tune").size(13.0).color(MUTED))
         .id_salt("fine_tune")
         .default_open(false)
         .show(ui, |ui| {
@@ -1368,6 +1568,7 @@ fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>)
                     ui.end_row();
                 });
         });
+    crate::ui_sfx::silent(&fine_tune.header_response);
 
     caption(ui, "Seed");
     ui.horizontal(|ui| {
@@ -1442,6 +1643,7 @@ fn ancestor_column(
             });
         edit = ui
             .button("Edit in genome editor")
+            .on_hover_sound()
             .on_hover_text("Open this organism in the genome editor, to change it and save it as your own preset")
             .clicked();
     });
@@ -1568,11 +1770,11 @@ fn ancestor_column(
     }
 
     ui.add_space(4.0);
-    egui::CollapsingHeader::new("Copy / paste")
+    let copy_paste = egui::CollapsingHeader::new("Copy / paste")
         .id_salt("whole_genome")
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Copy").clicked() {
+                if ui.button("Copy").on_hover_sound().clicked() {
                     ui.ctx().copy_text(setup.genome.to_string());
                 }
             });
@@ -1596,6 +1798,7 @@ fn ancestor_column(
                 }
             }
         });
+    crate::ui_sfx::silent(&copy_paste.header_response);
     setup.genome_error = errors.into_iter().next();
 
     ui.add_space(6.0);
@@ -1629,4 +1832,21 @@ fn create_world(
         std::fs::rename(&autosave, &aside).map_err(|e| e.to_string())?;
     }
     Ok(World::new(config))
+}
+
+#[cfg(test)]
+mod load_page_tests {
+    use super::*;
+
+    #[test]
+    fn saves_get_readable_names() {
+        assert_eq!(save_title("autosave.bin"), "Autosave");
+        assert_eq!(save_title("autosave.prev.bin"), "Autosave (previous)");
+        assert_eq!(save_title("quicksave.bin"), "Quicksave");
+        assert_eq!(save_title("world-2026-10-09_1137.bin"), "Earlier world, set aside 9 Oct 2026");
+        assert_eq!(save_title("my run.bin"), "my run");
+        assert_eq!(thousands(18916), "18,916");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_000_000), "1,000,000");
+    }
 }

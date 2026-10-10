@@ -193,6 +193,12 @@ impl Vent {
     }
 }
 
+/// When in the day a world starts (fraction of a day: ~07:00).
+pub const DAY_START: f64 = 0.3;
+
+/// The seasons, in order through the year.
+pub const SEASONS: [&str; 4] = ["Spring", "Summer", "Autumn", "Winter"];
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Clock {
@@ -216,12 +222,7 @@ pub struct Clock {
 
 impl Clock {
     pub fn season_name(&self) -> &'static str {
-        match (self.year_phase * 4.0) as u32 {
-            0 => "Spring",
-            1 => "Summer",
-            2 => "Autumn",
-            _ => "Winter",
-        }
+        SEASONS[((self.year_phase * 4.0) as usize).min(3)]
     }
 
     /// `(hours, minutes)` on a 24 h clock.
@@ -420,7 +421,7 @@ impl Environment {
     /// Advance the clock to `tick`.
     pub fn update_clock(&mut self, tick: u64, config: &Config) {
         let t = &config.time;
-        let start = 0.3 * t.day_length as f64; // start at ~07:00
+        let start = DAY_START * t.day_length as f64;
         let time = tick as f64 * t.dt as f64 + start;
         let days = time / t.day_length as f64;
         let years = days / t.year_length as f64;
