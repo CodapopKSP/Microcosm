@@ -4,7 +4,7 @@ members = ["crates/evo_core", "crates/evo_app"]
 default-members = ["crates/evo_app"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 
 [workspace.dependencies]
