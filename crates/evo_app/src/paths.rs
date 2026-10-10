@@ -9,9 +9,9 @@
 
 use std::path::{Path, PathBuf};
 
-use evo_core::{Config, Genome};
 use evo_core::config::MapSource;
 use evo_core::map::PaintedMap;
+use evo_core::{Config, Genome};
 
 /// The default settings (`configs/default.toml`, built in).
 const DEFAULT_CONFIG: &str = include_str!("../../../configs/default.toml");

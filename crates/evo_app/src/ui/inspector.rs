@@ -68,7 +68,10 @@ fn icon_highlight(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     for k in 0..8 {
         let a = k as f32 / 8.0 * std::f32::consts::TAU;
         let (d0, d1) = (Vec2::angled(a), Vec2::angled(a + 0.45));
-        p.line_segment([c + d0 * s * 0.85, c + d1 * s * 0.85], Stroke::new(1.5, color));
+        p.line_segment(
+            [c + d0 * s * 0.85, c + d1 * s * 0.85],
+            Stroke::new(1.5, color),
+        );
     }
 }
 
@@ -103,9 +106,20 @@ fn pill(
         Color32::from_rgba_unmultiplied(150, 240, 210, if hovered { 110 } else { 45 })
     };
     let p = ui.painter();
-    p.rect(rect, 14.0, fill, Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+    p.rect(
+        rect,
+        14.0,
+        fill,
+        Stroke::new(1.0, stroke),
+        egui::StrokeKind::Inside,
+    );
     let color = if on || hovered { ACCENT } else { TEXT };
-    icon(p, Pos2::new(rect.left() + 16.0, rect.center().y), 7.0, color);
+    icon(
+        p,
+        Pos2::new(rect.left() + 16.0, rect.center().y),
+        7.0,
+        color,
+    );
     p.text(
         Pos2::new(rect.left() + 28.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -127,23 +141,41 @@ fn chip(ui: &mut egui::Ui, text: &str, dot: Option<Color32>) {
     let pad = if dot.is_some() { 25.0 } else { 14.0 };
     let (rect, _) = ui.allocate_exact_size(vec2(width + pad, 20.0), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 10.0, Color32::from_rgba_unmultiplied(255, 255, 255, 12));
+    p.rect_filled(
+        rect,
+        10.0,
+        Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+    );
     let mut x = rect.left() + 7.0;
     if let Some(c) = dot {
         p.circle_filled(Pos2::new(x + 3.0, rect.center().y), 3.5, c);
         x += 11.0;
     }
-    p.text(Pos2::new(x, rect.center().y), egui::Align2::LEFT_CENTER, text, font, TEXT);
+    p.text(
+        Pos2::new(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font,
+        TEXT,
+    );
 }
 
 /// A section heading: small capitals and a faint rule.
 fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(8.0);
-    ui.label(RichText::new(title.to_uppercase()).size(11.0).color(MUTED).strong());
+    ui.label(
+        RichText::new(title.to_uppercase())
+            .size(11.0)
+            .color(MUTED)
+            .strong(),
+    );
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(w, 1.0), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(150, 240, 210, 30));
+    ui.painter().rect_filled(
+        rect,
+        0.0,
+        Color32::from_rgba_unmultiplied(150, 240, 210, 30),
+    );
     ui.add_space(4.0);
 }
 
@@ -263,7 +295,10 @@ fn gone(ui: &mut egui::Ui, selection: &mut Selection) {
     ui.horizontal(|ui| {
         ui.label(RichText::new("Gone").size(18.0).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if round_button(ui, false, 14.0, icon_close).on_hover_text("Close (Esc)").clicked() {
+            if round_button(ui, false, 14.0, icon_close)
+                .on_hover_text("Close (Esc)")
+                .clicked()
+            {
                 selection.organism = None;
                 selection.follow = false;
             }
@@ -273,7 +308,12 @@ fn gone(ui: &mut egui::Ui, selection: &mut Selection) {
 }
 
 /// Name, who it is, and the actions.
-fn header(ui: &mut egui::Ui, world: &World, o: &Organism, selection: &mut Selection) -> Option<Action> {
+fn header(
+    ui: &mut egui::Ui,
+    world: &World,
+    o: &Organism,
+    selection: &mut Selection,
+) -> Option<Action> {
     let t = &o.traits;
     let species = world.species.get(o.species);
     let named = species.map(|s| s.established).unwrap_or(false);
@@ -291,8 +331,16 @@ fn header(ui: &mut egui::Ui, world: &World, o: &Organism, selection: &mut Select
         let (r, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
         let p = ui.painter();
         p.circle_filled(r.center(), 12.0, color32(t.color));
-        p.circle_stroke(r.center(), 15.0, Stroke::new(1.2, ACCENT.gamma_multiply(0.5)));
-        p.circle_filled(r.center() + vec2(-3.0, 1.0), 3.5, Color32::from_black_alpha(70));
+        p.circle_stroke(
+            r.center(),
+            15.0,
+            Stroke::new(1.2, ACCENT.gamma_multiply(0.5)),
+        );
+        p.circle_filled(
+            r.center() + vec2(-3.0, 1.0),
+            3.5,
+            Color32::from_black_alpha(70),
+        );
         ui.vertical(|ui| {
             ui.set_width(ui.available_width() - 40.0);
             ui.spacing_mut().item_spacing.y = 1.0;
@@ -304,7 +352,10 @@ fn header(ui: &mut egui::Ui, world: &World, o: &Organism, selection: &mut Select
             );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            if round_button(ui, false, 14.0, icon_close).on_hover_text("Close (Esc)").clicked() {
+            if round_button(ui, false, 14.0, icon_close)
+                .on_hover_text("Close (Esc)")
+                .clicked()
+            {
                 selection.organism = None;
                 selection.follow = false;
             }
@@ -321,9 +372,18 @@ fn header(ui: &mut egui::Ui, world: &World, o: &Organism, selection: &mut Select
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-        if pill(ui, if selection.follow { "Following" } else { "Follow" }, selection.follow, icon_follow)
-            .on_hover_text("Keep the camera on it (F)")
-            .clicked()
+        if pill(
+            ui,
+            if selection.follow {
+                "Following"
+            } else {
+                "Follow"
+            },
+            selection.follow,
+            icon_follow,
+        )
+        .on_hover_text("Keep the camera on it (F)")
+        .clicked()
         {
             selection.follow = !selection.follow;
         }
@@ -336,15 +396,26 @@ fn header(ui: &mut egui::Ui, world: &World, o: &Organism, selection: &mut Select
                 selection.species = if on { None } else { Some(s.id) };
             }
         }
-        let recorded = world.notebook.has_organism(o.id);
+        // A species' entry holds only so many sketches: once it's full, the rest of the
+        // species shows as recorded too.
+        let recorded = !world.can_record(o.id);
         let label = if recorded { "In notebook" } else { "Record" };
-        let tip = if recorded {
+        let tip = if world.notebook.has_organism(o.id) {
             "Sketched in your Field Notebook: click to open it there"
+        } else if recorded {
+            "Its species' page in your Field Notebook is full: click to open it there"
         } else {
             "Sketch it in your Field Notebook, under its species"
         };
-        if pill(ui, label, recorded, hud::icon_book).on_hover_text(tip).clicked() {
-            action = Some(if recorded { Action::OpenNotebook } else { Action::Record });
+        if pill(ui, label, recorded, hud::icon_book)
+            .on_hover_text(tip)
+            .clicked()
+        {
+            action = Some(if recorded {
+                Action::OpenNotebook
+            } else {
+                Action::Record
+            });
         }
     });
     action
@@ -354,16 +425,44 @@ fn overview(ui: &mut egui::Ui, world: &World, o: &Organism) {
     let t = &o.traits;
     let tc = &world.config.time;
     section(ui, "Vitals");
-    meter(ui, "Energy", o.energy / o.max_energy().max(1e-6), &format!("{:.2} / {:.2}", o.energy, o.max_energy()), Color32::from_rgb(225, 190, 80));
-    meter(ui, "Health", o.hp / o.max_hp().max(1e-6), &format!("{:.2} / {:.2}", o.hp, o.max_hp()), Color32::from_rgb(220, 95, 95));
-    meter(ui, "Growth", o.mass / t.adult_mass, &format!("radius {:.1} / {:.1}", o.radius, t.adult_radius), Color32::from_rgb(95, 165, 225));
+    meter(
+        ui,
+        "Energy",
+        o.energy / o.max_energy().max(1e-6),
+        &format!("{:.2} / {:.2}", o.energy, o.max_energy()),
+        Color32::from_rgb(225, 190, 80),
+    );
+    meter(
+        ui,
+        "Health",
+        o.hp / o.max_hp().max(1e-6),
+        &format!("{:.2} / {:.2}", o.hp, o.max_hp()),
+        Color32::from_rgb(220, 95, 95),
+    );
+    meter(
+        ui,
+        "Growth",
+        o.mass / t.adult_mass,
+        &format!("radius {:.1} / {:.1}", o.radius, t.adult_radius),
+        Color32::from_rgb(95, 165, 225),
+    );
     let max_n = o.max_nutrients(&world.config).max(1e-6);
-    meter(ui, "Nutrients", o.nutrients / max_n, &format!("{:.2} / {:.2}", o.nutrients, max_n), Color32::from_rgb(105, 195, 115));
+    meter(
+        ui,
+        "Nutrients",
+        o.nutrients / max_n,
+        &format!("{:.2} / {:.2}", o.nutrients, max_n),
+        Color32::from_rgb(105, 195, 115),
+    );
     meter(
         ui,
         "Age",
         o.age / t.lifespan,
-        &format!("{} / {}", format_game_duration(o.age, tc), format_game_duration(t.lifespan, tc)),
+        &format!(
+            "{} / {}",
+            format_game_duration(o.age, tc),
+            format_game_duration(t.lifespan, tc)
+        ),
         Color32::from_rgb(150, 150, 195),
     );
 
@@ -375,8 +474,14 @@ fn overview(ui: &mut egui::Ui, world: &World, o: &Organism) {
             ("Gaining", format!("{:.3}/s", o.gain_rate)),
             ("Spending", format!("{:.3}/s", o.cost_rate)),
             ("Water", format!("{:.1} °C", o.temperature)),
-            ("Comfort", format!("{:.0} ± {:.0} °C", t.temp_pref, t.temp_tol)),
-            ("Depth", format!("{:.0}", world.config.world.height - o.pos.y)),
+            (
+                "Comfort",
+                format!("{:.0} ± {:.0} °C", t.temp_pref, t.temp_tol),
+            ),
+            (
+                "Depth",
+                format!("{:.0}", world.config.world.height - o.pos.y),
+            ),
             ("Upkeep", format!("×{:.2}", t.upkeep)),
             ("Offspring", o.offspring.to_string()),
             ("Kills", o.kills.to_string()),
@@ -387,7 +492,13 @@ fn overview(ui: &mut egui::Ui, world: &World, o: &Organism) {
     let caps = [t.photo, t.chemo, t.scavenge, t.hunt];
     let names = ["Sunlight", "Minerals", "Dead matter", "Prey"];
     for (i, cap) in caps.iter().enumerate() {
-        meter(ui, names[i], *cap, &format!("{:.0}%", cap * 100.0), diet_color(i));
+        meter(
+            ui,
+            names[i],
+            *cap,
+            &format!("{:.0}%", cap * 100.0),
+            diet_color(i),
+        );
     }
 }
 
@@ -416,14 +527,24 @@ pub(crate) fn body(ui: &mut egui::Ui, world: &World, o: &Organism) {
 
     section(ui, "Parts");
     if list.is_empty() {
-        ui.label(RichText::new("No body parts: it drifts, sensing only what's right around it.").size(12.5).color(MUTED));
+        ui.label(
+            RichText::new("No body parts: it drifts, sensing only what's right around it.")
+                .size(12.5)
+                .color(MUTED),
+        );
     }
     for p in &list {
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(26.0, 18.0), Sense::hover());
             let painter = ui.painter();
             painter.rect_filled(r, 5.0, Color32::from_rgba_unmultiplied(150, 240, 210, 28));
-            painter.text(r.center(), egui::Align2::CENTER_CENTER, format!("P{}", p.slot + 1), FontId::monospace(11.0), ACCENT);
+            painter.text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("P{}", p.slot + 1),
+                FontId::monospace(11.0),
+                ACCENT,
+            );
             ui.add(egui::Label::new(RichText::new(parts::describe(p, &shape)).size(12.5)).wrap())
                 .on_hover_text(p.kind.role());
         });
@@ -457,17 +578,27 @@ fn abilities(world: &World, o: &Organism) -> Vec<String> {
         out.push(format!("Swims {}", directions(&|a| t.swim_toward(a))));
     }
     if t.crawl_coeff > 0.0 {
-        out.push(format!("Walks on rock {}", directions(&|a| t.crawl_toward(a))));
+        out.push(format!(
+            "Walks on rock {}",
+            directions(&|a| t.crawl_toward(a))
+        ));
     }
     if t.turn_rate > 0.0 {
         out.push(format!("Turns {:.0}°/s", t.turn_rate.to_degrees()));
     } else if t.walk_turn > 0.0 {
-        out.push(format!("Turns {:.0}°/s while walking", t.walk_turn.to_degrees()));
+        out.push(format!(
+            "Turns {:.0}°/s while walking",
+            t.walk_turn.to_degrees()
+        ));
     } else if t.is_motile() {
         out.push("Can't turn".into());
     }
     if t.anchor > 0.0 {
-        out.push(if o.anchored { "Anchored to rock".into() } else { "Anchors when it touches rock".into() });
+        out.push(if o.anchored {
+            "Anchored to rock".into()
+        } else {
+            "Anchors when it touches rock".into()
+        });
     } else if t.grip > 0.05 {
         out.push(format!("Grips rock ({:.0}%)", t.grip * 100.0));
     }
@@ -483,8 +614,14 @@ fn abilities(world: &World, o: &Organism) -> Vec<String> {
         }
     ));
     if t.grasp_count > 0 {
-        let reach = t.grasps[..t.grasp_count as usize].iter().map(|z| z.radius).fold(0.0, f32::max);
-        out.push(format!("Tentacles grab within {:.0} u and pull to the mouth", reach * o.radius));
+        let reach = t.grasps[..t.grasp_count as usize]
+            .iter()
+            .map(|z| z.radius)
+            .fold(0.0, f32::max);
+        out.push(format!(
+            "Tentacles grab within {:.0} u and pull to the mouth",
+            reach * o.radius
+        ));
     }
     if t.light_span > 1.01 {
         out.push(format!("Catches light ×{:.1} wide", t.light_span));
@@ -508,10 +645,16 @@ fn abilities(world: &World, o: &Organism) -> Vec<String> {
         }
     };
     if t.armor > 0.01 {
-        out.push(format!("Shell blocks {}", sides(&t.armor_sides, world.config.feeding.armor_protection)));
+        out.push(format!(
+            "Shell blocks {}",
+            sides(&t.armor_sides, world.config.feeding.armor_protection)
+        ));
     }
     if t.spikes > 0.01 {
-        out.push(format!("Spines hurt attackers: {}", sides(&t.spikes_sides, 1.0)));
+        out.push(format!(
+            "Spines hurt attackers: {}",
+            sides(&t.spikes_sides, 1.0)
+        ));
     }
     if t.jaws > 0.01 {
         out.push(format!("Bite ×{:.1}", 0.2 + 1.8 * t.jaws));
@@ -528,19 +671,42 @@ fn chemistry(ui: &mut egui::Ui, world: &World, o: &Organism) {
     let dt = world.config.time.dt;
     section(ui, "Breathing");
     let (text, color) = if c.shortfall > 0.01 {
-        (format!("Suffocating: {:.0}% of its needs unmet (not enough oxygen)", c.shortfall * 100.0), DANGER)
+        (
+            format!(
+                "Suffocating: {:.0}% of its needs unmet (not enough oxygen)",
+                c.shortfall * 100.0
+            ),
+            DANGER,
+        )
     } else if c.aerobic_share > 0.99 {
         ("Breathing oxygen".into(), TEXT)
     } else if c.aerobic_share < 0.01 {
         ("Fermenting (no oxygen used)".into(), TEXT)
     } else {
-        (format!("Breathing {:.0}%, fermenting {:.0}%", c.aerobic_share * 100.0, (1.0 - c.aerobic_share) * 100.0), TEXT)
+        (
+            format!(
+                "Breathing {:.0}%, fermenting {:.0}%",
+                c.aerobic_share * 100.0,
+                (1.0 - c.aerobic_share) * 100.0
+            ),
+            TEXT,
+        )
     };
     ui.label(RichText::new(text).size(12.5).color(color));
-    meter(ui, "Oxygen", c.aerobic_share, &format!("{:.0}%", c.aerobic_share * 100.0), Color32::from_rgb(120, 190, 240));
+    meter(
+        ui,
+        "Oxygen",
+        c.aerobic_share,
+        &format!("{:.0}%", c.aerobic_share * 100.0),
+        Color32::from_rgb(120, 190, 240),
+    );
     let poison_rate = c.poisoned / dt / o.max_hp().max(1e-6);
     if poison_rate >= 0.0005 {
-        bullet(ui, format!("Poisoned: losing {:.1}% HP/s", poison_rate * 100.0), DANGER);
+        bullet(
+            ui,
+            format!("Poisoned: losing {:.1}% HP/s", poison_rate * 100.0),
+            DANGER,
+        );
     }
 
     section(ui, "Exchange with the water");
@@ -548,7 +714,14 @@ fn chemistry(ui: &mut egui::Ui, world: &World, o: &Organism) {
     let mut rows: Vec<(&str, String)> = Vec::new();
     let mut add = |label: &'static str, r: f32, out_word: &str, in_word: &str| {
         if r.abs() >= 1e-5 {
-            rows.push((label, if r > 0.0 { format!("{out_word} {r:.3}/s") } else { format!("{in_word} {:.3}/s", -r) }));
+            rows.push((
+                label,
+                if r > 0.0 {
+                    format!("{out_word} {r:.3}/s")
+                } else {
+                    format!("{in_word} {:.3}/s", -r)
+                },
+            ));
         }
     };
     add("O₂", rate(c.oxygen), "gives", "takes");
@@ -559,13 +732,16 @@ fn chemistry(ui: &mut egui::Ui, world: &World, o: &Organism) {
     if rows.is_empty() {
         ui.label(RichText::new("Nothing right now.").size(12.5).color(MUTED));
     } else {
-        egui::Grid::new("exchange").num_columns(2).spacing([14.0, 3.0]).show(ui, |ui| {
-            for (label, value) in rows {
-                ui.label(RichText::new(label).size(12.5).color(MUTED));
-                ui.label(RichText::new(value).size(12.5));
-                ui.end_row();
-            }
-        });
+        egui::Grid::new("exchange")
+            .num_columns(2)
+            .spacing([14.0, 3.0])
+            .show(ui, |ui| {
+                for (label, value) in rows {
+                    ui.label(RichText::new(label).size(12.5).color(MUTED));
+                    ui.label(RichText::new(value).size(12.5));
+                    ui.end_row();
+                }
+            });
     }
 
     section(ui, "The water here");
@@ -592,12 +768,19 @@ fn genome(ui: &mut egui::Ui, world: &World, o: &Organism) {
             let (r, _) = ui.allocate_exact_size(vec2(10.0, 14.0), Sense::hover());
             ui.painter().circle_filled(r.center(), 4.0, MUTATED);
             ui.label(
-                RichText::new(format!("{mutated} gene{} mutated from its parent", if mutated == 1 { "" } else { "s" }))
-                    .size(12.5)
-                    .color(MUTATED),
+                RichText::new(format!(
+                    "{mutated} gene{} mutated from its parent",
+                    if mutated == 1 { "" } else { "s" }
+                ))
+                .size(12.5)
+                .color(MUTATED),
             );
         } else {
-            ui.label(RichText::new("Same genes as its parent").size(12.5).color(MUTED));
+            ui.label(
+                RichText::new("Same genes as its parent")
+                    .size(12.5)
+                    .color(MUTED),
+            );
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if pill(ui, "Copy", false, |p, c, s, col| {
@@ -621,28 +804,60 @@ fn genome(ui: &mut egui::Ui, world: &World, o: &Organism) {
             c.range()
                 .collect::<Vec<_>>()
                 .chunks(3)
-                .map(|k| k.iter().map(|&i| format!("{:02X}", o.genome.0[i])).collect::<String>())
+                .map(|k| {
+                    k.iter()
+                        .map(|&i| format!("{:02X}", o.genome.0[i]))
+                        .collect::<String>()
+                })
                 .collect()
         } else {
-            c.range().map(|i| format!("{:02X}", o.genome.0[i])).collect()
+            c.range()
+                .map(|i| format!("{:02X}", o.genome.0[i]))
+                .collect()
         };
         let bytes = bytes.join(" ");
         let long = bytes.len() > 30;
         let any_mutated = c.range().any(|i| o.mutations & (1 << i) != 0);
         let id = ui.make_persistent_id(("chromosome", c.letter));
-        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        let mut state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
         ui.add_space(4.0);
         let header = ui.horizontal(|ui| {
             let height = if long { 38.0 } else { 24.0 };
-            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+            let (r, resp) =
+                ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
             let p = ui.painter();
             let hovered = resp.hovered();
-            p.rect_filled(r, 8.0, Color32::from_rgba_unmultiplied(255, 255, 255, if hovered { 16 } else { 8 }));
+            p.rect_filled(
+                r,
+                8.0,
+                Color32::from_rgba_unmultiplied(255, 255, 255, if hovered { 16 } else { 8 }),
+            );
             let badge = Rect::from_min_size(r.min + vec2(4.0, 3.0), vec2(18.0, 18.0));
-            p.rect_filled(badge, 5.0, if any_mutated { MUTATED.gamma_multiply(0.35) } else { Color32::from_rgba_unmultiplied(150, 240, 210, 35) });
-            p.text(badge.center(), egui::Align2::CENTER_CENTER, c.letter.to_string(), FontId::monospace(12.0), if any_mutated { MUTATED } else { ACCENT });
+            p.rect_filled(
+                badge,
+                5.0,
+                if any_mutated {
+                    MUTATED.gamma_multiply(0.35)
+                } else {
+                    Color32::from_rgba_unmultiplied(150, 240, 210, 35)
+                },
+            );
+            p.text(
+                badge.center(),
+                egui::Align2::CENTER_CENTER,
+                c.letter.to_string(),
+                FontId::monospace(12.0),
+                if any_mutated { MUTATED } else { ACCENT },
+            );
             let row_y = badge.center().y;
-            p.text(Pos2::new(badge.right() + 8.0, row_y), egui::Align2::LEFT_CENTER, c.name, FontId::proportional(13.0), TEXT);
+            p.text(
+                Pos2::new(badge.right() + 8.0, row_y),
+                egui::Align2::LEFT_CENTER,
+                c.name,
+                FontId::proportional(13.0),
+                TEXT,
+            );
             let byte_color = if any_mutated { MUTATED } else { MUTED };
             if long {
                 // Too long for the name's row: on a line of its own below it.
@@ -654,15 +869,29 @@ fn genome(ui: &mut egui::Ui, world: &World, o: &Organism) {
                     byte_color,
                 );
             } else {
-                p.text(Pos2::new(r.right() - 22.0, row_y), egui::Align2::RIGHT_CENTER, &bytes, FontId::monospace(11.5), byte_color);
+                p.text(
+                    Pos2::new(r.right() - 22.0, row_y),
+                    egui::Align2::RIGHT_CENTER,
+                    &bytes,
+                    FontId::monospace(11.5),
+                    byte_color,
+                );
             }
             // Open/closed chevron.
             let cx = Pos2::new(r.right() - 10.0, row_y);
             let open = state.is_open();
             let pts = if open {
-                vec![cx + vec2(-4.0, -2.0), cx + vec2(0.0, 2.5), cx + vec2(4.0, -2.0)]
+                vec![
+                    cx + vec2(-4.0, -2.0),
+                    cx + vec2(0.0, 2.5),
+                    cx + vec2(4.0, -2.0),
+                ]
             } else {
-                vec![cx + vec2(-2.0, -4.0), cx + vec2(2.5, 0.0), cx + vec2(-2.0, 4.0)]
+                vec![
+                    cx + vec2(-2.0, -4.0),
+                    cx + vec2(2.5, 0.0),
+                    cx + vec2(-2.0, 4.0),
+                ]
             };
             p.add(egui::Shape::line(pts, Stroke::new(1.5, MUTED)));
             resp
@@ -683,12 +912,22 @@ fn genome(ui: &mut egui::Ui, world: &World, o: &Organism) {
                 ui.horizontal(|ui| {
                     ui.add_sized(
                         [28.0, 16.0],
-                        egui::Label::new(RichText::new(gene_code(i)).monospace().size(11.0).color(MUTED)),
+                        egui::Label::new(
+                            RichText::new(gene_code(i))
+                                .monospace()
+                                .size(11.0)
+                                .color(MUTED),
+                        ),
                     );
                     ui.label(RichText::new(info.name).size(12.5).color(color));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(4.0);
-                        ui.label(RichText::new(format!("{value:02X}")).monospace().size(12.0).color(color));
+                        ui.label(
+                            RichText::new(format!("{value:02X}"))
+                                .monospace()
+                                .size(12.0)
+                                .color(color),
+                        );
                         let (rect, _) = ui.allocate_exact_size(vec2(56.0, 6.0), Sense::hover());
                         let painter = ui.painter();
                         painter.rect_filled(rect, 3.0, TRACK);
@@ -696,8 +935,15 @@ fn genome(ui: &mut egui::Ui, world: &World, o: &Organism) {
                             let mid = rect.center().x;
                             let v = o.genome.signed(i);
                             let x = mid + v * rect.width() * 0.5;
-                            let r = Rect::from_min_max(egui::pos2(mid.min(x), rect.top()), egui::pos2(mid.max(x), rect.bottom()));
-                            let c = if v >= 0.0 { Color32::from_rgb(110, 200, 130) } else { DANGER };
+                            let r = Rect::from_min_max(
+                                egui::pos2(mid.min(x), rect.top()),
+                                egui::pos2(mid.max(x), rect.bottom()),
+                            );
+                            let c = if v >= 0.0 {
+                                Color32::from_rgb(110, 200, 130)
+                            } else {
+                                DANGER
+                            };
                             painter.rect_filled(r, 3.0, c);
                         } else {
                             let mut r = rect;

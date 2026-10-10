@@ -1,7 +1,9 @@
 //! Music: the menu track loops on the menus, and fades out when a world starts or an editor
 //! opens (they're quiet). It's built into the program (`assets/audio/menu.ogg`).
 
-use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume};
+use bevy::audio::{
+    AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume,
+};
 use bevy::prelude::*;
 
 use crate::AppState;

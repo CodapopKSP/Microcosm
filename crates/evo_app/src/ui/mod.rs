@@ -73,7 +73,7 @@ pub struct UiState {
     pub map_mode: MapMode,
     /// The map button's list of overlays is open.
     map_menu: bool,
-    /// The menu (main menu, help, volume) is open.
+    /// Settings (main menu, help, volume) are open.
     game_menu: bool,
     charts: charts::ChartState,
     fps: f64,
@@ -321,7 +321,10 @@ fn draw_ui(
             .map_or(view.bottom(), |r| r.top());
         let rect = egui::Rect::from_min_max(
             egui::pos2(view.left() + hud::GAP, left_bottom + hud::GAP),
-            egui::pos2(view.left() + hud::GAP + species::WIDTH, ticker_top - hud::GAP),
+            egui::pos2(
+                view.left() + hud::GAP + species::WIDTH,
+                ticker_top - hud::GAP,
+            ),
         );
         if rect.height() > 80.0 && !species::show(ctx, rect, &sim.world, &mut selection, &mut cam) {
             ui_state.show_species = false;
@@ -330,16 +333,17 @@ fn draw_ui(
 
     let mut record = None;
     if let (Some(id), Some(rect)) = (selection.organism, inspector_rect) {
-        match inspector::show(ctx, rect, &sim.world, id, &mut selection, &mut ui_state.inspector_tab) {
+        match inspector::show(
+            ctx,
+            rect,
+            &sim.world,
+            id,
+            &mut selection,
+            &mut ui_state.inspector_tab,
+        ) {
             Some(inspector::Action::Record) => record = Some(id),
             Some(inspector::Action::OpenNotebook) => {
-                if let Some(i) = sim
-                    .world
-                    .notebook
-                    .entries
-                    .iter()
-                    .position(|e| e.specimens.iter().any(|s| s.organism == id))
-                {
+                if let Some(i) = sim.world.notebook_entry(id) {
                     ui_state.notebook.show_entry(i);
                 }
                 ui_state.show_notebook = true;
@@ -385,11 +389,7 @@ fn draw_ui(
         use evo_core::notebook::Recorded;
         let result = sim.world.record_specimen(id);
         let notebook = &sim.world.notebook;
-        if let Some(i) = notebook
-            .entries
-            .iter()
-            .position(|e| e.specimens.iter().any(|s| s.organism == id))
-        {
+        if let Some(i) = sim.world.notebook_entry(id) {
             let name = &notebook.entries[i].name;
             let msg = match result {
                 Recorded::NewEntry => Some(format!("New notebook entry: {name} (N to open)")),
@@ -479,8 +479,15 @@ fn event_ticker(
                     p.circle(
                         rect.center(),
                         CHEVRON * 0.5,
-                        if lit { egui::Color32::from_rgb(32, 49, 56) } else { hud::CARD_FILL },
-                        egui::Stroke::new(1.0, hud::ACCENT.gamma_multiply(if lit { 0.6 } else { 0.25 })),
+                        if lit {
+                            egui::Color32::from_rgb(32, 49, 56)
+                        } else {
+                            hud::CARD_FILL
+                        },
+                        egui::Stroke::new(
+                            1.0,
+                            hud::ACCENT.gamma_multiply(if lit { 0.6 } else { 0.25 }),
+                        ),
                     );
                     // Up to expand, down to shrink back.
                     let c = rect.center();
@@ -490,7 +497,11 @@ fn event_ticker(
                     let (w, h) = (5.0, 2.8 * dir);
                     p.line_segment([c + egui::vec2(-w, -h), c + egui::vec2(0.0, h)], stroke);
                     p.line_segment([c + egui::vec2(0.0, h), c + egui::vec2(w, -h)], stroke);
-                    let tip = if *expanded { "Shrink the history (E)" } else { "Show the whole history (E)" };
+                    let tip = if *expanded {
+                        "Shrink the history (E)"
+                    } else {
+                        "Show the whole history (E)"
+                    };
                     if response.on_hover_text(tip).clicked() {
                         *expanded = !*expanded;
                     }
@@ -500,7 +511,12 @@ fn event_ticker(
 }
 
 /// The ticker's latest few events.
-fn recent_events(ui: &mut egui::Ui, world: &World, selection: &mut Selection, cam: &mut CameraState) {
+fn recent_events(
+    ui: &mut egui::Ui,
+    world: &World,
+    selection: &mut Selection,
+    cam: &mut CameraState,
+) {
     for e in world.events.entries.iter().rev().take(6).rev() {
         event_row(ui, world, e, selection, cam);
     }
@@ -561,7 +577,10 @@ fn history(
     });
     ui.horizontal_wrapped(|ui| {
         for (i, (kind, name)) in EVENT_KINDS.iter().enumerate() {
-            ui.checkbox(&mut filter[i], egui::RichText::new(*name).color(event_color(*kind)));
+            ui.checkbox(
+                &mut filter[i],
+                egui::RichText::new(*name).color(event_color(*kind)),
+            );
         }
     });
     ui.separator();
@@ -834,9 +853,9 @@ fn help(ui: &mut egui::Ui) {
         help_row(ui, &[K("F11")], "Fullscreen");
         help_row(ui, &[K("L")], "Species list");
         help_row(ui, &[K("G")], "Charts and family tree");
-        help_row(ui, &[K("E")], "History (expand the event ticker)");
+        help_row(ui, &[K("E")], "History (expand the events)");
         help_row(ui, &[K("N")], "Field notebook");
-        help_row(ui, &[K("T")], "Event ticker");
+        help_row(ui, &[K("T")], "Events");
         help_row(
             ui,
             &[K("M")],

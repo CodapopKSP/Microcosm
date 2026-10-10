@@ -179,13 +179,22 @@ pub(super) fn icon_book(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
     p.rect_filled(cover, 2.5, color.gamma_multiply(0.25));
     p.rect_stroke(cover, 2.5, stroke, egui::StrokeKind::Middle);
     // Spine.
-    let spine = Rect::from_min_max(cover.min, Pos2::new(cover.left() + s * 0.35, cover.bottom()));
+    let spine = Rect::from_min_max(
+        cover.min,
+        Pos2::new(cover.left() + s * 0.35, cover.bottom()),
+    );
     p.rect_filled(spine, 2.0, color);
     // Elastic band and a pencil line on the cover.
     let x = cover.right() - s * 0.35;
-    p.line_segment([Pos2::new(x, cover.top()), Pos2::new(x, cover.bottom())], Stroke::new(1.2, color));
     p.line_segment(
-        [cover.center() + vec2(-s * 0.15, -s * 0.3), cover.center() + vec2(s * 0.25, -s * 0.3)],
+        [Pos2::new(x, cover.top()), Pos2::new(x, cover.bottom())],
+        Stroke::new(1.2, color),
+    );
+    p.line_segment(
+        [
+            cover.center() + vec2(-s * 0.15, -s * 0.3),
+            cover.center() + vec2(s * 0.25, -s * 0.3),
+        ],
         Stroke::new(1.2, color),
     );
 }
@@ -288,7 +297,11 @@ pub(super) fn icon_close(p: &egui::Painter, c: Pos2, s: f32, color: Color32) {
 pub(super) fn tab_bar<T: PartialEq + Copy>(ui: &mut egui::Ui, current: &mut T, tabs: &[(T, &str)]) {
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(w, 28.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 14.0, Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+    ui.painter().rect_filled(
+        rect,
+        14.0,
+        Color32::from_rgba_unmultiplied(255, 255, 255, 10),
+    );
     let seg = rect.width() / tabs.len().max(1) as f32;
     for (i, (t, name)) in tabs.iter().enumerate() {
         let r = Rect::from_min_size(
@@ -396,7 +409,10 @@ fn clock_card(ui: &mut egui::Ui, sim: &mut SimState) {
                     .strong(),
             );
             ui.label(
-                egui::RichText::new(evo_core::traits::format_game_date(c.time, &world.config.time))
+                egui::RichText::new(evo_core::traits::format_game_date(
+                    c.time,
+                    &world.config.time,
+                ))
                 .size(12.5)
                 .color(MUTED),
             );
@@ -799,58 +815,58 @@ fn toolbar(
             ui.spacing_mut().item_spacing.y = 8.0;
             ui.vertical(|ui| {
                 let r = BUTTON_RADIUS;
-                if round_button(ui, ui_state.show_species, r, icon_cells)
-                    .on_hover_text("Species list (L)")
-                    .clicked()
-                {
-                    ui_state.show_species = !ui_state.show_species;
+                let response =
+                    round_button(ui, ui_state.game_menu, r, icon_menu).on_hover_text("Settings");
+                if response.clicked() {
+                    ui_state.game_menu = !ui_state.game_menu;
                 }
-                if round_button(ui, ui_state.show_charts, r, icon_chart)
-                    .on_hover_text("Charts and family tree (G)")
-                    .clicked()
-                {
-                    ui_state.show_charts = !ui_state.show_charts;
-                }
+                menu_button = Some(response.rect);
+                ui.add_space(10.0);
                 if round_button(ui, ui_state.show_notebook, r, icon_book)
-                    .on_hover_text("Field notebook (N)")
+                    .on_hover_text("Field Notebook")
                     .clicked()
                 {
                     ui_state.show_notebook = !ui_state.show_notebook;
                 }
+                if round_button(ui, ui_state.show_charts, r, icon_chart)
+                    .on_hover_text("Charts")
+                    .clicked()
+                {
+                    ui_state.show_charts = !ui_state.show_charts;
+                }
+                if round_button(ui, ui_state.show_species, r, icon_cells)
+                    .on_hover_text("Species")
+                    .clicked()
+                {
+                    ui_state.show_species = !ui_state.show_species;
+                }
                 if round_button(ui, ui_state.show_events, r, icon_feed)
-                    .on_hover_text("Event ticker (T)")
+                    .on_hover_text("Events")
                     .clicked()
                 {
                     ui_state.show_events = !ui_state.show_events;
                 }
                 let map_on = ui_state.map_mode != MapMode::None || ui_state.map_menu;
                 let response =
-                    round_button(ui, map_on, r, icon_drop).on_hover_text("Chemistry map (M)");
+                    round_button(ui, map_on, r, icon_drop).on_hover_text("Chemistry map");
                 if response.clicked() {
                     ui_state.map_menu = !ui_state.map_menu;
                 }
                 map_button = Some(response.rect);
                 if round_button(ui, cam.director, r, icon_camera)
-                    .on_hover_text("Auto camera: follows the action (C)")
+                    .on_hover_text("Auto camera")
                     .clicked()
                 {
                     cam.director = !cam.director;
                 }
-                ui.add_space(10.0);
-                let response = round_button(ui, ui_state.game_menu, r, icon_menu)
-                    .on_hover_text("Menu: main menu, help and volume");
-                if response.clicked() {
-                    ui_state.game_menu = !ui_state.game_menu;
-                }
-                menu_button = Some(response.rect);
             });
         });
 
-    // The menu flies out to the left of its button, level with its bottom.
+    // Settings fly out to the left of their button, level with its top.
     if let (true, Some(button)) = (ui_state.game_menu, menu_button) {
         let response = egui::Area::new(egui::Id::new("hud_game_menu"))
-            .fixed_pos(button.left_bottom() + vec2(-GAP, 0.0))
-            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .fixed_pos(button.left_top() + vec2(-GAP, 0.0))
+            .pivot(egui::Align2::RIGHT_TOP)
             .show(ctx, |ui| game_menu(ui, ui_state, settings))
             .response;
         // Clicking elsewhere closes it.
@@ -943,7 +959,11 @@ fn game_menu(ui: &mut egui::Ui, ui_state: &mut UiState, settings: &mut ResMut<Se
         // In the game's colours: a dark rail filled teal up to the handle.
         let v = &mut ui.style_mut().visuals;
         // (Greyed while muted.)
-        let fill = if settings.muted { MUTED.gamma_multiply(0.45) } else { ACCENT };
+        let fill = if settings.muted {
+            MUTED.gamma_multiply(0.45)
+        } else {
+            ACCENT
+        };
         v.selection.bg_fill = fill.gamma_multiply(0.75);
         v.widgets.inactive.bg_fill = Color32::from_rgb(30, 44, 48);
         v.widgets.inactive.fg_stroke = Stroke::new(1.0, fill);
@@ -981,8 +1001,15 @@ fn menu_item(
     p.rect(
         rect,
         10.0,
-        if hovered { Color32::from_rgb(32, 49, 56) } else { Color32::from_rgb(22, 32, 36) },
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(150, 240, 210, if hovered { 120 } else { 40 })),
+        if hovered {
+            Color32::from_rgb(32, 49, 56)
+        } else {
+            Color32::from_rgb(22, 32, 36)
+        },
+        Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(150, 240, 210, if hovered { 120 } else { 40 }),
+        ),
         egui::StrokeKind::Inside,
     );
     let color = if hovered { ACCENT } else { TEXT };
@@ -1020,8 +1047,16 @@ fn icon_speaker(p: &egui::Painter, c: Pos2, s: f32, color: Color32, volume: f32)
         c + vec2(-s * 0.45, s * 0.35),
         c + vec2(-s, s * 0.35),
     ];
-    p.add(egui::Shape::convex_polygon(body.to_vec(), color, Stroke::NONE));
-    let waves = if volume <= 0.0 { 0 } else { 1 + (volume * 2.99) as usize };
+    p.add(egui::Shape::convex_polygon(
+        body.to_vec(),
+        color,
+        Stroke::NONE,
+    ));
+    let waves = if volume <= 0.0 {
+        0
+    } else {
+        1 + (volume * 2.99) as usize
+    };
     for k in 0..waves {
         let r = s * (0.45 + 0.35 * k as f32);
         let points: Vec<Pos2> = (0..=8)

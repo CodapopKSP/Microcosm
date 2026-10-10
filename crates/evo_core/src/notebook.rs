@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::World;
 use crate::genome::Genome;
 
-/// Most specimens sketched in one entry; recording another drops the oldest sketch.
-pub const MAX_SPECIMENS: usize = 5;
+/// Most specimens sketched in one entry (more don't fit on its half page).
+pub const MAX_SPECIMENS: usize = 4;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -50,6 +50,8 @@ pub enum Recorded {
     Specimen,
     /// This organism is already in the notebook.
     AlreadyRecorded,
+    /// Its species' entry already has `MAX_SPECIMENS` sketches.
+    Full,
     /// No such organism (it died).
     Missing,
 }
@@ -74,6 +76,37 @@ impl Notebook {
 }
 
 impl World {
+    /// The species an organism's notebook entry is for: its named species (a variant goes
+    /// under the named species it came from).
+    fn notebook_species(&self, species: u32) -> u32 {
+        self.species.established_ancestor(species).unwrap_or(species)
+    }
+
+    /// The notebook entry organism `id` is in, or else its species' entry.
+    pub fn notebook_entry(&self, id: u64) -> Option<usize> {
+        let entries = &self.notebook.entries;
+        entries
+            .iter()
+            .position(|e| e.specimens.iter().any(|s| s.organism == id))
+            .or_else(|| {
+                let species = self.notebook_species(self.find(id)?.species);
+                entries.iter().position(|e| e.species == species)
+            })
+    }
+
+    /// Whether recording organism `id` would sketch it: it's alive, not in the notebook yet,
+    /// and its species' entry has room.
+    pub fn can_record(&self, id: u64) -> bool {
+        let Some(o) = self.find(id) else {
+            return false;
+        };
+        !self.notebook.has_organism(id)
+            && self
+                .notebook
+                .entry(self.notebook_species(o.species))
+                .is_none_or(|e| e.specimens.len() < MAX_SPECIMENS)
+    }
+
     /// Record organism `id` in the field notebook, under its named species (a variant goes
     /// under the named species it came from).
     pub fn record_specimen(&mut self, id: u64) -> Recorded {
@@ -83,7 +116,7 @@ impl World {
         if self.notebook.has_organism(id) {
             return Recorded::AlreadyRecorded;
         }
-        let species = self.species.established_ancestor(o.species).unwrap_or(o.species);
+        let species = self.notebook_species(o.species);
         let time = self.time();
         let specimen = Specimen {
             organism: id,
@@ -93,10 +126,10 @@ impl World {
             radius: o.radius,
         };
         if let Some(entry) = self.notebook.entries.iter_mut().find(|e| e.species == species) {
-            entry.specimens.push(specimen);
-            if entry.specimens.len() > MAX_SPECIMENS {
-                entry.specimens.remove(0);
+            if entry.specimens.len() >= MAX_SPECIMENS {
+                return Recorded::Full;
             }
+            entry.specimens.push(specimen);
             return Recorded::Specimen;
         }
         let name = self.species.name(species).to_string();
@@ -138,17 +171,24 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_keeps_the_latest_specimens() {
+    fn a_full_entry_takes_no_more() {
         let mut w = world();
         let ids: Vec<u64> = w.organisms.iter().map(|o| o.id).collect();
-        for &id in ids.iter().take(MAX_SPECIMENS + 2) {
+        for &id in ids.iter().take(MAX_SPECIMENS) {
+            assert!(w.can_record(id));
             w.record_specimen(id);
         }
+        let extra = ids[MAX_SPECIMENS];
+        assert!(!w.can_record(extra));
+        assert_eq!(w.record_specimen(extra), Recorded::Full);
         let specimens = &w.notebook.entries[0].specimens;
         assert_eq!(specimens.len(), MAX_SPECIMENS);
-        assert_eq!(specimens.last().unwrap().organism, ids[MAX_SPECIMENS + 1]);
+        assert_eq!(specimens.last().unwrap().organism, ids[MAX_SPECIMENS - 1]);
+        // It still leads to its species' entry.
+        assert_eq!(w.notebook_entry(extra), Some(0));
         w.notebook.remove(0);
         assert!(w.notebook.entries.is_empty());
+        assert!(w.can_record(extra));
     }
 
     #[test]

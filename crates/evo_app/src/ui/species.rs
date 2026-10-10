@@ -42,7 +42,12 @@ pub fn show(
                 ui.set_width(inner_w);
                 let mut living: Vec<_> = world.species.living().collect();
                 living.sort_by_key(|s| std::cmp::Reverse(s.population));
-                let named = world.species.species.values().filter(|s| s.established).count();
+                let named = world
+                    .species
+                    .species
+                    .values()
+                    .filter(|s| s.established)
+                    .count();
 
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
@@ -51,9 +56,13 @@ pub fn show(
                         ui.spacing_mut().item_spacing.y = 1.0;
                         ui.label(RichText::new("Species").size(17.0).strong());
                         ui.label(
-                            RichText::new(format!("{} living  ·  {} ever named", living.len(), named))
-                                .size(12.0)
-                                .color(MUTED),
+                            RichText::new(format!(
+                                "{} living  ·  {} ever named",
+                                living.len(),
+                                named
+                            ))
+                            .size(12.0)
+                            .color(MUTED),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
@@ -70,11 +79,26 @@ pub fn show(
                 let (head, _) = ui.allocate_exact_size(vec2(inner_w, 16.0), Sense::hover());
                 let p = ui.painter();
                 let font = FontId::proportional(11.0);
-                p.text(head.left_center() + vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, "NAME", font.clone(), MUTED);
-                p.text(head.right_center() - vec2(14.0, 0.0), egui::Align2::RIGHT_CENTER, "POPULATION", font, MUTED);
+                p.text(
+                    head.left_center() + vec2(4.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    "NAME",
+                    font.clone(),
+                    MUTED,
+                );
+                p.text(
+                    head.right_center() - vec2(14.0, 0.0),
+                    egui::Align2::RIGHT_CENTER,
+                    "POPULATION",
+                    font,
+                    MUTED,
+                );
                 let (rule, _) = ui.allocate_exact_size(vec2(inner_w, 1.0), Sense::hover());
-                ui.painter()
-                    .rect_filled(rule, 0.0, Color32::from_rgba_unmultiplied(150, 240, 210, 30));
+                ui.painter().rect_filled(
+                    rule,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(150, 240, 210, 30),
+                );
                 ui.add_space(4.0);
 
                 let total: u32 = living.iter().map(|s| s.population).sum::<u32>().max(1);
@@ -112,7 +136,13 @@ fn row(
     let hovered = response.hovered();
     // Background: lit when highlighted on the map.
     if selected {
-        p.rect(r, 8.0, Color32::from_rgb(28, 62, 58), Stroke::new(1.0, ACCENT.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+        p.rect(
+            r,
+            8.0,
+            Color32::from_rgb(28, 62, 58),
+            Stroke::new(1.0, ACCENT.gamma_multiply(0.6)),
+            egui::StrokeKind::Inside,
+        );
     } else if hovered {
         p.rect_filled(r, 8.0, Color32::from_rgb(24, 36, 42));
     }
@@ -129,11 +159,18 @@ fn row(
     p.circle_stroke(cell, 8.5, Stroke::new(1.0, Color32::from_white_alpha(30)));
     let t = evo_core::Traits::decode(&s.founder, &world.config);
     let diet = t.main_diet();
-    p.circle_filled(Pos2::new(r.left() + 29.0, r.center().y - 1.0), 3.0, diet_color(diet));
+    p.circle_filled(
+        Pos2::new(r.left() + 29.0, r.center().y - 1.0),
+        3.0,
+        diet_color(diet),
+    );
     // Population, right-aligned.
     let pop_font = FontId::monospace(12.0);
     let pop = s.population.to_string();
-    let pop_w = p.layout_no_wrap(pop.clone(), pop_font.clone(), TEXT).size().x;
+    let pop_w = p
+        .layout_no_wrap(pop.clone(), pop_font.clone(), TEXT)
+        .size()
+        .x;
     p.text(
         Pos2::new(r.right() - 8.0, r.center().y - 1.0),
         egui::Align2::RIGHT_CENTER,
@@ -162,14 +199,20 @@ fn row(
         if let Some(o) = world.organisms.iter().find(|o| o.species == s.id) {
             selection.organism = Some(o.id);
             selection.follow = true;
-            cam.focus(Vec2::new(o.pos.x, o.pos.y), Some((o.radius / 10.0).clamp(0.2, 3.0)));
+            cam.focus(
+                Vec2::new(o.pos.x, o.pos.y),
+                Some((o.radius / 10.0).clamp(0.2, 3.0)),
+            );
         }
     }
     response.on_hover_ui(|ui| {
         ui.label(RichText::new(&s.name).strong());
         ui.label(format!("{} · {}", DIET_NAMES[diet], s.population));
         let age = (world.tick - s.founded) as f32 * world.config.time.dt;
-        ui.label(format!("Founded {} ago", format_game_duration(age, &world.config.time)));
+        ui.label(format!(
+            "Founded {} ago",
+            format_game_duration(age, &world.config.time)
+        ));
         if let Some(parent) = s.parent {
             ui.label(format!("Descended from {}", world.species.name(parent)));
         }

@@ -16,12 +16,12 @@ use evo_core::traits::describe_gene;
 use evo_core::{Config, Genome, Organism, Traits, World};
 
 use crate::AppState;
-use crate::ui_sfx::HoverSound;
 use crate::camera::CameraState;
 use crate::editor::{clean_name, hint, icon_back, icon_curl, icon_fit, round_icon};
 use crate::menu::{ACCENT, ERROR, MUTED, TEXT, caption, card, rgba, style_menu};
 use crate::paths::SavedOrganism;
 use crate::sim::SimState;
+use crate::ui_sfx::HoverSound;
 
 pub struct GenomeEditorPlugin;
 
@@ -392,7 +392,9 @@ fn shortcuts(ctx: &egui::Context, ed: &mut GenomeEditor, history: &mut Option<bo
         if cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z) {
             *history = Some(false);
         }
-        if cmd && (i.key_pressed(egui::Key::Y) || (i.modifiers.shift && i.key_pressed(egui::Key::Z))) {
+        if cmd
+            && (i.key_pressed(egui::Key::Y) || (i.modifiers.shift && i.key_pressed(egui::Key::Z)))
+        {
             *history = Some(true);
         }
         if cmd && i.key_pressed(egui::Key::S) {
@@ -407,7 +409,10 @@ fn shortcuts(ctx: &egui::Context, ed: &mut GenomeEditor, history: &mut Option<bo
 /// Title, file buttons and history.
 fn header(ui: &mut egui::Ui, ed: &mut GenomeEditor, history: &mut Option<bool>, config: &Config) {
     ui.horizontal(|ui| {
-        if round_icon(ui, true, icon_back).on_hover_text("Back to the menu").clicked() {
+        if round_icon(ui, true, icon_back)
+            .on_hover_text("Back to the menu")
+            .clicked()
+        {
             ed.leave = true;
         }
         ui.add_space(4.0);
@@ -433,15 +438,23 @@ fn header(ui: &mut egui::Ui, ed: &mut GenomeEditor, history: &mut Option<bool>, 
         {
             ed.save_open = true;
         }
-        let (r, _) = egui::containers::menu::MenuButton::from_button(file_button("New", true)).ui(ui, |ui| {
-            ui.label(egui::RichText::new("Start from").size(12.0).color(MUTED));
-            for (name, about, genome) in crate::menu::builtin_presets(config) {
-                if ui.button(name).on_hover_sound().on_hover_text(about).clicked() {
-                    ed.load(genome, name, about);
-                    ui.close();
+        let (r, _) = egui::containers::menu::MenuButton::from_button(file_button("New", true)).ui(
+            ui,
+            |ui| {
+                ui.label(egui::RichText::new("Start from").size(12.0).color(MUTED));
+                for (name, about, genome) in crate::menu::builtin_presets(config) {
+                    if ui
+                        .button(name)
+                        .on_hover_sound()
+                        .on_hover_text(about)
+                        .clicked()
+                    {
+                        ed.load(genome, name, about);
+                        ui.close();
+                    }
                 }
-            }
-        });
+            },
+        );
         chevron(ui, &r);
         crate::ui_sfx::hover_sound(&r);
         r.on_hover_text("Start over from a built-in organism");
@@ -451,15 +464,19 @@ fn header(ui: &mut egui::Ui, ed: &mut GenomeEditor, history: &mut Option<bool>, 
         crate::ui_sfx::hover_sound(&r);
         r.on_hover_text("Open one of your saved organisms");
         ui.add_space(6.0);
-        if round_icon(ui, !ed.undo.is_empty(), |p, c, col| icon_curl(p, c, col, false))
-            .on_hover_text("Undo (Ctrl+Z)")
-            .clicked()
+        if round_icon(ui, !ed.undo.is_empty(), |p, c, col| {
+            icon_curl(p, c, col, false)
+        })
+        .on_hover_text("Undo (Ctrl+Z)")
+        .clicked()
         {
             *history = Some(false);
         }
-        if round_icon(ui, !ed.redo.is_empty(), |p, c, col| icon_curl(p, c, col, true))
-            .on_hover_text("Redo (Ctrl+Y)")
-            .clicked()
+        if round_icon(ui, !ed.redo.is_empty(), |p, c, col| {
+            icon_curl(p, c, col, true)
+        })
+        .on_hover_text("Redo (Ctrl+Y)")
+        .clicked()
         {
             *history = Some(true);
         }
@@ -469,7 +486,10 @@ fn header(ui: &mut egui::Ui, ed: &mut GenomeEditor, history: &mut Option<bool>, 
         {
             mutate(ed, config);
         }
-        if round_icon(ui, true, icon_fit).on_hover_text("Fit it in view").clicked() {
+        if round_icon(ui, true, icon_fit)
+            .on_hover_text("Fit it in view")
+            .clicked()
+        {
             ed.zoom = 1.0;
         }
     });
@@ -480,7 +500,11 @@ fn header(ui: &mut egui::Ui, ed: &mut GenomeEditor, history: &mut Option<bool>, 
 /// A file button (Save, New, Open): all the same size, those that open a list leaving room
 /// for a chevron.
 fn file_button(text: &str, list: bool) -> egui::Button<'_> {
-    let label = if list { format!("{text}    ") } else { text.to_string() };
+    let label = if list {
+        format!("{text}    ")
+    } else {
+        text.to_string()
+    };
     egui::Button::new(egui::RichText::new(label).size(15.0)).min_size(vec2(84.0, 32.0))
 }
 
@@ -489,8 +513,10 @@ fn chevron(ui: &egui::Ui, r: &egui::Response) {
     let c = r.rect.right_center() + vec2(-15.0, 1.0);
     let color = if r.hovered() { ACCENT } else { MUTED };
     let stroke = egui::Stroke::new(1.6, color);
-    ui.painter().line_segment([c + vec2(-4.0, -2.0), c + vec2(0.0, 2.0)], stroke);
-    ui.painter().line_segment([c + vec2(0.0, 2.0), c + vec2(4.0, -2.0)], stroke);
+    ui.painter()
+        .line_segment([c + vec2(-4.0, -2.0), c + vec2(0.0, 2.0)], stroke);
+    ui.painter()
+        .line_segment([c + vec2(0.0, 2.0), c + vec2(4.0, -2.0)], stroke);
 }
 
 /// The player's saved organisms, to open or delete.
@@ -503,7 +529,9 @@ fn open_menu(ui: &mut egui::Ui, ed: &mut GenomeEditor) {
     let mut delete: Option<String> = None;
     for o in &ed.saved {
         ui.horizontal(|ui| {
-            let r = ui.add_sized([200.0, 24.0], egui::Button::new(&o.name)).on_hover_sound();
+            let r = ui
+                .add_sized([200.0, 24.0], egui::Button::new(&o.name))
+                .on_hover_sound();
             if r.clicked() {
                 open = Some(o.clone());
             }
@@ -511,7 +539,10 @@ fn open_menu(ui: &mut egui::Ui, ed: &mut GenomeEditor) {
                 r.on_hover_text(&o.description);
             }
             if ed.confirm_delete.as_deref() == Some(o.name.as_str()) {
-                if ui.button(egui::RichText::new("Delete").color(ERROR)).clicked() {
+                if ui
+                    .button(egui::RichText::new("Delete").color(ERROR))
+                    .clicked()
+                {
                     delete = Some(o.name.clone());
                 }
             } else if ui.small_button("✕").on_hover_text("Delete").clicked() {
@@ -553,7 +584,12 @@ fn mutate(ed: &mut GenomeEditor, config: &Config) {
 /// A die (mutate).
 fn icon_dice(p: &egui::Painter, c: egui::Pos2, color: Color32) {
     let r = egui::Rect::from_center_size(c, vec2(13.0, 13.0));
-    p.rect_stroke(r, 3.0, egui::Stroke::new(1.5, color), egui::StrokeKind::Middle);
+    p.rect_stroke(
+        r,
+        3.0,
+        egui::Stroke::new(1.5, color),
+        egui::StrokeKind::Middle,
+    );
     for (dx, dy) in [(-3.0, -3.0), (0.0, 0.0), (3.0, 3.0)] {
         p.circle_filled(c + vec2(dx, dy), 1.3, color);
     }
@@ -573,7 +609,11 @@ fn genes_panel(ui: &mut egui::Ui, ed: &mut GenomeEditor, traits: &Traits, config
             egui::RichText::new(format!(
                 "Adult radius {:.1}  ·  {}  ·  {}",
                 traits.adult_radius,
-                if traits.is_motile() { "can move" } else { "can't move" },
+                if traits.is_motile() {
+                    "can move"
+                } else {
+                    "can't move"
+                },
                 parts
             ))
             .size(14.0),
@@ -582,7 +622,9 @@ fn genes_panel(ui: &mut egui::Ui, ed: &mut GenomeEditor, traits: &Traits, config
     for c in CHROMOSOMES.iter() {
         let open = matches!(c.letter, 'B' | 'D' | 'P');
         let section = egui::CollapsingHeader::new(
-            egui::RichText::new(format!("{}  {}", c.letter, c.name)).size(15.0).color(TEXT),
+            egui::RichText::new(format!("{}  {}", c.letter, c.name))
+                .size(15.0)
+                .color(TEXT),
         )
         .id_salt(("chromosome", c.letter))
         .default_open(open)
@@ -625,19 +667,30 @@ fn genes_panel(ui: &mut egui::Ui, ed: &mut GenomeEditor, traits: &Traits, config
 }
 
 /// A chromosome's genes: name, slider, the value in hex (type to set it) and what it means.
-fn gene_rows(ui: &mut egui::Ui, c: &Chromosome, genome: &mut Genome, traits: &Traits, config: &Config) {
+fn gene_rows(
+    ui: &mut egui::Ui,
+    c: &Chromosome,
+    genome: &mut Genome,
+    traits: &Traits,
+    config: &Config,
+) {
     egui::Grid::new(("genes", c.letter))
         .num_columns(4)
         .spacing([10.0, 5.0])
         .show(ui, |ui| {
             for (k, info) in c.genes.iter().enumerate() {
                 let index = c.start + k;
-                ui.label(egui::RichText::new(info.name).size(13.5)).on_hover_text(format!(
-                    "Gene {}{}{}",
-                    c.letter,
-                    k,
-                    if info.kind == GeneKind::Signed { " (80 = neutral)" } else { "" }
-                ));
+                ui.label(egui::RichText::new(info.name).size(13.5))
+                    .on_hover_text(format!(
+                        "Gene {}{}{}",
+                        c.letter,
+                        k,
+                        if info.kind == GeneKind::Signed {
+                            " (80 = neutral)"
+                        } else {
+                            ""
+                        }
+                    ));
                 let mut v = genome.0[index];
                 ui.spacing_mut().slider_width = 150.0;
                 ui.add(egui::Slider::new(&mut v, 0..=255).show_value(false));
@@ -659,7 +712,14 @@ fn gene_rows(ui: &mut egui::Ui, c: &Chromosome, genome: &mut Genome, traits: &Tr
         });
 }
 
-const SYMMETRY: [&str; 6] = ["Single", "Pair", "Ring of 3", "Ring of 4", "Ring of 5", "Ring of 6"];
+const SYMMETRY: [&str; 6] = [
+    "Single",
+    "Pair",
+    "Ring of 3",
+    "Ring of 4",
+    "Ring of 5",
+    "Ring of 6",
+];
 
 /// Where a part sits: segment 1–6, every segment, or on the previous part.
 fn place_name(where_: u8) -> String {
@@ -679,24 +739,39 @@ fn capitalized(s: &str) -> String {
 
 /// The eight part slots, each a kind and symmetry, a size, and where and which way it sits.
 fn parts_section(ui: &mut egui::Ui, genome: &mut Genome) {
-    hint(ui, "Up to eight kinds of part. Angles are measured from the front (0°), clockwise round to the back (180°).");
+    hint(
+        ui,
+        "Up to eight kinds of part. Angles are measured from the front (0°), clockwise round to the back (180°).",
+    );
     for k in 0..parts::SLOTS {
         let o = slot_offset(k);
         let kind_byte = genome.0[o];
         let kind = PartKind::from_code(kind_byte);
         let sym = (kind_byte >> 4).min(5);
         egui::Frame::NONE
-            .fill(rgba(150, 240, 210, if kind.is_some() { 0.06 } else { 0.02 }))
+            .fill(rgba(
+                150,
+                240,
+                210,
+                if kind.is_some() { 0.06 } else { 0.02 },
+            ))
             .corner_radius(8)
             .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("P{}", k + 1)).monospace().color(ACCENT));
+                    ui.label(
+                        egui::RichText::new(format!("P{}", k + 1))
+                            .monospace()
+                            .color(ACCENT),
+                    );
                     let mut new_kind = kind;
                     egui::ComboBox::from_id_salt(("part_kind", k))
                         .width(150.0)
-                        .selected_text(kind.map(|p| capitalized(p.name())).unwrap_or("Empty".into()))
+                        .selected_text(
+                            kind.map(|p| capitalized(p.name()))
+                                .unwrap_or("Empty".into()),
+                        )
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut new_kind, None, "Empty");
                             for p in PartKind::ALL {
@@ -732,38 +807,57 @@ fn parts_section(ui: &mut egui::Ui, genome: &mut Genome) {
                 let Some(p) = PartKind::from_code(genome.0[o]) else {
                     return;
                 };
-                ui.add(egui::Label::new(egui::RichText::new(capitalized(p.role())).size(12.0).color(MUTED)).wrap());
-                egui::Grid::new(("part", k)).num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
-                    ui.label("Size");
-                    let mut size = genome.0[o + 1];
-                    ui.spacing_mut().slider_width = 150.0;
-                    ui.add(egui::Slider::new(&mut size, 0..=255).show_value(false));
-                    ui.add(egui::DragValue::new(&mut size).range(0..=255).hexadecimal(2, false, true).speed(0.5));
-                    genome.0[o + 1] = size;
-                    ui.end_row();
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(capitalized(p.role()))
+                            .size(12.0)
+                            .color(MUTED),
+                    )
+                    .wrap(),
+                );
+                egui::Grid::new(("part", k))
+                    .num_columns(3)
+                    .spacing([10.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label("Size");
+                        let mut size = genome.0[o + 1];
+                        ui.spacing_mut().slider_width = 150.0;
+                        ui.add(egui::Slider::new(&mut size, 0..=255).show_value(false));
+                        ui.add(
+                            egui::DragValue::new(&mut size)
+                                .range(0..=255)
+                                .hexadecimal(2, false, true)
+                                .speed(0.5),
+                        );
+                        genome.0[o + 1] = size;
+                        ui.end_row();
 
-                    let place = genome.0[o + 2];
-                    let (mut where_, mut angle) = (place >> 5, place & 31);
-                    ui.label("Place");
-                    egui::ComboBox::from_id_salt(("part_where", k))
-                        .width(150.0)
-                        .selected_text(place_name(where_))
-                        .show_ui(ui, |ui| {
-                            for w in 0..8u8 {
-                                ui.selectable_value(&mut where_, w, place_name(w));
-                            }
-                        });
-                    ui.label("");
-                    ui.end_row();
+                        let place = genome.0[o + 2];
+                        let (mut where_, mut angle) = (place >> 5, place & 31);
+                        ui.label("Place");
+                        egui::ComboBox::from_id_salt(("part_where", k))
+                            .width(150.0)
+                            .selected_text(place_name(where_))
+                            .show_ui(ui, |ui| {
+                                for w in 0..8u8 {
+                                    ui.selectable_value(&mut where_, w, place_name(w));
+                                }
+                            });
+                        ui.label("");
+                        ui.end_row();
 
-                    ui.label("Angle");
-                    ui.add(egui::Slider::new(&mut angle, 0..=31).show_value(false));
-                    let deg = angle as i32 * 360 / 32;
-                    let deg = if deg > 180 { deg - 360 } else { deg };
-                    ui.label(egui::RichText::new(format!("{deg:+}°")).size(12.5).color(MUTED));
-                    ui.end_row();
-                    genome.0[o + 2] = where_ << 5 | angle;
-                });
+                        ui.label("Angle");
+                        ui.add(egui::Slider::new(&mut angle, 0..=31).show_value(false));
+                        let deg = angle as i32 * 360 / 32;
+                        let deg = if deg > 180 { deg - 360 } else { deg };
+                        ui.label(
+                            egui::RichText::new(format!("{deg:+}°"))
+                                .size(12.5)
+                                .color(MUTED),
+                        );
+                        ui.end_row();
+                        genome.0[o + 2] = where_ << 5 | angle;
+                    });
             });
         ui.add_space(4.0);
     }
@@ -773,7 +867,11 @@ fn parts_section(ui: &mut egui::Ui, genome: &mut Genome) {
 fn about_panel(ui: &mut egui::Ui, world: &World, traits: &Traits) {
     ui.label(egui::RichText::new("This organism").size(18.0).color(TEXT));
     let diet = crate::ui::DIET_NAMES[traits.main_diet()];
-    ui.label(egui::RichText::new(format!("Mainly {}", diet.to_lowercase())).size(13.0).color(MUTED));
+    ui.label(
+        egui::RichText::new(format!("Mainly {}", diet.to_lowercase()))
+            .size(13.0)
+            .color(MUTED),
+    );
     if let Some(o) = world.organisms.first() {
         crate::ui::inspector::body(ui, world, o);
     }
@@ -791,10 +889,14 @@ fn save_dialog(ctx: &egui::Context, ed: &mut GenomeEditor) {
                 ui.set_width(380.0);
                 ui.label(egui::RichText::new("Save organism").size(20.0).color(TEXT));
                 caption(ui, "Name");
-                let name = ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(f32::INFINITY));
+                let name =
+                    ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(f32::INFINITY));
                 let file_name = clean_name(&ed.name);
                 if crate::paths::organism_exists(&file_name) {
-                    hint(ui, "You have an organism with this name; it will be replaced.");
+                    hint(
+                        ui,
+                        "You have an organism with this name; it will be replaced.",
+                    );
                 }
                 caption(ui, "Description");
                 ui.add(
@@ -814,7 +916,11 @@ fn save_dialog(ctx: &egui::Context, ed: &mut GenomeEditor) {
                     if (save || (enter && ok)) && ed.save() {
                         ed.save_open = false;
                     }
-                    if ui.add_sized([120.0, 32.0], egui::Button::new("Cancel")).on_hover_sound().clicked() {
+                    if ui
+                        .add_sized([120.0, 32.0], egui::Button::new("Cancel"))
+                        .on_hover_sound()
+                        .clicked()
+                    {
                         ed.save_open = false;
                     }
                 });

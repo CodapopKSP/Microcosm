@@ -87,7 +87,11 @@ impl<'a> Pencil<'a> {
                     s += (p - dense[i - 1]).length();
                 }
                 let off = amp * ((s * 0.07 + p1).sin() * 0.6 + (s * 0.19 + p2).sin() * 0.4);
-                out.push(if normal.is_finite() { p + normal * off } else { p });
+                out.push(if normal.is_finite() {
+                    p + normal * off
+                } else {
+                    p
+                });
             }
             // Overshoot both ends a touch.
             let start = (out[0] - out[1]).normalized();
@@ -97,10 +101,13 @@ impl<'a> Pencil<'a> {
                 let last = *out.last().unwrap();
                 out.push(last + end * over * 0.6);
             }
-            let alpha = (darkness * self.weight * if pass == 0 { 0.8 } else { 0.45 }).clamp(0.0, 1.0);
+            let alpha =
+                (darkness * self.weight * if pass == 0 { 0.8 } else { 0.45 }).clamp(0.0, 1.0);
             let w = width * if pass == 0 { 1.0 } else { 0.7 };
-            self.painter
-                .add(Shape::line(out, Stroke::new(w, color.gamma_multiply(alpha))));
+            self.painter.add(Shape::line(
+                out,
+                Stroke::new(w, color.gamma_multiply(alpha)),
+            ));
         }
     }
 
@@ -125,15 +132,20 @@ impl<'a> Pencil<'a> {
 
     fn circle(&mut self, c: Vec2, r: f32, width: f32, darkness: f32) {
         let n = ((r * self.scale * 0.8) as usize).clamp(8, 28);
-        let ring: Vec<Vec2> = (0..n).map(|i| c + polar(i as f32 / n as f32 * TAU) * r).collect();
+        let ring: Vec<Vec2> = (0..n)
+            .map(|i| c + polar(i as f32 / n as f32 * TAU) * r)
+            .collect();
         self.closed(&ring, width, darkness);
     }
 
     /// Paper-coloured fill (hides what's behind), in body-local points.
     fn blank(&self, pts: &[Vec2]) {
         let screen: Vec<Pos2> = pts.iter().map(|&p| self.to_screen(p)).collect();
-        self.painter
-            .add(Shape::convex_polygon(screen, super::notebook::PAPER, Stroke::NONE));
+        self.painter.add(Shape::convex_polygon(
+            screen,
+            super::notebook::PAPER,
+            Stroke::NONE,
+        ));
     }
 
     fn dot(&self, c: Vec2, r: f32, color: Color32) {
@@ -222,7 +234,11 @@ impl<'a> Pencil<'a> {
         self.path(&a, line_w, darkness);
         self.path(&b, line_w, darkness);
         // Close the end.
-        self.path(&[a[a.len() - 1], b[b.len() - 1]], line_w * 0.8, darkness * 0.8);
+        self.path(
+            &[a[a.len() - 1], b[b.len() - 1]],
+            line_w * 0.8,
+            darkness * 0.8,
+        );
     }
 }
 
@@ -337,7 +353,10 @@ fn extent(body: &BodyShape, instances: &[Instance], t: &Traits) -> Rect {
     };
     let mut r = Rect::from_min_max(
         pos2(-body.half_length * 1.06, -body.half_width * 1.15),
-        pos2(body.nose().max(body.half_length).max(snout) * 1.06, body.half_width * 1.15),
+        pos2(
+            body.nose().max(body.half_length).max(snout) * 1.06,
+            body.half_width * 1.15,
+        ),
     );
     for i in instances {
         let (d, n) = (polar(i.dir), polar(i.dir).rot90());
@@ -355,13 +374,23 @@ fn extent(body: &BodyShape, instances: &[Instance], t: &Traits) -> Rect {
             PartKind::Jaw => 0.15 + w,
             _ => w,
         };
-        for (a, c) in [(0.0, 0.0), (1.0, 0.0), (0.7, lat), (0.7, -lat), (1.0, lat * 0.6), (1.0, -lat * 0.6)] {
+        for (a, c) in [
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.7, lat),
+            (0.7, -lat),
+            (1.0, lat * 0.6),
+            (1.0, -lat * 0.6),
+        ] {
             let p = base + d * i.length * a + n * i.length * c;
             r.extend_with(pos2(p.x, p.y));
         }
     }
     if t.toxin > 0.05 {
-        r = r.union(Rect::from_center_size(Pos2::ZERO, vec2(body.half_length, body.half_width) * 2.5));
+        r = r.union(Rect::from_center_size(
+            Pos2::ZERO,
+            vec2(body.half_length, body.half_width) * 2.5,
+        ));
     }
     r
 }
@@ -436,7 +465,14 @@ pub fn draw_specimen(
         let lower = (-p.y / hw).max(0.0) * 0.25;
         (smoothstep(0.55, 1.0, d) * 0.8 + lower * smoothstep(0.2, 1.0, d)).max(0.0)
     };
-    pen.hatch(screen_bounds, 0.8, (scale * 0.065).clamp(1.8, 3.2), GRAPHITE, 0.45, &rim);
+    pen.hatch(
+        screen_bounds,
+        0.8,
+        (scale * 0.065).clamp(1.8, 3.2),
+        GRAPHITE,
+        0.45,
+        &rim,
+    );
     pen.hatch(
         screen_bounds,
         -0.75,
@@ -480,7 +516,11 @@ pub fn draw_specimen(
             continue;
         }
         let mid = vec2(inst.base.x, inst.base.y) + polar(inst.dir) * inst.length * 0.6;
-        labels.push((pen.to_screen(mid), vec2(inst.dir.cos(), -inst.dir.sin()), inst.kind.name()));
+        labels.push((
+            pen.to_screen(mid),
+            vec2(inst.dir.cos(), -inst.dir.sin()),
+            inst.kind.name(),
+        ));
     }
     labels
 }
@@ -488,11 +528,17 @@ pub fn draw_specimen(
 /// The jittered-grid dot pattern the shader uses for organelles: one dot per cell.
 fn grid_dots(scale: f32, seed: f32, extent: Vec2) -> Vec<Vec2> {
     let mut out = Vec::new();
-    let (nx, ny) = ((extent.x * scale).ceil() as i32 + 1, (extent.y * scale).ceil() as i32 + 1);
+    let (nx, ny) = (
+        (extent.x * scale).ceil() as i32 + 1,
+        (extent.y * scale).ceil() as i32 + 1,
+    );
     for j in -ny..=ny {
         for i in -nx..=nx {
             let (ci, cj) = (i as f32, j as f32);
-            let jitter = vec2(hash(ci + seed, cj + seed), hash(ci + seed + 17.0, cj + seed + 17.0));
+            let jitter = vec2(
+                hash(ci + seed, cj + seed),
+                hash(ci + seed + 17.0, cj + seed + 17.0),
+            );
             out.push((vec2(ci, cj) + jitter) / scale);
         }
     }
@@ -539,7 +585,12 @@ fn organelles(pen: &mut Pencil, body: &Body, t: &Traits, seed: f32) {
             let ring: Vec<Vec2> = (0..=20)
                 .map(|i| body.denorm(polar(i as f32 / 20.0 * TAU) * r))
                 .collect();
-            pen.path_colored(&ring, 0.8, (0.6 - 0.12 * k as f32) * t.chemo.min(1.0) + 0.15, cyan);
+            pen.path_colored(
+                &ring,
+                0.8,
+                (0.6 - 0.12 * k as f32) * t.chemo.min(1.0) + 0.15,
+                cyan,
+            );
         }
     }
 }
@@ -554,7 +605,11 @@ fn nucleus(pen: &mut Pencil, body: &Body, seed: f32, line_w: f32) {
         let w = b.segment_width(0);
         (vec2(cx + c.x * a, c.y * w), 0.27 * a, 0.27 * w)
     } else {
-        (body.denorm(c), 0.27 * b.half_length, 0.27 * b.width_at(c.x * b.half_length))
+        (
+            body.denorm(c),
+            0.27 * b.half_length,
+            0.27 * b.width_at(c.x * b.half_length),
+        )
     };
     let ring: Vec<Vec2> = (0..18)
         .map(|i| {
@@ -569,7 +624,11 @@ fn nucleus(pen: &mut Pencil, body: &Body, seed: f32, line_w: f32) {
         pen.to_screen(center + vec2(rx, ry)),
     );
     pen.hatch(bounds, 0.4, 1.8, GRAPHITE, 0.35, &|p| {
-        if ((p - center) / vec2(rx, ry)).length() < 0.9 { 0.8 } else { 0.0 }
+        if ((p - center) / vec2(rx, ry)).length() < 0.9 {
+            0.8
+        } else {
+            0.0
+        }
     });
 }
 
@@ -611,7 +670,11 @@ fn mouth(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32) {
                 .union(Rect::from_center_size(pen.to_screen(tip), vec2(2.0, 2.0)));
             let (tri_a, tri_b, tri_c) = (a, b, tip);
             pen.hatch(bounds.expand(2.0), 1.2, 1.6, GRAPHITE, 0.6, &|p| {
-                if in_triangle(p, tri_a, tri_b, tri_c) { 1.0 } else { 0.0 }
+                if in_triangle(p, tri_a, tri_b, tri_c) {
+                    1.0
+                } else {
+                    0.0
+                }
             });
         }
     }
@@ -631,24 +694,43 @@ fn mouth(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32) {
                 let x = x0 + (x1 - x0) * k as f32 / rings as f32;
                 pen.path(&[vec2(x, rr), vec2(x, -rr)], line_w * 0.5, 0.45);
             }
-            pen.dot(vec2(x1, 0.0), rr * 0.6, GRAPHITE.gamma_multiply(0.85 * pen.weight));
+            pen.dot(
+                vec2(x1, 0.0),
+                rr * 0.6,
+                GRAPHITE.gamma_multiply(0.85 * pen.weight),
+            );
             if scav > 0.35 {
                 for k in 0..5 {
                     let a = (k as f32 - 2.0) * 0.45;
                     let d = polar(a);
                     let tip = vec2(x1, 0.0);
-                    pen.path(&[tip + d * rr, tip + d * (rr + (0.15 + 0.15 * scav) * body.shape.half_width)], line_w * 0.5, 0.6);
+                    pen.path(
+                        &[
+                            tip + d * rr,
+                            tip + d * (rr + (0.15 + 0.15 * scav) * body.shape.half_width),
+                        ],
+                        line_w * 0.5,
+                        0.6,
+                    );
                 }
             }
         } else {
-            pen.dot(body.denorm(vec2(0.9, 0.0)), 0.08 * body.shape.half_width, GRAPHITE.gamma_multiply(0.8));
+            pen.dot(
+                body.denorm(vec2(0.9, 0.0)),
+                0.08 * body.shape.half_width,
+                GRAPHITE.gamma_multiply(0.8),
+            );
         }
     }
 }
 
 fn in_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
     let cross = |u: Vec2, v: Vec2| u.x * v.y - u.y * v.x;
-    let (d1, d2, d3) = (cross(b - a, p - a), cross(c - b, p - b), cross(a - c, p - c));
+    let (d1, d2, d3) = (
+        cross(b - a, p - a),
+        cross(c - b, p - b),
+        cross(a - c, p - c),
+    );
     let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
     let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
     !(neg && pos)
@@ -684,7 +766,9 @@ fn pattern(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32) {
             let step = TAU / (scale * 4.0);
             let mut r = step;
             while r < 0.95 {
-                let ring: Vec<Vec2> = (0..=36).map(|i| body.denorm(polar(i as f32 / 36.0 * TAU) * r)).collect();
+                let ring: Vec<Vec2> = (0..=36)
+                    .map(|i| body.denorm(polar(i as f32 / 36.0 * TAU) * r))
+                    .collect();
                 pen.path_colored(&ring, line_w * 1.6, 0.5, dark);
                 r += step;
             }
@@ -726,7 +810,11 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 for a in samples(14).skip(2) {
                     let y = amp * (a * TAU * (1.0 + s) + phase).sin() * a;
                     let p = at(a, y);
-                    pen.path(&[p - n * w * 3.0 * len, p + n * w * 3.0 * len], w_line * 0.4, 0.4);
+                    pen.path(
+                        &[p - n * w * 3.0 * len, p + n * w * 3.0 * len],
+                        w_line * 0.4,
+                        0.4,
+                    );
                 }
             }
         }
@@ -734,7 +822,11 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
             // A band at the base with rows of short hairs.
             let spacing = 0.4 + (0.13 - 0.4) * s;
             pen.blank(&[at(-0.08, w), at(0.16, w), at(0.16, -w), at(-0.08, -w)]);
-            pen.closed(&[at(-0.08, w), at(0.16, w), at(0.16, -w), at(-0.08, -w)], w_line * 0.6, 0.6);
+            pen.closed(
+                &[at(-0.08, w), at(0.16, w), at(0.16, -w), at(-0.08, -w)],
+                w_line * 0.6,
+                0.6,
+            );
             let count = (w / spacing).floor() as i32;
             for i in -count..=count {
                 let y0 = i as f32 * spacing;
@@ -746,9 +838,19 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
         PartKind::Tentacle => {
             let sway = |a: f32| 0.16 * (a * 3.0 + phase).sin() * a;
             let curl = |a: f32| (0.18 + 0.12 * phase.sin()) * a * a * a;
-            let club = |a: f32| w * 0.6 * smoothstep(0.78, 0.92, a) * (1.0 - smoothstep(0.94, 1.0, a)) * smoothstep(0.75, 0.95, s);
+            let club = |a: f32| {
+                w * 0.6
+                    * smoothstep(0.78, 0.92, a)
+                    * (1.0 - smoothstep(0.94, 1.0, a))
+                    * smoothstep(0.75, 0.95, s)
+            };
             let mid: Vec<(Vec2, f32)> = samples(28)
-                .map(|a| (at(a, sway(a) + curl(a)), (w * (1.0 - 0.65 * a) + club(a)) * len))
+                .map(|a| {
+                    (
+                        at(a, sway(a) + curl(a)),
+                        (w * (1.0 - 0.65 * a) + club(a)) * len,
+                    )
+                })
                 .collect();
             pen.limb(&mid, w_line, 0.85);
             if s > 0.3 {
@@ -796,7 +898,11 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 let rel = p - base_s;
                 let a = rel.dot(dir_s) / len;
                 let c = rel.dot(nrm_s) / len;
-                if (0.0..=1.0).contains(&a) && (c - y(a)).abs() < half(a) { 0.7 } else { 0.0 }
+                if (0.0..=1.0).contains(&a) && (c - y(a)).abs() < half(a) {
+                    0.7
+                } else {
+                    0.0
+                }
             });
             if s > 0.2 {
                 let rib: Vec<Vec2> = samples(10).map(|a| at(a * 0.95, y(a * 0.95))).collect();
@@ -806,7 +912,14 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 for k in 1..8 {
                     let a = k as f32 / 9.0;
                     for sign in [1.0, -1.0] {
-                        pen.path(&[at(a, y(a)), at(a + 0.08, y(a + 0.08) + sign * half(a + 0.08) * 0.85)], w_line * 0.45, 0.45);
+                        pen.path(
+                            &[
+                                at(a, y(a)),
+                                at(a + 0.08, y(a + 0.08) + sign * half(a + 0.08) * 0.85),
+                            ],
+                            w_line * 0.45,
+                            0.45,
+                        );
                     }
                 }
             }
@@ -841,7 +954,11 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
             if s > 0.25 {
                 for k in 0..=(rays as usize) {
                     let phi = -spread + 2.0 * spread * k as f32 / rays;
-                    pen.path(&[at(0.0, 0.0), point(phi, reach(phi) * 0.97)], w_line * 0.5, 0.55);
+                    pen.path(
+                        &[at(0.0, 0.0), point(phi, reach(phi) * 0.97)],
+                        w_line * 0.5,
+                        0.55,
+                    );
                 }
             }
         }
@@ -871,7 +988,11 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
             if fork > 0.2 {
                 for k in -1..=1 {
                     let cc = k as f32 / 3.0;
-                    pen.path(&[to_world(0.55, cc * 0.5), to_world(0.92, cc)], w_line * 0.45, 0.45);
+                    pen.path(
+                        &[to_world(0.55, cc * 0.5), to_world(0.92, cc)],
+                        w_line * 0.45,
+                        0.45,
+                    );
                 }
             }
         }
@@ -912,7 +1033,14 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
         }
         PartKind::Holdfast => {
             // A sucker disc on a stem, growing into a branching root system.
-            pen.limb(&[(at(0.0, 0.0), w * 0.28 * len), (at(0.5, 0.0), w * 0.28 * len)], w_line, 0.85);
+            pen.limb(
+                &[
+                    (at(0.0, 0.0), w * 0.28 * len),
+                    (at(0.5, 0.0), w * 0.28 * len),
+                ],
+                w_line,
+                0.85,
+            );
             if s < 0.5 {
                 let disc: Vec<Vec2> = samples(20)
                     .map(|u| {
@@ -927,7 +1055,10 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 let roots = 2 + (s * 5.0).floor() as usize;
                 for k in 0..roots {
                     let tt = (k as f32 + 0.5) / roots as f32 * 2.0 - 1.0;
-                    let midp = (0.68, tt * w * 0.45 + 0.05 * (k as f32 * 2.3 + seed * 9.0).sin());
+                    let midp = (
+                        0.68,
+                        tt * w * 0.45 + 0.05 * (k as f32 * 2.3 + seed * 9.0).sin(),
+                    );
                     let tip = (0.97, tt * w * 0.95);
                     pen.limb(
                         &[
@@ -959,17 +1090,27 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
             // Eyespot -> pit eye -> lens eye -> camera eye, as it grows.
             let c = at(0.5, 0.0);
             let r = 0.5 * len;
-            let ring = |rad: f32| -> Vec<Vec2> { (0..20).map(|j| c + polar(j as f32 / 20.0 * TAU) * rad).collect() };
+            let ring = |rad: f32| -> Vec<Vec2> {
+                (0..20)
+                    .map(|j| c + polar(j as f32 / 20.0 * TAU) * rad)
+                    .collect()
+            };
             pen.blank(&ring(r));
             if s < 0.25 {
-                pen.dot(c, r * 0.55, Color32::from_rgb(150, 60, 30).gamma_multiply(0.85 * pen.weight));
+                pen.dot(
+                    c,
+                    r * 0.55,
+                    Color32::from_rgb(150, 60, 30).gamma_multiply(0.85 * pen.weight),
+                );
                 pen.closed(&ring(r * 0.55), w_line * 0.6, 0.7);
                 return;
             }
             pen.closed(&ring(r), w_line, 0.95);
             if s < 0.5 {
                 // Pit eye: a dark cup opening outward.
-                let cup: Vec<Vec2> = samples(12).map(|u| c + polar(PI * 0.5 + u * PI) * r * 0.7).collect();
+                let cup: Vec<Vec2> = samples(12)
+                    .map(|u| c + polar(PI * 0.5 + u * PI) * r * 0.7)
+                    .collect();
                 pen.path(&cup, w_line * 1.4, 0.9);
                 return;
             }
@@ -978,18 +1119,28 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 // Striated iris and a rim.
                 for k in 0..12 {
                     let a = k as f32 / 12.0 * TAU;
-                    pen.path(&[c + polar(a) * r * 0.32, c + polar(a) * r * 0.6], w_line * 0.35, 0.4);
+                    pen.path(
+                        &[c + polar(a) * r * 0.32, c + polar(a) * r * 0.6],
+                        w_line * 0.35,
+                        0.4,
+                    );
                 }
                 pen.closed(&ring(r * 1.12), w_line * 0.5, 0.45);
             }
             let pupil = c + d * r * 0.12;
             pen.dot(pupil, r * 0.3, GRAPHITE.gamma_multiply(0.9 * pen.weight));
-            pen.dot(pupil + vec2(-r * 0.1, r * 0.12), r * 0.09, super::notebook::PAPER);
+            pen.dot(
+                pupil + vec2(-r * 0.1, r * 0.12),
+                r * 0.09,
+                super::notebook::PAPER,
+            );
         }
         PartKind::Antenna => {
             // A feeler: segmented, then feathery.
             let y = |a: f32| (0.12 * phase.sin() + 0.18) * a * a;
-            let mid: Vec<(Vec2, f32)> = samples(16).map(|a| (at(a, y(a)), w * (1.0 - 0.6 * a) * len)).collect();
+            let mid: Vec<(Vec2, f32)> = samples(16)
+                .map(|a| (at(a, y(a)), w * (1.0 - 0.6 * a) * len))
+                .collect();
             pen.limb(&mid, w_line * 0.8, 0.85);
             if s > 0.35 {
                 for k in 1..10 {
@@ -1002,7 +1153,11 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 for k in 3..16 {
                     let a = k as f32 / 16.0;
                     for sign in [1.0f32, -1.0] {
-                        pen.path(&[at(a, y(a)), at(a + 0.05, y(a) + sign * 0.12)], w_line * 0.35, 0.45);
+                        pen.path(
+                            &[at(a, y(a)), at(a + 0.05, y(a) + sign * 0.12)],
+                            w_line * 0.35,
+                            0.45,
+                        );
                     }
                 }
             }
@@ -1010,16 +1165,27 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
         PartKind::Lure => {
             let sway = 0.15 * phase.sin();
             let y = |a: f32| (sway + 0.1) * a * a;
-            let mid: Vec<(Vec2, f32)> = samples(12).map(|u| u * 0.78).map(|a| (at(a, y(a)), w * 0.22 * len)).collect();
+            let mid: Vec<(Vec2, f32)> = samples(12)
+                .map(|u| u * 0.78)
+                .map(|a| (at(a, y(a)), w * 0.22 * len))
+                .collect();
             pen.limb(&mid, w_line * 0.8, 0.85);
             let bulb = at(0.8, (sway + 0.1) * 0.64);
             let r = w * (0.55 + 0.45 * s) * len;
-            pen.blank(&(0..16).map(|j| bulb + polar(j as f32 / 16.0 * TAU) * r).collect::<Vec<_>>());
+            pen.blank(
+                &(0..16)
+                    .map(|j| bulb + polar(j as f32 / 16.0 * TAU) * r)
+                    .collect::<Vec<_>>(),
+            );
             pen.circle(bulb, r, w_line, 0.9);
             // Its glow: short rays.
             for j in 0..10 {
                 let a = j as f32 / 10.0 * TAU + 0.2;
-                pen.path(&[bulb + polar(a) * r * 1.5, bulb + polar(a) * r * (2.0 + s)], w_line * 0.45, 0.4);
+                pen.path(
+                    &[bulb + polar(a) * r * 1.5, bulb + polar(a) * r * (2.0 + s)],
+                    w_line * 0.45,
+                    0.4,
+                );
             }
         }
         PartKind::Spine => {
@@ -1027,7 +1193,9 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
             let y = |a: f32| 0.08 * smoothstep(0.5, 1.0, s) * a * a;
             let barbs = smoothstep(0.75, 0.9, s);
             let hw = |a: f32| {
-                let barb = barbs * (1.0 - (a * 5.0).fract() * 3.0).max(0.0) * if a >= 0.25 { 1.0 } else { 0.0 };
+                let barb = barbs
+                    * (1.0 - (a * 5.0).fract() * 3.0).max(0.0)
+                    * if a >= 0.25 { 1.0 } else { 0.0 };
                 w * (1.0 - a) + w * 0.5 * barb * (1.0 - a)
             };
             let outline: Vec<Vec2> = samples(20)
@@ -1039,7 +1207,11 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
             if s > 0.4 {
                 for k in 1..6 {
                     let a = (k as f32 + 0.5) / 6.0;
-                    pen.path(&[at(a, y(a) - hw(a)), at(a, y(a) + hw(a))], w_line * 0.5, 0.5);
+                    pen.path(
+                        &[at(a, y(a) - hw(a)), at(a, y(a) + hw(a))],
+                        w_line * 0.5,
+                        0.5,
+                    );
                 }
             }
         }
@@ -1060,7 +1232,11 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                     let h = w * (0.3 + 0.3 * s);
                     let inner = y(a) - hw(a);
                     let half = 0.4 / count as f32;
-                    pen.path(&[at(a - half, inner), at(a, inner - h), at(a + half, inner)], w_line * 0.6, 0.75);
+                    pen.path(
+                        &[at(a - half, inner), at(a, inner - h), at(a + half, inner)],
+                        w_line * 0.6,
+                        0.75,
+                    );
                 }
             }
         }
@@ -1071,7 +1247,11 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
             let plate: Vec<Vec2> = samples(16)
                 .map(|u| -w + 2.0 * w * u)
                 .map(|c| at(1.0 - bend(c), c))
-                .chain(samples(16).map(|u| w - 2.0 * w * u).map(|c| at(-bend(c), c)))
+                .chain(
+                    samples(16)
+                        .map(|u| w - 2.0 * w * u)
+                        .map(|c| at(-bend(c), c)),
+                )
                 .collect();
             pen.blank(&plate);
             let shell = Color32::from_rgb(140, 125, 100);
@@ -1083,14 +1263,21 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 let a = rel.dot(dir_s) / len;
                 let c = rel.dot(nrm_s) / len;
                 let ac = a + bend(c);
-                if (0.0..=1.0).contains(&ac) && c.abs() <= w { 0.7 } else { 0.0 }
+                if (0.0..=1.0).contains(&ac) && c.abs() <= w {
+                    0.7
+                } else {
+                    0.0
+                }
             });
             pen.closed(&plate, w_line, 0.9);
             if s > 0.35 {
                 let lines = (2.0 + 4.0 * s) as usize;
                 for k in 1..lines {
                     let ac = k as f32 / lines as f32;
-                    let arc: Vec<Vec2> = samples(10).map(|u| -w + 2.0 * w * u).map(|c| at(ac - bend(c), c)).collect();
+                    let arc: Vec<Vec2> = samples(10)
+                        .map(|u| -w + 2.0 * w * u)
+                        .map(|c| at(ac - bend(c), c))
+                        .collect();
                     pen.path(&arc, w_line * 0.45, 0.45);
                 }
             }

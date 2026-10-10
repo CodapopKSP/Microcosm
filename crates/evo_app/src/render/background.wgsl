@@ -659,6 +659,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let strength = v.z;
         let root = v.w;
         let q0 = wp - v.xy;
+        // A warm halo in the water. It reaches well below the stack, onto floor that drops
+        // away under it, so it's worked out before the stack's bounds cut things short.
+        let halo_d = length(q0 - vec2<f32>(0.0, 26.0));
+        if halo_d < 900.0 {
+            let halo = vec3<f32>(0.06, 0.02, 0.007) * exp(-halo_d / 90.0) * strength;
+            water += halo;
+            vent_glow += halo;
+        }
         if abs(q0.x) > 700.0 || q0.y < -root - 20.0 || q0.y > 900.0 {
             continue;
         }
@@ -667,11 +675,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let aa = max(px, 0.4);
         let flicker = 0.8 + 0.2 * value_noise(vec2<f32>(time * 3.0, seed * 40.0));
         let outlets = vent_outlets(variant);
-
-        // A warm halo in the water.
-        let halo = vec3<f32>(0.06, 0.02, 0.007) * exp(-length(q0 - vec2<f32>(0.0, 26.0)) / 90.0) * strength;
-        water += halo;
-        vent_glow += halo;
 
         // Smoke from every outlet, merged into one plume.
         let current = (fract(seed * 9.13) - 0.5) * 2.0;

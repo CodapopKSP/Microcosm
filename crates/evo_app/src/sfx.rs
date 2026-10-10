@@ -16,7 +16,9 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume};
+use bevy::audio::{
+    AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume,
+};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use evo_core::rng::Rng;
@@ -200,7 +202,11 @@ pub fn vent_mix(vents: &[(Vec2, f32)], center: Vec2, half: Vec2, zoom_volume: f3
         }
         // Between which two pan positions, and how far along.
         let pan = rel.x.clamp(PANS[0], PANS[PANS.len() - 1]);
-        let i = PANS.iter().rposition(|p| *p <= pan).unwrap_or(0).min(PANS.len() - 2);
+        let i = PANS
+            .iter()
+            .rposition(|p| *p <= pan)
+            .unwrap_or(0)
+            .min(PANS.len() - 2);
         let t = (pan - PANS[i]) / (PANS[i + 1] - PANS[i]);
         mix[i] += gain * (1.0 - t);
         mix[i + 1] += gain * t;
@@ -512,7 +518,10 @@ mod tests {
     #[test]
     fn smaller_bodies_sound_higher() {
         let semis = |r: f32| 12.0 * pitch(r).log2();
-        assert!(semis(15.0).abs() < 1e-4, "recorded pitch at the base radius");
+        assert!(
+            semis(15.0).abs() < 1e-4,
+            "recorded pitch at the base radius"
+        );
         assert!((semis(1.0) - 4.0).abs() < 1e-4, "two whole steps up");
         assert!((semis(30.0) + 4.0).abs() < 1e-4, "two whole steps down");
         assert!((semis(0.5) - 4.0).abs() < 1e-4 && (semis(200.0) + 4.0).abs() < 1e-4);
@@ -523,7 +532,10 @@ mod tests {
     fn bigger_hunters_swallow_louder() {
         assert_eq!(eat_size(EAT_FULL_RADIUS), 1.0);
         assert_eq!(eat_size(2.0 * EAT_FULL_RADIUS), 1.0, "full from 30 up");
-        assert!((eat_size(15.0) - 0.5f32.sqrt()).abs() < 1e-6, "half as big, about -3 dB");
+        assert!(
+            (eat_size(15.0) - 0.5f32.sqrt()).abs() < 1e-6,
+            "half as big, about -3 dB"
+        );
         assert!(eat_size(3.0) > 0.3, "small hunters still heard");
         assert_eq!(eat_size(0.0), 0.0);
     }
@@ -549,7 +561,10 @@ mod tests {
         let db = |v: f32| 20.0 * (v / MAX_VOLUME).log10();
         let early = (db(at(0.0)) - db(at(0.2))) / 0.2;
         let late = (db(at(0.4)) - db(at(0.8))) / 0.4;
-        assert!((early - late).abs() < 0.01, "{early} dB/step early, {late} late");
+        assert!(
+            (early - late).abs() < 0.01,
+            "{early} dB/step early, {late} late"
+        );
         // Never louder further out.
         let mut last = f32::MAX;
         for k in 0..=100 {

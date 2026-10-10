@@ -4,17 +4,17 @@
 
 mod camera;
 mod editor;
-mod genome_editor;
 mod gallery;
+mod genome_editor;
 mod menu;
 mod music;
 mod paths;
 mod render;
 mod settings;
 mod sfx;
-mod ui_sfx;
 mod sim;
 mod ui;
+mod ui_sfx;
 
 use std::path::PathBuf;
 

@@ -8,7 +8,7 @@ use bevy_egui::egui::{
     pos2, vec2,
 };
 use evo_core::genome::drive;
-use evo_core::notebook::Entry;
+use evo_core::notebook::{Entry, MAX_SPECIMENS};
 use evo_core::rng::Rng;
 use evo_core::traits::{format_game_date, format_game_duration};
 use evo_core::{Traits, World};
@@ -144,9 +144,18 @@ pub fn draw(
             let (book, _) = ui.allocate_exact_size(size, Sense::hover());
             let painter = ui.painter_at(book.expand(12.0));
             // Cover and its shadow.
-            painter.rect_filled(book.translate(vec2(0.0, 6.0)).expand(2.0), 16.0, Color32::from_black_alpha(90));
+            painter.rect_filled(
+                book.translate(vec2(0.0, 6.0)).expand(2.0),
+                16.0,
+                Color32::from_black_alpha(90),
+            );
             painter.rect_filled(book, 14.0, COVER);
-            painter.rect_stroke(book.shrink(5.0), 10.0, Stroke::new(1.0, Color32::from_rgb(110, 78, 56)), egui::StrokeKind::Middle);
+            painter.rect_stroke(
+                book.shrink(5.0),
+                10.0,
+                Stroke::new(1.0, Color32::from_rgb(110, 78, 56)),
+                egui::StrokeKind::Middle,
+            );
             let inner = book.shrink(14.0);
             let mid = inner.center().x;
             let left = Rect::from_min_max(inner.min, pos2(mid - 1.0, inner.max.y));
@@ -179,7 +188,11 @@ pub fn draw(
                             // A pencilled divider between the two halves.
                             let mut pen = Pencil::new(&painter, 7 + page as u64);
                             let y = r.top() - 6.0;
-                            pen.line(&[pos2(r.left() + 30.0, y), pos2(r.right() - 30.0, y + 1.5)], 1.0, 0.5);
+                            pen.line(
+                                &[pos2(r.left() + 30.0, y), pos2(r.right() - 30.0, y + 1.5)],
+                                1.0,
+                                0.5,
+                            );
                         }
                         if let Some(a) = entry_page(ui, &painter, r, world, entry, first + k) {
                             action = Some(a);
@@ -189,8 +202,19 @@ pub fn draw(
                 // Page number.
                 let num = format!("{}", page + 1);
                 let y = page_rect.bottom() - 26.0;
-                let x = if side == 0 { page_rect.left() + 30.0 } else { page_rect.right() - 40.0 };
-                write(&painter, pos2(x, y), &num, hand(15.0), GRAPHITE.gamma_multiply(0.7), 100.0);
+                let x = if side == 0 {
+                    page_rect.left() + 30.0
+                } else {
+                    page_rect.right() - 40.0
+                };
+                write(
+                    &painter,
+                    pos2(x, y),
+                    &num,
+                    hand(15.0),
+                    GRAPHITE.gamma_multiply(0.7),
+                    100.0,
+                );
             }
 
             // Turning pages.
@@ -213,18 +237,29 @@ pub fn draw(
                 r.clicked()
             };
             if state.spread > 0
-                && arrow(ui, pos2(left.center().x, left.bottom() - 18.0), "turn back", false)
+                && arrow(
+                    ui,
+                    pos2(left.center().x, left.bottom() - 18.0),
+                    "turn back",
+                    false,
+                )
             {
                 state.spread -= 1;
             }
             if state.spread + 1 < spreads
-                && arrow(ui, pos2(right.center().x, right.bottom() - 18.0), "turn over", true)
+                && arrow(
+                    ui,
+                    pos2(right.center().x, right.bottom() - 18.0),
+                    "turn over",
+                    true,
+                )
             {
                 state.spread += 1;
             }
 
             // Close: a pencilled cross in the corner.
-            let cross = Rect::from_center_size(right.right_top() + vec2(-18.0, 18.0), vec2(22.0, 22.0));
+            let cross =
+                Rect::from_center_size(right.right_top() + vec2(-18.0, 18.0), vec2(22.0, 22.0));
             let r = ui.interact(cross, ui.id().with("close"), Sense::click());
             let mut pen = Pencil::new(&painter, 99);
             let c = cross.shrink(5.0);
@@ -242,14 +277,23 @@ pub fn draw(
 /// the spine.
 fn paper(painter: &egui::Painter, rect: Rect, seed: u64, is_left: bool) {
     painter.rect_filled(rect, 4.0, PAPER);
-    painter.rect_stroke(rect, 4.0, Stroke::new(1.0, PAPER_EDGE), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        rect,
+        4.0,
+        Stroke::new(1.0, PAPER_EDGE),
+        egui::StrokeKind::Inside,
+    );
     let mut rng = Rng::new(seed * 7919 + 13);
     for _ in 0..140 {
         let p = pos2(
             rect.left() + rng.f32() * rect.width(),
             rect.top() + rng.f32() * rect.height(),
         );
-        painter.circle_filled(p, 0.6 + rng.f32(), Color32::from_rgba_unmultiplied(150, 120, 80, 18));
+        painter.circle_filled(
+            p,
+            0.6 + rng.f32(),
+            Color32::from_rgba_unmultiplied(150, 120, 80, 18),
+        );
     }
     let mut y = rect.top() + 70.0;
     while y < rect.bottom() - 30.0 {
@@ -259,7 +303,11 @@ fn paper(painter: &egui::Painter, rect: Rect, seed: u64, is_left: bool) {
         );
         y += LINE;
     }
-    let mx = if is_left { rect.left() + 48.0 } else { rect.left() + 36.0 };
+    let mx = if is_left {
+        rect.left() + 48.0
+    } else {
+        rect.left() + 36.0
+    };
     painter.line_segment(
         [pos2(mx, rect.top()), pos2(mx, rect.bottom())],
         Stroke::new(1.0, MARGIN),
@@ -267,7 +315,11 @@ fn paper(painter: &egui::Painter, rect: Rect, seed: u64, is_left: bool) {
     // The spine's shadow.
     for i in 0..14 {
         let a = (14 - i) as u8 * 3;
-        let x = if is_left { rect.right() - i as f32 } else { rect.left() + i as f32 };
+        let x = if is_left {
+            rect.right() - i as f32
+        } else {
+            rect.left() + i as f32
+        };
         painter.line_segment(
             [pos2(x, rect.top()), pos2(x, rect.bottom())],
             Stroke::new(1.0, Color32::from_rgba_unmultiplied(80, 60, 40, a)),
@@ -289,7 +341,11 @@ fn contents(
     let w = text_width(painter, title, font.clone());
     write(painter, r.min, title, font, GRAPHITE, r.width());
     pen.line(&[r.min + vec2(0.0, 50.0), r.min + vec2(w, 48.0)], 1.6, 0.8);
-    pen.line(&[r.min + vec2(6.0, 55.0), r.min + vec2(w * 0.8, 54.0)], 1.0, 0.5);
+    pen.line(
+        &[r.min + vec2(6.0, 55.0), r.min + vec2(w * 0.8, 54.0)],
+        1.0,
+        0.5,
+    );
     write(
         painter,
         r.min + vec2(2.0, 62.0),
@@ -305,19 +361,33 @@ fn contents(
             painter,
             pos2(r.left(), y),
             "Nothing recorded yet.\n\nClick an organism to inspect it, then press \
-             \"Record in Field Notebook\" to sketch it here. Record more of the same \
-             species and their sketches sit side by side.",
+             \"Record\" to sketch it here. Record up to four of the same species and \
+             their sketches sit side by side.",
             hand(17.0),
             GRAPHITE.gamma_multiply(0.85),
             r.width(),
         );
         return;
     }
-    write(painter, pos2(r.left(), y), "Contents", hand_bold(20.0), GRAPHITE, r.width());
+    write(
+        painter,
+        pos2(r.left(), y),
+        "Contents",
+        hand_bold(20.0),
+        GRAPHITE,
+        r.width(),
+    );
     y += LINE;
     for (i, e) in entries.iter().enumerate() {
         if y > r.bottom() - LINE {
-            write(painter, pos2(r.left(), y), "…", hand(17.0), GRAPHITE, r.width());
+            write(
+                painter,
+                pos2(r.left(), y),
+                "…",
+                hand(17.0),
+                GRAPHITE,
+                r.width(),
+            );
             break;
         }
         let page = page_of(i) + 1;
@@ -329,7 +399,14 @@ fn contents(
         write(painter, row.min, &name, hand(17.0), color, r.width() - 60.0);
         let num = format!("p. {page}");
         let nw = text_width(painter, &num, hand(17.0));
-        write(painter, pos2(r.right() - nw, y), &num, hand(17.0), color, 80.0);
+        write(
+            painter,
+            pos2(r.right() - nw, y),
+            &num,
+            hand(17.0),
+            color,
+            80.0,
+        );
         // Dotted leader.
         let name_w = text_width(painter, &name, hand(17.0));
         let mut x = r.left() + name_w + 8.0;
@@ -367,11 +444,25 @@ fn entry_page(
     let size = (23.0 * room / full.max(1.0)).clamp(14.0, 23.0);
     let name_font = hand_bold(size);
     let nw = text_width(painter, &name, name_font.clone());
-    write(painter, r.min + vec2(0.0, (23.0 - size) * 0.8), &name, name_font, GRAPHITE, f32::INFINITY);
+    write(
+        painter,
+        r.min + vec2(0.0, (23.0 - size) * 0.8),
+        &name,
+        name_font,
+        GRAPHITE,
+        f32::INFINITY,
+    );
     pen.line(&[r.min + vec2(0.0, 33.0), r.min + vec2(nw, 32.0)], 1.2, 0.7);
     let when = format!("first seen {}", format_game_date(entry.time, &cfg.time));
     let ww = text_width(painter, &when, hand(13.5));
-    write(painter, pos2(r.right() - ww, r.top() + 6.0), &when, hand(13.5), GRAPHITE.gamma_multiply(0.75), 200.0);
+    write(
+        painter,
+        pos2(r.right() - ww, r.top() + 6.0),
+        &when,
+        hand(13.5),
+        GRAPHITE.gamma_multiply(0.75),
+        200.0,
+    );
     // How it's doing now.
     let status = match world.species.get(entry.species) {
         Some(s) if s.extinct.is_some() => Some(("extinct".to_string(), RED_PENCIL)),
@@ -380,28 +471,51 @@ fn entry_page(
     };
     if let Some((text, color)) = status {
         let sw = text_width(painter, &text, hand(13.5));
-        write(painter, pos2(r.right() - sw, r.top() + 22.0), &text, hand(13.5), color.gamma_multiply(0.85), 200.0);
+        write(
+            painter,
+            pos2(r.right() - sw, r.top() + 22.0),
+            &text,
+            hand(13.5),
+            color.gamma_multiply(0.85),
+            200.0,
+        );
     }
 
     // Tear out (on hover).
     if ui.rect_contains_pointer(r) {
         let tear = Rect::from_min_size(r.right_top() + vec2(-60.0, 40.0), vec2(60.0, 18.0));
         let resp = ui.interact(tear, ui.id().with(("tear", entry.species)), Sense::click());
-        let color = if resp.hovered() { RED_PENCIL } else { GRAPHITE.gamma_multiply(0.5) };
-        painter.text(tear.right_center(), egui::Align2::RIGHT_CENTER, "tear out", hand(13.0), color);
-        if resp.on_hover_text("Remove this entry from the notebook").clicked() {
+        let color = if resp.hovered() {
+            RED_PENCIL
+        } else {
+            GRAPHITE.gamma_multiply(0.5)
+        };
+        painter.text(
+            tear.right_center(),
+            egui::Align2::RIGHT_CENTER,
+            "tear out",
+            hand(13.0),
+            color,
+        );
+        if resp
+            .on_hover_text("Remove this entry from the notebook")
+            .clicked()
+        {
             action = Some(Action::TearOut(entry.species));
         }
     }
 
     // The sketches: oldest on the left; each new one pushes the others over and shrinks them.
+    // (Notebooks saved before entries were capped can hold more: show the latest.)
     let band = Rect::from_min_max(
         pos2(r.left(), r.top() + 40.0),
         pos2(r.right(), r.top() + 40.0 + (r.height() * 0.4).max(80.0)),
     );
-    let n = entry.specimens.len();
+    let skip = entry.specimens.len().saturating_sub(MAX_SPECIMENS);
+    let specimens = &entry.specimens[skip..];
+    let n = specimens.len();
     let slot_w = band.width() / n as f32;
-    for (i, s) in entry.specimens.iter().enumerate() {
+    for (i, s) in specimens.iter().enumerate() {
         let slot = Rect::from_min_size(
             pos2(band.left() + slot_w * i as f32, band.top()),
             vec2(slot_w, band.height()),
@@ -411,26 +525,39 @@ fn entry_page(
         let draw_rect = Rect::from_min_max(slot.min + vec2(6.0, 2.0), slot.max - vec2(6.0, 16.0));
         // Keep the sketch's labels inside the slot.
         let labelled = newest && n <= 2;
-        let fig = if labelled { draw_rect.shrink2(vec2(draw_rect.width() * 0.12, 4.0)) } else { draw_rect };
+        let fig = if labelled {
+            draw_rect.shrink2(vec2(draw_rect.width() * 0.12, 4.0))
+        } else {
+            draw_rect
+        };
         let labels = sketch::draw_specimen(
             painter,
             fig,
-            &Subject { genome: &s.genome, traits: &st },
+            &Subject {
+                genome: &s.genome,
+                traits: &st,
+            },
             s.organism,
             if newest { 1.0 } else { 0.8 },
         );
         if labelled {
             label_parts(painter, draw_rect, &labels, s.organism);
         }
-        let caption = format!("No. {}  ·  gen. {}", i + 1, s.generation);
-        let cw = text_width(painter, &caption, hand(12.5));
+        // One line under its own sketch: shortened, then written smaller, if the slot is narrow.
+        let mut caption = format!("No. {}  ·  gen. {}", i + 1, s.generation);
+        if text_width(painter, &caption, hand(12.5)) > slot_w - 6.0 {
+            caption = format!("gen. {}", s.generation);
+        }
+        let full = text_width(painter, &caption, hand(12.5));
+        let font = hand((12.5 * (slot_w - 6.0) / full.max(1.0)).clamp(9.0, 12.5));
+        let cw = text_width(painter, &caption, font.clone());
         write(
             painter,
             pos2(slot.center().x - cw / 2.0, slot.bottom() - 15.0),
             &caption,
-            hand(12.5),
+            font,
             GRAPHITE.gamma_multiply(0.7),
-            slot_w,
+            f32::INFINITY,
         );
     }
 
@@ -448,16 +575,36 @@ fn entry_page(
     // Notes (left) and measurements (right).
     let top = band.bottom() + 6.0;
     let col_w = r.width() * 0.58;
-    let notes = Rect::from_min_max(pos2(r.left(), top), pos2(r.left() + col_w - 10.0, r.bottom() - genome_h));
-    let stats = Rect::from_min_max(pos2(r.left() + col_w + 6.0, top), pos2(r.right(), r.bottom() - genome_h));
+    let notes = Rect::from_min_max(
+        pos2(r.left(), top),
+        pos2(r.left() + col_w - 10.0, r.bottom() - genome_h),
+    );
+    let stats = Rect::from_min_max(
+        pos2(r.left() + col_w + 6.0, top),
+        pos2(r.right(), r.bottom() - genome_h),
+    );
     let small = hand(14.5);
     let mut y = notes.top();
-    y += write(painter, pos2(notes.left(), y), &diet_text(&t), small.clone(), GRAPHITE, notes.width());
+    y += write(
+        painter,
+        pos2(notes.left(), y),
+        &diet_text(&t),
+        small.clone(),
+        GRAPHITE,
+        notes.width(),
+    );
     for line in observations(&t).into_iter().take(5) {
         if y > notes.bottom() - 14.0 {
             break;
         }
-        y += write(painter, pos2(notes.left(), y), &format!("– {line}"), small.clone(), GRAPHITE, notes.width());
+        y += write(
+            painter,
+            pos2(notes.left(), y),
+            &format!("– {line}"),
+            small.clone(),
+            GRAPHITE,
+            notes.width(),
+        );
     }
     let mut y = stats.top();
     let tc = &cfg.time;
@@ -471,12 +618,26 @@ fn entry_page(
         if y > stats.bottom() - 14.0 {
             break;
         }
-        y += write(painter, pos2(stats.left(), y), &line, small.clone(), GRAPHITE.gamma_multiply(0.9), stats.width());
+        y += write(
+            painter,
+            pos2(stats.left(), y),
+            &line,
+            small.clone(),
+            GRAPHITE.gamma_multiply(0.9),
+            stats.width(),
+        );
     }
 
     // The genome, copied out in small handwriting.
     let gy = r.bottom() - genome_h + 2.0;
-    write(painter, pos2(r.left(), gy), "genome", hand_bold(12.5), GRAPHITE.gamma_multiply(0.8), 80.0);
+    write(
+        painter,
+        pos2(r.left(), gy),
+        "genome",
+        hand_bold(12.5),
+        GRAPHITE.gamma_multiply(0.8),
+        80.0,
+    );
     painter.galley(pos2(r.left() + 52.0, gy), genome, GRAPHITE);
     action
 }
@@ -503,10 +664,21 @@ fn label_parts(painter: &egui::Painter, area: Rect, labels: &[(Pos2, Vec2, &str)
             rect = Rect::from_min_size(pos2(x, y), vec2(w, 16.0));
         }
         used.push(rect);
-        let end = if side > 0.0 { rect.left_center() - vec2(3.0, 0.0) } else { rect.right_center() + vec2(3.0, 0.0) };
+        let end = if side > 0.0 {
+            rect.left_center() - vec2(3.0, 0.0)
+        } else {
+            rect.right_center() + vec2(3.0, 0.0)
+        };
         pen.line(&[at, end], 0.7, 0.6);
         painter.circle_filled(at, 1.4, GRAPHITE.gamma_multiply(0.8));
-        write(painter, rect.min, name, font.clone(), GRAPHITE.gamma_multiply(0.9), w + 4.0);
+        write(
+            painter,
+            rect.min,
+            name,
+            font.clone(),
+            GRAPHITE.gamma_multiply(0.9),
+            w + 4.0,
+        );
     }
 }
 
@@ -567,21 +739,33 @@ fn observations(t: &Traits) -> Vec<String> {
     add(t.spikes * 1.6, "covered in spines".into());
     add(t.jaws * 1.2, "strong jaws".into());
     add(t.lure * 2.0, "glows to lure prey".into());
-    add(t.grasp_count as f32 * 0.4, "grabs food with tentacles".into());
+    add(
+        t.grasp_count as f32 * 0.4,
+        "grabs food with tentacles".into(),
+    );
     add(t.filter * 0.6 - 0.1, "sweeps food from the water".into());
     add(t.fixation * 1.2 - 0.2, "makes its own nitrogen".into());
     add((0.35 - t.aerobic) * 2.5, "lives without oxygen".into());
-    add((0.5 - t.oxygenic) * 1.5 * t.photo, "photosynthesis without oxygen".into());
+    add(
+        (0.5 - t.oxygenic) * 1.5 * t.photo,
+        "photosynthesis without oxygen".into(),
+    );
     add((t.temp_pref - 26.0) / 8.0, "likes warm water".into());
     add((12.0 - t.temp_pref) / 8.0, "likes cold water".into());
     add(d[drive::KIN] * 0.9, "stays close to its own kind".into());
     add(-d[drive::KIN] * 0.9, "keeps away from its own kind".into());
     add(-d[drive::LARGER] * 0.9, "flees from larger things".into());
-    add(d[drive::SMALLER] * t.hunt * 1.5, "chases smaller prey".into());
+    add(
+        d[drive::SMALLER] * t.hunt * 1.5,
+        "chases smaller prey".into(),
+    );
     add(d[drive::LIGHT] * 0.7, "seeks the light".into());
     add(-d[drive::LIGHT] * 0.7, "shuns the light".into());
     add(d[drive::CARRION] * 0.7, "seeks out carcasses".into());
-    add((t.segments as f32 - 1.5) * 0.3, format!("{} segments", t.segments));
+    add(
+        (t.segments as f32 - 1.5) * 0.3,
+        format!("{} segments", t.segments),
+    );
     add(t.elongation - 0.4, "long, worm-like body".into());
     notes.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
     notes.into_iter().map(|(_, s)| s).collect()

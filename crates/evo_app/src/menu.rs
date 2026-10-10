@@ -15,8 +15,8 @@ use evo_core::{Config, World};
 use glam::Vec2;
 
 use crate::sim::SimState;
-use crate::{AppState, Launch};
 use crate::ui_sfx::HoverSound;
+use crate::{AppState, Launch};
 
 pub struct MenuPlugin;
 
@@ -225,7 +225,10 @@ const PRESETS: [Preset; 4] = [
 
 /// The built-in starting organisms, as (name, about, genome), for the genome editor's New list.
 pub(crate) fn builtin_presets(config: &Config) -> Vec<(&'static str, &'static str, Genome)> {
-    PRESETS.iter().map(|p| (p.name, p.about, p.genome(config))).collect()
+    PRESETS
+        .iter()
+        .map(|p| (p.name, p.about, p.genome(config)))
+        .collect()
 }
 
 /// The name of preset `i`: a built-in one, then the player's own.
@@ -721,7 +724,8 @@ pub(crate) fn caption(ui: &mut egui::Ui, text: &str) {
     );
     let w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 1.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, rgba(150, 240, 210, 0.14));
+    ui.painter()
+        .rect_filled(rect, 0.0, rgba(150, 240, 210, 0.14));
     ui.add_space(6.0);
 }
 
@@ -750,7 +754,13 @@ pub(crate) fn pill(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
         rgba(150, 240, 210, if hovered { 0.45 } else { 0.18 })
     };
     let p = ui.painter();
-    p.rect(rect, 15.0, fill, egui::Stroke::new(1.0, stroke), egui::StrokeKind::Inside);
+    p.rect(
+        rect,
+        15.0,
+        fill,
+        egui::Stroke::new(1.0, stroke),
+        egui::StrokeKind::Inside,
+    );
     p.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -779,8 +789,17 @@ fn dice_button(ui: &mut egui::Ui) -> egui::Response {
         egui::Stroke::new(1.0, rgba(150, 240, 210, if hovered { 0.45 } else { 0.18 })),
     );
     let die = egui::Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0));
-    p.rect_stroke(die, 3.0, egui::Stroke::new(1.4, color), egui::StrokeKind::Middle);
-    for d in [egui::vec2(-3.5, -3.5), egui::vec2(0.0, 0.0), egui::vec2(3.5, 3.5)] {
+    p.rect_stroke(
+        die,
+        3.0,
+        egui::Stroke::new(1.4, color),
+        egui::StrokeKind::Middle,
+    );
+    for d in [
+        egui::vec2(-3.5, -3.5),
+        egui::vec2(0.0, 0.0),
+        egui::vec2(3.5, 3.5),
+    ] {
         p.circle_filled(die.center() + d, 1.3, color);
     }
     response
@@ -1078,7 +1097,11 @@ fn save_tile(
     p.rect(
         rect,
         14.0,
-        if hovered { rgba(22, 44, 50, 1.0) } else { rgba(10, 20, 26, 1.0) },
+        if hovered {
+            rgba(22, 44, 50, 1.0)
+        } else {
+            rgba(10, 20, 26, 1.0)
+        },
         egui::Stroke::new(1.0, rgba(150, 240, 210, if hovered { 0.5 } else { 0.14 })),
         egui::StrokeKind::Inside,
     );
@@ -1094,14 +1117,30 @@ fn save_tile(
     let (line1, line2, color) = match &info {
         Some(Ok(i)) => (
             format!("{} · {}", i.map, i.date),
-            format!("{} organisms · {} species", thousands(i.organisms), i.species),
+            format!(
+                "{} organisms · {} species",
+                thousands(i.organisms),
+                i.species
+            ),
             MUTED,
         ),
         Some(Err(e)) => (format!("Can't read this save: {e}"), String::new(), ERROR),
         None => ("Reading…".to_string(), String::new(), MUTED),
     };
-    p.text(egui::pos2(left, rect.top() + 37.0), egui::Align2::LEFT_TOP, line1, font(13.0), color);
-    p.text(egui::pos2(left, rect.top() + 53.0), egui::Align2::LEFT_TOP, line2, font(12.0), MUTED);
+    p.text(
+        egui::pos2(left, rect.top() + 37.0),
+        egui::Align2::LEFT_TOP,
+        line1,
+        font(13.0),
+        color,
+    );
+    p.text(
+        egui::pos2(left, rect.top() + 53.0),
+        egui::Align2::LEFT_TOP,
+        line2,
+        font(12.0),
+        MUTED,
+    );
     // Right: when it was saved and how big it is, and an arrow (it opens).
     let right = rect.right() - 46.0;
     p.text(
@@ -1120,8 +1159,14 @@ fn save_tile(
     );
     let c = egui::pos2(rect.right() - 24.0, rect.center().y);
     let stroke = egui::Stroke::new(2.0, if hovered { ACCENT } else { MUTED });
-    p.line_segment([c + egui::vec2(-3.0, -6.0), c + egui::vec2(3.0, 0.0)], stroke);
-    p.line_segment([c + egui::vec2(3.0, 0.0), c + egui::vec2(-3.0, 6.0)], stroke);
+    p.line_segment(
+        [c + egui::vec2(-3.0, -6.0), c + egui::vec2(3.0, 0.0)],
+        stroke,
+    );
+    p.line_segment(
+        [c + egui::vec2(3.0, 0.0), c + egui::vec2(-3.0, 6.0)],
+        stroke,
+    );
     response.on_hover_text("Load this world")
 }
 
@@ -1140,7 +1185,10 @@ fn new_world(
         .as_ref()
         .is_none_or(|p| p.map != menu.setup.map)
     {
-        let changed = menu.preview.as_ref().is_some_and(|p| p.map != menu.setup.map)
+        let changed = menu
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.map != menu.setup.map)
             || menu.preview_map.as_deref() != Some(menu.setup.map.as_str());
         match crate::paths::load_config(config_path.as_deref(), Some(&menu.setup.map)) {
             Ok(config) => {
@@ -1419,7 +1467,9 @@ fn map_view(ui: &mut egui::Ui, setup: &mut Setup, p: &Preview) {
         let (x, depth) = to_world(pos);
         let text = format!("{:.0}% across · {depth:.0} deep", x * 100.0);
         let font = egui::FontId::proportional(12.0);
-        let size = painter.layout_no_wrap(text.clone(), font.clone(), TEXT).size();
+        let size = painter
+            .layout_no_wrap(text.clone(), font.clone(), TEXT)
+            .size();
         let chip = egui::Rect::from_min_size(
             egui::pos2(rect.right() - size.x - 18.0, rect.bottom() - size.y - 14.0),
             size + egui::vec2(12.0, 6.0),
@@ -1455,7 +1505,12 @@ fn map_view(ui: &mut egui::Ui, setup: &mut Setup, p: &Preview) {
         key(
             ui,
             &|p, r| {
-                p.rect_stroke(r.shrink(1.5), 2.0, egui::Stroke::new(1.0, rgba(150, 255, 180, 0.6)), egui::StrokeKind::Inside);
+                p.rect_stroke(
+                    r.shrink(1.5),
+                    2.0,
+                    egui::Stroke::new(1.0, rgba(150, 255, 180, 0.6)),
+                    egui::StrokeKind::Inside,
+                );
             },
             "Start area",
         );
@@ -1463,11 +1518,20 @@ fn map_view(ui: &mut egui::Ui, setup: &mut Setup, p: &Preview) {
             ui,
             &|p, r| {
                 p.rect_filled(r.shrink(1.5), 2.0, rgba(140, 255, 170, 0.3));
-                p.rect_stroke(r.shrink(1.5), 2.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(150, 255, 180)), egui::StrokeKind::Inside);
+                p.rect_stroke(
+                    r.shrink(1.5),
+                    2.0,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(150, 255, 180)),
+                    egui::StrokeKind::Inside,
+                );
             },
             "Where life starts",
         );
-        ui.label(egui::RichText::new("· drag to draw your own").size(12.0).color(MUTED));
+        ui.label(
+            egui::RichText::new("· drag to draw your own")
+                .size(12.0)
+                .color(MUTED),
+        );
     });
 }
 
@@ -1529,7 +1593,9 @@ fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>)
     ui.label(
         egui::RichText::new(format!(
             "{}{:.0}–{:.0}% across, {:.0}–{:.0} deep",
-            chosen.map(|n| format!("{n}: ")).unwrap_or_else(|| "Custom: ".into()),
+            chosen
+                .map(|n| format!("{n}: "))
+                .unwrap_or_else(|| "Custom: ".into()),
             setup.spawn_x[0] * 100.0,
             setup.spawn_x[1] * 100.0,
             setup.spawn_depth[0],
@@ -1539,35 +1605,54 @@ fn world_column(ui: &mut egui::Ui, setup: &mut Setup, preview: Option<&Preview>)
         .color(TEXT),
     );
     let depth_max = preview.map(|p| p.config.world.height).unwrap_or(6000.0);
-    let fine_tune = egui::CollapsingHeader::new(egui::RichText::new("Fine-tune").size(13.0).color(MUTED))
-        .id_salt("fine_tune")
-        .default_open(false)
-        .show(ui, |ui| {
-            egui::Grid::new("where")
-                .num_columns(2)
-                .spacing([12.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label(egui::RichText::new("Across").color(MUTED));
-                    ui.horizontal(|ui| {
-                        let mut lo = setup.spawn_x[0] * 100.0;
-                        let mut hi = setup.spawn_x[1] * 100.0;
-                        ui.add(egui::DragValue::new(&mut lo).range(0.0..=100.0).suffix(" %").speed(0.5));
-                        ui.label(egui::RichText::new("to").color(MUTED));
-                        ui.add(egui::DragValue::new(&mut hi).range(0.0..=100.0).suffix(" %").speed(0.5));
-                        setup.spawn_x = [lo.min(hi) / 100.0, hi.max(lo) / 100.0];
+    let fine_tune =
+        egui::CollapsingHeader::new(egui::RichText::new("Fine-tune").size(13.0).color(MUTED))
+            .id_salt("fine_tune")
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::Grid::new("where")
+                    .num_columns(2)
+                    .spacing([12.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Across").color(MUTED));
+                        ui.horizontal(|ui| {
+                            let mut lo = setup.spawn_x[0] * 100.0;
+                            let mut hi = setup.spawn_x[1] * 100.0;
+                            ui.add(
+                                egui::DragValue::new(&mut lo)
+                                    .range(0.0..=100.0)
+                                    .suffix(" %")
+                                    .speed(0.5),
+                            );
+                            ui.label(egui::RichText::new("to").color(MUTED));
+                            ui.add(
+                                egui::DragValue::new(&mut hi)
+                                    .range(0.0..=100.0)
+                                    .suffix(" %")
+                                    .speed(0.5),
+                            );
+                            setup.spawn_x = [lo.min(hi) / 100.0, hi.max(lo) / 100.0];
+                        });
+                        ui.end_row();
+                        ui.label(egui::RichText::new("Depth").color(MUTED));
+                        ui.horizontal(|ui| {
+                            let [mut lo, mut hi] = setup.spawn_depth;
+                            ui.add(
+                                egui::DragValue::new(&mut lo)
+                                    .range(0.0..=depth_max)
+                                    .speed(2.0),
+                            );
+                            ui.label(egui::RichText::new("to").color(MUTED));
+                            ui.add(
+                                egui::DragValue::new(&mut hi)
+                                    .range(0.0..=depth_max)
+                                    .speed(2.0),
+                            );
+                            setup.spawn_depth = [lo.min(hi), hi.max(lo + 10.0)];
+                        });
+                        ui.end_row();
                     });
-                    ui.end_row();
-                    ui.label(egui::RichText::new("Depth").color(MUTED));
-                    ui.horizontal(|ui| {
-                        let [mut lo, mut hi] = setup.spawn_depth;
-                        ui.add(egui::DragValue::new(&mut lo).range(0.0..=depth_max).speed(2.0));
-                        ui.label(egui::RichText::new("to").color(MUTED));
-                        ui.add(egui::DragValue::new(&mut hi).range(0.0..=depth_max).speed(2.0));
-                        setup.spawn_depth = [lo.min(hi), hi.max(lo + 10.0)];
-                    });
-                    ui.end_row();
-                });
-        });
+            });
     crate::ui_sfx::silent(&fine_tune.header_response);
 
     caption(ui, "Seed");
@@ -1843,7 +1928,10 @@ mod load_page_tests {
         assert_eq!(save_title("autosave.bin"), "Autosave");
         assert_eq!(save_title("autosave.prev.bin"), "Autosave (previous)");
         assert_eq!(save_title("quicksave.bin"), "Quicksave");
-        assert_eq!(save_title("world-2026-10-09_1137.bin"), "Earlier world, set aside 9 Oct 2026");
+        assert_eq!(
+            save_title("world-2026-10-09_1137.bin"),
+            "Earlier world, set aside 9 Oct 2026"
+        );
         assert_eq!(save_title("my run.bin"), "my run");
         assert_eq!(thousands(18916), "18,916");
         assert_eq!(thousands(999), "999");

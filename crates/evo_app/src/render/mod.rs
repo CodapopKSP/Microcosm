@@ -201,7 +201,11 @@ fn write_terrain(image: &mut Image, terrain: &evo_core::terrain::Terrain) {
                 let v = (sdf.data[i] / 128.0 + 0.5).clamp(0.0, 1.0);
                 let o = 2 * ((sdf.ny - 1 - y) * sdf.nx + x);
                 data[o] = (v * 255.0).round() as u8;
-                data[o + 1] = if terrain.cave.get(i).copied().unwrap_or(false) { 255 } else { 0 };
+                data[o + 1] = if terrain.cave.get(i).copied().unwrap_or(false) {
+                    255
+                } else {
+                    0
+                };
             }
         }
     }
@@ -518,7 +522,11 @@ fn update_background(
                 0.0,
                 spacing,
                 LAND_SAMPLES as f32,
-                if land.iter().any(|&l| l > 0.0) { 1.0 } else { 0.0 },
+                if land.iter().any(|&l| l > 0.0) {
+                    1.0
+                } else {
+                    0.0
+                },
             );
             for (k, entry) in u.land_profile.iter_mut().enumerate() {
                 *entry = Vec4::new(at(4 * k), at(4 * k + 1), at(4 * k + 2), at(4 * k + 3));
@@ -1459,7 +1467,6 @@ fn draw_overlays(
         let half = Vec2::new(window.width(), window.height()) * 0.5 * px;
         let (lo, hi) = (cam.center - half, cam.center + half);
         let color = Color::srgba(1.0, 0.95, 0.55, 0.75);
-        let mut drawn = 0;
         for o in state
             .world
             .organisms
@@ -1472,11 +1479,11 @@ fn draw_overlays(
             if p.x + r < lo.x || p.x - r > hi.x || p.y + r < lo.y || p.y - r > hi.y {
                 continue;
             }
-            gizmos.circle_2d(Isometry2d::from_translation(p), r, color);
-            drawn += 1;
-            if drawn >= 4000 {
-                break;
-            }
+            // All of them, however many: small rings are drawn with fewer segments.
+            let segments = (r / px * 0.8).clamp(8.0, 32.0) as u32;
+            gizmos
+                .circle_2d(Isometry2d::from_translation(p), r, color)
+                .resolution(segments);
         }
     }
     // The tile whose water is being inspected: its outline and the exact spot.

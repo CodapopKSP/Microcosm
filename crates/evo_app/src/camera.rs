@@ -475,8 +475,7 @@ fn apply_camera(
         cam.target_zoom = cam.target_zoom.min(most);
         cam.zoom += (cam.target_zoom - cam.zoom) * k;
         cam.zoom = cam.zoom.min(most);
-        cam.target_center =
-            clamp_center(cam.target_center, cam.target_zoom, bounds, window);
+        cam.target_center = clamp_center(cam.target_center, cam.target_zoom, bounds, window);
         let center = cam.center + (cam.target_center - cam.center) * k;
         cam.center = clamp_center(center, cam.zoom, bounds, window);
     } else {

@@ -24,7 +24,10 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 1.0, muted: false }
+        Self {
+            volume: 1.0,
+            muted: false,
+        }
     }
 }
 
@@ -61,7 +64,10 @@ impl Settings {
     fn from_toml(text: &str) -> Option<Settings> {
         let table: toml::Table = text.parse().ok()?;
         let mut settings = Settings::default();
-        if let Some(v) = table.get("volume").and_then(|v| v.as_float().or(v.as_integer().map(|i| i as f64))) {
+        if let Some(v) = table
+            .get("volume")
+            .and_then(|v| v.as_float().or(v.as_integer().map(|i| i as f64)))
+        {
             settings.volume = (v as f32).clamp(0.0, 1.0);
         }
         if let Some(m) = table.get("muted").and_then(|v| v.as_bool()) {
@@ -77,12 +83,23 @@ mod tests {
 
     #[test]
     fn settings_read_back() {
-        let s = Settings { volume: 0.35, muted: true };
+        let s = Settings {
+            volume: 0.35,
+            muted: true,
+        };
         assert_eq!(Settings::from_toml(&s.to_toml()), Some(s.clone()));
         assert_eq!(s.level(), 0.0, "muted is silent");
         assert_eq!(Settings { muted: false, ..s }.level(), 0.35 * BOOST);
         assert!((20.0 * BOOST.log10() - 4.0).abs() < 0.01, "+4 dB");
-        assert_eq!(Settings::from_toml("volume = 3").map(|s| s.volume), Some(1.0), "clamped");
-        assert_eq!(Settings::from_toml("").map(|s| s.volume), Some(1.0), "default");
+        assert_eq!(
+            Settings::from_toml("volume = 3").map(|s| s.volume),
+            Some(1.0),
+            "clamped"
+        );
+        assert_eq!(
+            Settings::from_toml("").map(|s| s.volume),
+            Some(1.0),
+            "default"
+        );
     }
 }

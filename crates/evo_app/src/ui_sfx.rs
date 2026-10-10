@@ -173,10 +173,18 @@ struct Clip {
 
 impl Clip {
     fn decode(bytes: &'static [u8]) -> Clip {
-        let decoder = AudioSource { bytes: bytes.into() }.decoder();
+        let decoder = AudioSource {
+            bytes: bytes.into(),
+        }
+        .decoder();
         let (channels, rate) = (decoder.channels(), decoder.sample_rate());
         let samples: Vec<f32> = decoder.collect();
-        Clip { channels, rate, samples: Box::leak(samples.into_boxed_slice()), bytes }
+        Clip {
+            channels,
+            rate,
+            samples: Box::leak(samples.into_boxed_slice()),
+            bytes,
+        }
     }
 
     fn source(self) -> rodio::static_buffer::StaticSamplesBuffer {
@@ -196,9 +204,8 @@ struct Sounds {
 
 /// Whether a widget is a button: it can be pressed, can't be dragged, and is enabled.
 fn is_button(ctx: &egui::Context, id: egui::Id) -> bool {
-    ctx.read_response(id).is_some_and(|r| {
-        r.enabled() && r.sense.senses_click() && !r.sense.senses_drag()
-    })
+    ctx.read_response(id)
+        .is_some_and(|r| r.enabled() && r.sense.senses_click() && !r.sense.senses_drag())
 }
 
 /// Whether a click landed on a panel's background rather than a widget in it: egui lets a
@@ -255,9 +262,9 @@ fn button_sounds(
     // A quick swipe can pass right over a button between two frames without it ever being
     // under the pointer when the frame is drawn: that counts too.
     let swept = match (*last_pointer, pointer) {
-        (Some(from), Some(to)) if from != to => listed
-            .iter()
-            .any(|&(id, rect)| Some(id) != button && Some(id) != *last_hovered && crosses(rect, from, to)),
+        (Some(from), Some(to)) if from != to => listed.iter().any(|&(id, rect)| {
+            Some(id) != button && Some(id) != *last_hovered && crosses(rect, from, to)
+        }),
         _ => false,
     };
     let new_hover = moved && (entered || swept);
@@ -268,7 +275,9 @@ fn button_sounds(
         return Ok(());
     }
     let sounds = sounds.get_or_insert_with(|| Sounds {
-        hover: sources.add(AudioSource { bytes: HOVER_1.into() }),
+        hover: sources.add(AudioSource {
+            bytes: HOVER_1.into(),
+        }),
         menu_hover: MENU_HOVER.map(Clip::decode),
         click: Clip::decode(CLICK),
         notebook_log: Clip::decode(NOTEBOOK_LOG),
@@ -279,7 +288,9 @@ fn button_sounds(
     let mut play = |clip: Clip| match &mixer {
         Some(mixer) => mixer.0.add(clip.source().amplify(volume)),
         None => {
-            let handle = sources.add(AudioSource { bytes: clip.bytes.into() });
+            let handle = sources.add(AudioSource {
+                bytes: clip.bytes.into(),
+            });
             commands.spawn((
                 AudioPlayer(handle),
                 PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)),
@@ -325,9 +336,15 @@ mod tests {
     fn pass_moved(
         ctx: &egui::Context,
         events: Vec<egui::Event>,
-    ) -> ((egui::Id, egui::Id, Option<egui::Id>, Option<egui::Id>), bool) {
+    ) -> (
+        (egui::Id, egui::Id, Option<egui::Id>, Option<egui::Id>),
+        bool,
+    ) {
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0))),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 300.0),
+            )),
             events,
             ..Default::default()
         };
@@ -397,7 +414,10 @@ mod tests {
         let ctx = egui::Context::default();
         let frame = |events: Vec<egui::Event>| {
             let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0))),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 300.0),
+                )),
                 events,
                 ..Default::default()
             };
@@ -420,21 +440,44 @@ mod tests {
         }
         // The background, well away from the button.
         frame(vec![at(200.0, 170.0), press(200.0, 170.0, true)]);
-        assert_eq!(frame(vec![press(200.0, 170.0, false)]), None, "background: no click");
+        assert_eq!(
+            frame(vec![press(200.0, 170.0, false)]),
+            None,
+            "background: no click"
+        );
         // The button.
         frame(vec![at(90.0, 64.0), press(90.0, 64.0, true)]);
-        assert!(frame(vec![press(90.0, 64.0, false)]).is_some(), "button: click");
+        assert!(
+            frame(vec![press(90.0, 64.0, false)]).is_some(),
+            "button: click"
+        );
     }
 
     #[test]
     fn a_quick_swipe_over_a_button_counts() {
         let button = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(32.0, 32.0));
         // Straight over it between two frames, never landing on it.
-        assert!(crosses(button, egui::pos2(116.0, 60.0), egui::pos2(116.0, 170.0)));
-        assert!(crosses(button, egui::pos2(60.0, 60.0), egui::pos2(170.0, 170.0)));
+        assert!(crosses(
+            button,
+            egui::pos2(116.0, 60.0),
+            egui::pos2(116.0, 170.0)
+        ));
+        assert!(crosses(
+            button,
+            egui::pos2(60.0, 60.0),
+            egui::pos2(170.0, 170.0)
+        ));
         // Past it.
-        assert!(!crosses(button, egui::pos2(60.0, 60.0), egui::pos2(60.0, 170.0)));
-        assert!(!crosses(button, egui::pos2(60.0, 60.0), egui::pos2(60.0, 60.0)));
+        assert!(!crosses(
+            button,
+            egui::pos2(60.0, 60.0),
+            egui::pos2(60.0, 170.0)
+        ));
+        assert!(!crosses(
+            button,
+            egui::pos2(60.0, 60.0),
+            egui::pos2(60.0, 60.0)
+        ));
     }
 
     #[test]
@@ -460,15 +503,23 @@ mod sound_files {
     #[test]
     fn menu_notes_are_clean() {
         for (bytes, file) in super::MENU_HOVER.iter().zip(["hover-1.wav", "hover-2.wav"]) {
-            let dec = bevy::audio::AudioSource { bytes: (*bytes).into() }.decoder();
+            let dec = bevy::audio::AudioSource {
+                bytes: (*bytes).into(),
+            }
+            .decoder();
             assert_eq!(dec.sample_rate().get(), 44_100);
             let ch = dec.channels().get() as usize;
             let played: Vec<f32> = dec.collect();
             assert!(played.len() > 44_100 / 10 * ch, "{file}: too short");
             // It fades out within its length.
             let peak = played.iter().fold(0f32, |m, s| m.max(s.abs()));
-            let tail = played[played.len() * 3 / 4..].iter().fold(0f32, |m, s| m.max(s.abs()));
-            assert!(peak > 0.3 && tail < peak * 0.05, "{file}: peak {peak} tail {tail}");
+            let tail = played[played.len() * 3 / 4..]
+                .iter()
+                .fold(0f32, |m, s| m.max(s.abs()));
+            assert!(
+                peak > 0.3 && tail < peak * 0.05,
+                "{file}: peak {peak} tail {tail}"
+            );
         }
     }
 }
@@ -481,7 +532,13 @@ mod playback_path {
     /// out sample for sample as the file (at the volume), from the very first sample.
     #[test]
     fn sounds_play_exactly_as_made_and_at_once() {
-        for bytes in [MENU_HOVER[0], MENU_HOVER[1], CLICK, NOTEBOOK_LOG, ORGANISM_SELECT] {
+        for bytes in [
+            MENU_HOVER[0],
+            MENU_HOVER[1],
+            CLICK,
+            NOTEBOOK_LOG,
+            ORGANISM_SELECT,
+        ] {
             let clip = Clip::decode(bytes);
             assert_eq!(
                 (clip.channels.get(), clip.rate.get()),
