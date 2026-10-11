@@ -145,7 +145,7 @@ pub fn build() -> World {
 /// Rows below the gene rows showing the budding, dying, swallowing, bitten and grasping
 /// animations frozen at nine stages.
 fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
-    use crate::render::{BUD_TIME, DEATH_FADE, GRASP_TIME};
+    use crate::render::{BUD_TIME, DEATH_FADE, GRASP_TIME, SPROUT_TIME};
     use evo_core::world::{Fx, FxBody, FxKind};
     let config = world.config.clone();
     let dt = config.time.dt;
@@ -159,10 +159,12 @@ fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
     base.0[gene::PATTERN] = 0x50;
     let y_of = |row: usize| h - TOP - row as f32 * SPACING;
 
-    // Budding: a small bud, then fission (two halves).
+    // Dividing, with its parts growing out afterwards: a small bud, then fission (two halves).
+    let budding = BUD_TIME + SPROUT_TIME;
     for (k, offspring_size) in [0xD0u8, 0xFF].into_iter().enumerate() {
         let mut genome = base;
         genome.0[gene::OFFSPRING_SIZE] = offspring_size;
+        set_part(&mut genome, 0, PartKind::Cilia, 1, 0x90, 0, 8);
         let traits = evo_core::Traits::decode(&genome, &config);
         let child_mass = traits.adult_mass * traits.birth_fraction;
         let parent_mass = traits.adult_mass - child_mass;
@@ -190,11 +192,11 @@ fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
                 o
             };
             let mut parent = make(*id, glam::Vec2::new(x, y), parent_mass);
-            parent.budded_tick = ago(stage * BUD_TIME);
+            parent.budded_tick = ago(stage * budding);
             parent.bud_scale = (traits.adult_mass / parent_mass).sqrt();
             let offset = glam::Vec2::new(parent.radius + child_mass.sqrt() + 0.5, 0.0);
             let mut child = make(*id + 1, parent.pos + offset, child_mass);
-            child.born = ago(stage * BUD_TIME);
+            child.born = ago(stage * budding);
             child.bud_offset = offset;
             world.organisms.push(parent);
             world.organisms.push(child);
@@ -368,6 +370,7 @@ fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
                 radius: prey_mass.sqrt(),
                 since: ago(closing * GRASP_TIME),
                 tick: now,
+                organism: Some(*id),
             };
             let mut p = Organism::new(
                 *id,

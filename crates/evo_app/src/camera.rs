@@ -47,6 +47,14 @@ impl CameraState {
         }
     }
 
+    /// Jump straight to a view (no easing).
+    pub fn set_now(&mut self, center: Vec2, zoom: f32) {
+        self.center = center;
+        self.target_center = center;
+        self.zoom = zoom;
+        self.target_zoom = zoom;
+    }
+
     pub fn focus(&mut self, center: Vec2, zoom: Option<f32>) {
         self.target_center = center;
         if let Some(z) = zoom {
@@ -55,18 +63,77 @@ impl CameraState {
     }
 }
 
+/// A scripted camera move, for recording footage (set up in the hidden god panel): readied, it
+/// waits on the start view with the game paused; when the game is unpaused it holds there for
+/// `lead` seconds, then glides to the end view, the same every take. It runs with the game:
+/// pausing pauses it too.
+#[derive(Resource)]
+pub struct CameraMove {
+    /// Views as (center, zoom).
+    pub start: Option<(Vec2, f32)>,
+    pub end: Option<(Vec2, f32)>,
+    /// Seconds of gliding.
+    pub duration: f32,
+    /// Seconds held on the start view first (time to get the recording going).
+    pub lead: f32,
+    /// Seconds it has run (while the game was running); `None` when it isn't playing.
+    pub playing: Option<f32>,
+    /// Waiting on the start view for the game to be unpaused.
+    pub ready: bool,
+}
+
+impl Default for CameraMove {
+    fn default() -> Self {
+        Self {
+            start: None,
+            end: None,
+            duration: 6.0,
+            lead: 1.0,
+            playing: None,
+            ready: false,
+        }
+    }
+}
+
+impl CameraMove {
+    /// Get ready to play, if both views are set: it starts when the game next runs.
+    pub fn ready_up(&mut self) {
+        if self.start.is_some() && self.end.is_some() {
+            self.ready = true;
+            self.playing = None;
+        }
+    }
+
+    /// The view `elapsed` seconds in, and whether the move is over. Eases in and out; zoom
+    /// changes evenly in scale, and the center moves with it so one point stays put on screen
+    /// (a zoom out reveals around where it started rather than sliding off).
+    pub fn view_at(&self, elapsed: f32) -> Option<(Vec2, f32, bool)> {
+        let ((c0, z0), (c1, z1)) = (self.start?, self.end?);
+        let p = ((elapsed - self.lead) / self.duration.max(0.01)).clamp(0.0, 1.0);
+        let e = p * p * p * (p * (p * 6.0 - 15.0) + 10.0);
+        let zoom = z0 * (z1 / z0).powf(e);
+        let w = if (z1 - z0).abs() > 1e-6 * z0 {
+            (zoom - z0) / (z1 - z0)
+        } else {
+            e
+        };
+        Some((c0 + (c1 - c0) * w, zoom, p >= 1.0))
+    }
+}
+
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_camera)
+        app.init_resource::<CameraMove>()
+            .add_systems(Startup, spawn_camera)
             .add_systems(
                 OnEnter(crate::AppState::Running),
                 (start_camera, open_probe).chain(),
             )
             .add_systems(
                 Update,
-                (camera_input, director, follow_selection, apply_camera)
+                (camera_input, director, follow_selection, play_move, apply_camera)
                     .chain()
                     .after(crate::sim::SimStep)
                     .run_if(in_state(crate::AppState::Running)),
@@ -83,6 +150,46 @@ impl Plugin for CameraPlugin {
                     .run_if(resource_exists::<SimState>),
             );
     }
+}
+
+/// Play the camera move: wait on its start view while it's ready, start when the game runs,
+/// and advance only while the game runs (Escape cancels it). It overrides the other camera
+/// controls meanwhile.
+fn play_move(
+    mut cam: ResMut<CameraState>,
+    mut shot: ResMut<CameraMove>,
+    mut selection: ResMut<Selection>,
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time<Real>>,
+    state: Res<SimState>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        shot.ready = false;
+        shot.playing = None;
+        return;
+    }
+    if shot.ready {
+        if !state.paused() {
+            shot.ready = false;
+            shot.playing = Some(0.0);
+        } else if let Some((center, zoom)) = shot.start {
+            cam.set_now(center, zoom);
+            cam.director = false;
+            selection.follow = false;
+            return;
+        }
+    }
+    let Some(elapsed) = shot.playing else { return };
+    let running = if state.paused() { 0.0 } else { time.delta_secs() };
+    let elapsed = elapsed + running;
+    let Some((center, zoom, done)) = shot.view_at(elapsed) else {
+        shot.playing = None;
+        return;
+    };
+    cam.set_now(center, zoom);
+    cam.director = false;
+    selection.follow = false;
+    shot.playing = (!done).then_some(elapsed);
 }
 
 /// `--probe x,y`: open the water inspector there at startup.
@@ -192,7 +299,7 @@ fn start_camera(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn camera_input(
+pub(crate) fn camera_input(
     mut cam: ResMut<CameraState>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -492,5 +599,37 @@ fn apply_camera(
     transform.translation.y = cam.center.y;
     if let Projection::Orthographic(ortho) = &mut *projection {
         ortho.scale = cam.zoom;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_camera_move_holds_then_glides_end_to_end() {
+        let shot = CameraMove {
+            start: Some((Vec2::new(100.0, 50.0), 0.5)),
+            end: Some((Vec2::new(2000.0, 900.0), 8.0)),
+            duration: 4.0,
+            lead: 1.0,
+            playing: None,
+            ready: false,
+        };
+        let at = |t: f32| shot.view_at(t).unwrap();
+        assert_eq!(at(0.5), (Vec2::new(100.0, 50.0), 0.5, false), "held on the start");
+        let (c, z, done) = at(5.0);
+        assert!(done && (z - 8.0).abs() < 1e-4 && c.distance(Vec2::new(2000.0, 900.0)) < 1e-2);
+        // Zoom grows steadily, and one world point stays put on screen throughout.
+        let (c0, c1) = (Vec2::new(100.0, 50.0), Vec2::new(2000.0, 900.0));
+        let fixed = c0 + (c0 - c1) * 0.5 / (8.0 - 0.5);
+        let screen = |(c, z, _): (Vec2, f32, bool)| (fixed - c) / z;
+        let mut last = 0.5;
+        for k in 1..40 {
+            let v = at(1.0 + k as f32 * 0.1);
+            assert!(v.1 >= last, "zoom only grows");
+            last = v.1;
+            assert!(screen(v).distance(screen(at(0.0))) < 1e-2, "anchor drifted at {k}");
+        }
     }
 }

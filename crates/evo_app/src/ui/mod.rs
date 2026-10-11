@@ -1,6 +1,7 @@
 //! egui panels: HUD, organism inspector (chromosomes), species list, events, charts, help.
 
 mod charts;
+pub(crate) mod god;
 mod hud;
 pub(crate) mod inspector;
 mod notebook;
@@ -57,6 +58,9 @@ impl MapMode {
 pub struct UiState {
     /// Hide everything except the minimal stream overlay.
     pub show_ui: bool,
+    /// With the UI hidden, still show the clock and latest event (stream mode only; Tab
+    /// otherwise hides everything).
+    stream_overlay: bool,
     pub show_species: bool,
     pub show_charts: bool,
     pub show_help: bool,
@@ -89,6 +93,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             show_ui: true,
+            stream_overlay: false,
             show_species: true,
             show_charts: false,
             show_help: false,
@@ -117,11 +122,24 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UiState>()
+            .init_resource::<god::GodMode>()
             .add_systems(Startup, apply_stream_option)
-            .add_systems(Update, ui_keys.run_if(in_state(crate::AppState::Running)))
+            .add_systems(
+                Update,
+                (ui_keys, god::god_keys).run_if(in_state(crate::AppState::Running)),
+            )
+            .add_systems(
+                Update,
+                god::god_pointer
+                    .after(crate::sim::SimStep)
+                    .before(crate::camera::camera_input)
+                    .run_if(in_state(crate::AppState::Running)),
+            )
             .add_systems(
                 EguiPrimaryContextPass,
-                draw_ui.run_if(in_state(crate::AppState::Running)),
+                (draw_ui, god::god_panel)
+                    .chain()
+                    .run_if(in_state(crate::AppState::Running)),
             );
     }
 }
@@ -129,6 +147,7 @@ impl Plugin for UiPlugin {
 fn apply_stream_option(options: Res<crate::ViewerOptions>, mut ui: ResMut<UiState>) {
     if options.stream {
         ui.show_ui = false;
+        ui.stream_overlay = true;
     }
     ui.show_charts = options.charts;
     ui.map_mode = match options.map.as_deref() {
@@ -149,7 +168,10 @@ fn ui_keys(
     mut ui: ResMut<UiState>,
     egui_input: Res<bevy_egui::input::EguiWantsInput>,
 ) {
-    if egui_input.wants_any_keyboard_input() {
+    // (Ctrl combos are hidden commands, not these.)
+    if egui_input.wants_any_keyboard_input()
+        || keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
+    {
         return;
     }
     if keys.just_pressed(KeyCode::Tab) {
@@ -260,7 +282,9 @@ fn draw_ui(
     }
 
     if !ui_state.show_ui {
-        stream_overlay(ctx, &sim, &selection);
+        if ui_state.stream_overlay {
+            stream_overlay(ctx, &sim, &selection);
+        }
         return Ok(());
     }
 
@@ -849,7 +873,7 @@ fn help(ui: &mut egui::Ui) {
         let help_row =
             |ui: &mut egui::Ui, keys: &[Key], what: &str| help_row_width(ui, keys, what, 100.0);
         help_section(ui, "Panels", HELP_PANELS);
-        help_row(ui, &[K("Tab")], "Hide the UI (stream view)");
+        help_row(ui, &[K("Tab")], "Hide all the UI");
         help_row(ui, &[K("F11")], "Fullscreen");
         help_row(ui, &[K("L")], "Species list");
         help_row(ui, &[K("G")], "Charts and family tree");

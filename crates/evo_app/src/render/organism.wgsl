@@ -95,6 +95,7 @@ const FLAG_MOTILE: u32 = 8u;
 const FLAG_FX: u32 = 16u;
 const FLAG_SICK: u32 = 32u;
 const FLAG_PART: u32 = 64u;
+const FLAG_DIVIDING: u32 = 128u;
 
 fn fill(dist: f32, w: f32, aa: f32) -> f32 {
     return 1.0 - smoothstep(w - aa, w + aa, dist);
@@ -142,17 +143,6 @@ fn effect(in: VertexOutput) -> vec4<f32> {
         let grey = dot(in.tint.rgb, vec3<f32>(0.3, 0.5, 0.2));
         col = mix(vec3<f32>(grey), vec3<f32>(0.35, 0.22, 0.1), 0.6) * 1.6;
         a = crumbs * fade;
-    } else if kind == 5u {
-        // Budding: the neck between parent and bud, narrowing in the middle until it pinches off.
-        let q = in.uv * vec2<f32>(in.shape.x, 1.1); // width units
-        let len = max(in.shape.x - 1.0, 0.01);
-        let along = clamp(abs(q.x) / len, 0.0, 1.0);
-        let pinch = 1.0 - smoothstep(0.35, 0.8, age);
-        let hw = mix(0.9 * pinch, 0.9, along * along);
-        let cap = length(vec2<f32>(max(abs(q.x) - len, 0.0), q.y));
-        let dist = select(abs(q.y), cap, abs(q.x) > len);
-        a = (1.0 - smoothstep(hw - aa, hw + aa, dist)) * step(0.02, hw) * 0.95;
-        col = in.tint.rgb * mix(1.1, 0.8, abs(q.y) / max(hw, 1e-3));
     } else {
         // Impact: blinding flash, then an expanding shockwave ring.
         let flash = exp(-age * 18.0) * (1.0 - smoothstep(0.0, 1.0, d));
@@ -732,6 +722,23 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let aa = 1.2 / max(radius_px * body_width(bs, -bs.hl), 0.3); // ~one pixel, normalized
     let base = in.tint.rgb;
 
+    // Dividing off its parent (drawn underneath): this newborn shows only on its own side of
+    // where the two cells meet, blending into the parent until new walls form there.
+    // `side` > 0 is the parent's side (radius units).
+    let dividing = (flags & FLAG_DIVIDING) != 0u;
+    var side = -1e3;
+    var walls = 0.0;
+    var cut = 1.0;
+    if dividing {
+        let toward = in.wound.y * TAU;
+        side = dot(q0, vec2<f32>(cos(toward), sin(toward))) - (in.wound.z - 0.5) * 4.0;
+        walls = in.wound.w;
+        // (Solid up to the meeting line, so it covers the parent's outline there, and fading
+        // into the parent past it while they're still one cell.)
+        let feather = mix(0.35, 0.0, walls) + aa;
+        cut = 1.0 - smoothstep(0.0, feather, side);
+    }
+
     // Selection ring and species highlight (drawn even for tiny organisms).
     var overlay = vec4<f32>(0.0);
     if selected {
@@ -756,7 +763,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         col += vec3<f32>(0.1, 0.9, 1.0) * in.diet.y * 0.6 * f32(!dead); // chemotrophs glow
         col += vec3<f32>(0.4, 1.2, 1.0) * in.chem.w * 1.5 * f32(!dead); // lures glow
         col = mix(col, col * vec3<f32>(1.4, 0.7, 0.65), hurt * hurt * hurt * 0.2);
-        let body = vec4<f32>(col, a * select(0.95, 0.6, dead) * (1.0 - select(0.0, in.motion.x, dead)));
+        let body = vec4<f32>(col, a * cut * select(0.95, 0.6, dead) * (1.0 - select(0.0, in.motion.x, dead)));
         return mix(body, vec4<f32>(overlay.rgb, 1.0), overlay.a * (1.0 - body.a * 0.5));
     }
 
@@ -886,6 +893,22 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Membrane rim light.
     col += base * 0.5 * smoothstep(edge - 0.18, edge - 0.02, db) * (1.0 - mouth_dark);
+
+    if dividing {
+        // The new walls across the waist: this cell's on its side, the parent's just past it,
+        // with a dark seam between them.
+        let inside = 1.0 - smoothstep(edge - aa, edge + aa, db);
+        let rim = 1.0 - smoothstep(0.02, 0.16, abs(side));
+        let seam = 1.0 - smoothstep(0.0, 0.025 + aa, abs(side));
+        col += base * 0.5 * rim * walls * step(side, 0.0);
+        alpha *= cut;
+        if side > 0.0 {
+            col = mix(col, base * (0.75 + 0.5 * rim), walls);
+            alpha = max(alpha, walls * rim * inside);
+        }
+        col *= 1.0 - 0.65 * seam * walls;
+        alpha = max(alpha, seam * walls * inside * 0.9);
+    }
 
     if !dead {
         // Detail fades in once the organism is big enough on screen to show it.

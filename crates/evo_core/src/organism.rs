@@ -116,17 +116,26 @@ pub struct Grasp {
     pub radius: f32,
     pub since: u64,
     pub tick: u64,
+    /// The organism held, by id; `None` for a carcass (found again by where it was).
+    #[serde(default)]
+    pub organism: Option<u64>,
 }
 
 impl Grasp {
     /// Note that a body is held this tick.
-    pub fn hold(&mut self, pos: Vec2, radius: f32, tick: u64) {
-        if self.tick + 1 < tick {
+    pub fn hold(&mut self, pos: Vec2, radius: f32, tick: u64, organism: Option<u64>) {
+        if self.tick + 1 < tick || self.organism != organism {
             self.since = tick;
         }
         self.pos = pos;
         self.radius = radius;
         self.tick = tick;
+        self.organism = organism;
+    }
+
+    /// Whether it held something last tick (and so keeps hold of it if it can).
+    pub fn holding(&self, tick: u64) -> bool {
+        self.tick > 0 && self.tick + 1 >= tick
     }
 }
 

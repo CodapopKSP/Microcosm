@@ -38,7 +38,9 @@ pub const ATTRIBUTE_MOTION: MeshVertexAttribute =
 /// oxygenic share, toxin, nitrogen fixation, lure
 pub const ATTRIBUTE_CHEM: MeshVertexAttribute =
     MeshVertexAttribute::new("Organism_Chem", 0x5EED_0007, VertexFormat::Unorm8x4);
-/// direction the last bite came from (body-relative angle / 2π), unused ×3
+/// direction the last bite came from (body-relative angle / 2π); while a newborn divides off its
+/// parent: the side the parent is on (body-relative angle / 2π), where the two part (radius
+/// units from the center, mapped -2..2 to 0..1), and how far their new walls have formed
 pub const ATTRIBUTE_WOUND: MeshVertexAttribute =
     MeshVertexAttribute::new("Organism_Wound", 0x5EED_0008, VertexFormat::Unorm8x4);
 
@@ -53,6 +55,8 @@ const FLAG_FX: u8 = 16;
 const FLAG_SICK: u8 = 32;
 /// A body part (kind, size, mirror/index, seed in the body attribute).
 const FLAG_PART: u8 = 64;
+/// A newborn still dividing off its parent (where they part in the wound attribute).
+const FLAG_DIVIDING: u8 = 128;
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 pub struct OrganismMaterial {
@@ -737,8 +741,12 @@ impl LayoutCache {
     }
 }
 
-/// Seconds a newborn takes to bud off its parent (the animation).
-pub const BUD_TIME: f32 = 0.8;
+/// Seconds a newborn takes to divide off its parent (the animation): the cell pinches in two,
+/// new walls form across the waist, and the two come apart at `SPLIT` of the way through.
+pub const BUD_TIME: f32 = 1.3;
+const SPLIT: f32 = 0.8;
+/// Seconds a newborn's parts take to grow out once it has come apart.
+pub const SPROUT_TIME: f32 = 0.4;
 /// Seconds for a dead body's colours to drain to grey.
 pub const DEATH_FADE: f32 = 0.4;
 /// Seconds tentacles take to reach for something they grab, and to let go of it.
@@ -870,6 +878,8 @@ struct PartOwner {
     heading: f32,
     seed: f32,
     quad: Quad,
+    /// How far its parts have grown out (0..1; a newborn sprouts them after dividing).
+    grow: f32,
     /// What its tentacles hold: the tentacle (part index), the held body's center and radius,
     /// and how far the tentacle has closed on it (0..1).
     holds: Vec<(usize, glam::Vec2, f32, f32)>,
@@ -946,8 +956,11 @@ fn push_parts(
         owner.quad.motion[0] as f32 / 255.0
     };
     let mut placed: Vec<Placed> = Vec::with_capacity(instances.len());
+    if owner.grow <= 0.0 {
+        return;
+    }
     for (index, inst) in instances.iter().enumerate() {
-        let length = inst.length * owner.radius;
+        let length = inst.length * owner.radius * owner.grow;
         // On another part's tip: carried by that tip's sway and turn.
         let (base, mut angle) = match inst.attached_to.filter(|&p| p < placed.len()) {
             Some(p) => {
@@ -1013,14 +1026,14 @@ fn push_parts(
         if inst.kind.in_front() != front {
             continue;
         }
-        let length = inst.length * owner.radius;
+        let length = inst.length * owner.radius * owner.grow;
         if length < 1.2 * px {
             continue;
         }
         let (chord, bend) = (p.chord, p.bend);
         let axis = glam::Vec2::from_angle(p.angle);
         let center = p.base + axis * (chord * 0.5);
-        let half_width = inst.width * owner.radius / chord * 0.5;
+        let half_width = inst.width * owner.radius * owner.grow / chord * 0.5;
         let margin = part_margin(inst.kind) + 2.0 * px / chord;
         let hx = 0.5 + margin.min(0.3);
         let hy = half_width + margin + bend.abs();
@@ -1138,6 +1151,7 @@ fn update_organisms(
             heading: c.heading,
             seed: c.seed,
             quad,
+            grow: 1.0,
             holds: Vec::new(),
         };
         // Carcasses lose their parts as they are eaten.
@@ -1163,35 +1177,109 @@ fn update_organisms(
         .collect();
     let mut sick_cache: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
 
-    for o in &world.organisms {
+    // Dividing: for a moment after a birth, parent and newborn are drawn as one cell pinching
+    // in two. The parent shrinks back to its new size while the newborn moves out of it to
+    // where it was born; the newborn is drawn on top, cut off where the two cells meet, and
+    // new walls form across the waist before they come apart. Its parts then grow out.
+    let since = |tick: u64| world.tick.saturating_sub(tick) as f32 * dt;
+    let dividing = |o: &evo_core::Organism| {
+        o.bud_offset != glam::Vec2::ZERO && o.born > 0 && since(o.born) < BUD_TIME
+    };
+    // How far the parent has shrunk back (0..1), and its drawn radius.
+    let shrunk = |o: &evo_core::Organism| smooth(since(o.budded_tick) / (BUD_TIME * SPLIT));
+    let parent_radius = |o: &evo_core::Organism| {
+        if o.budded_tick > 0 && since(o.budded_tick) < BUD_TIME {
+            o.radius * (o.bud_scale + (1.0 - o.bud_scale) * shrunk(o))
+        } else {
+            o.radius
+        }
+    };
+    let wanted: std::collections::HashSet<u64> = world
+        .organisms
+        .iter()
+        .filter(|o| dividing(o))
+        .map(|o| o.parent)
+        .collect();
+    // The parents of those: where they're drawn, their radius after dividing and how much
+    // bigger they were before, heading and shape.
+    let parents: std::collections::HashMap<u64, (glam::Vec2, f32, f32, f32, BodyShape)> =
+        if wanted.is_empty() {
+            Default::default()
+        } else {
+            world
+                .organisms
+                .iter()
+                .filter(|o| wanted.contains(&o.id))
+                .map(|o| {
+                    let shape = BodyShape::new(o.traits.elongation, o.traits.segments);
+                    let pos = o.prev_pos.lerp(o.pos, alpha);
+                    (o.id, (pos, o.radius, o.bud_scale, o.heading, shape))
+                })
+                .collect()
+        };
+    // Newborns go last, so each is drawn over its parent.
+    let order: Vec<usize> = if wanted.is_empty() {
+        (0..world.organisms.len()).collect()
+    } else {
+        let (born, rest): (Vec<usize>, Vec<usize>) =
+            (0..world.organisms.len()).partition(|&i| dividing(&world.organisms[i]));
+        rest.into_iter().chain(born).collect()
+    };
+
+    for o in order.into_iter().map(|i| &world.organisms[i]) {
         let t = &o.traits;
         let mut pos = o.prev_pos.lerp(o.pos, alpha);
         let shape = BodyShape::new(t.elongation, t.segments);
-        // Budding: a parent shrinks back from its size before the split; a newborn grows out of
-        // its parent through a neck that pinches off.
-        let since = |tick: u64| world.tick.saturating_sub(tick) as f32 * dt;
-        let mut radius = o.radius;
-        if o.budded_tick > 0 && since(o.budded_tick) < BUD_TIME {
-            let e = smooth(since(o.budded_tick) / BUD_TIME);
-            radius *= o.bud_scale + (1.0 - o.bud_scale) * e;
-        }
-        let mut neck = None;
-        let offset = o.bud_offset.length();
-        if offset > 0.0 && since(o.born) < BUD_TIME {
-            let t = since(o.born) / BUD_TIME;
-            let e = smooth(t);
+        let radius = parent_radius(o);
+        let mut grow = 1.0;
+        let mut division = None;
+        if dividing(o) {
+            let age = since(o.born) / BUD_TIME;
+            let offset = o.bud_offset.length();
             let dir = o.bud_offset / offset;
-            let parent_center = pos - o.bud_offset;
-            let parent_r = (offset - o.radius - 0.5).max(o.radius * 0.5);
-            let start = parent_center + dir * (parent_r - o.radius * 0.6).max(0.0);
-            pos = start.lerp(pos, e);
-            radius = o.radius * (0.6 + 0.4 * e);
-            neck = Some((
-                parent_center + dir * parent_r * 0.7,
-                pos,
-                parent_r.min(radius),
-                t,
-            ));
+            // The parent (or, if it's gone, as it would have been).
+            let (parent_pos, parent_r, scale, parent_heading, parent_shape) =
+                parents.get(&o.parent).copied().unwrap_or_else(|| {
+                    let r = (offset - o.radius - 0.5).max(o.radius * 0.5);
+                    let scale = (1.0 + (o.radius / r).powi(2)).sqrt();
+                    (pos - o.bud_offset, r, scale, o.heading, shape)
+                });
+            // Each body's reach toward the other (an ellipse's radius in that direction).
+            let toward = |shape: &BodyShape, heading: f32, dir: glam::Vec2| {
+                let local = glam::Vec2::from_angle(-heading).rotate(dir);
+                let (a, b) = (shape.half_length, shape.half_width);
+                1.0 / ((local.x / a).powi(2) + (local.y / b).powi(2)).sqrt()
+            };
+            let reach_p = parent_r * toward(&parent_shape, parent_heading, dir);
+            let small = o.radius * toward(&shape, o.heading, -dir);
+            // The parent shrinks back as the newborn moves out of it: from just inside (hidden)
+            // to touching as they part, then on to where it was born.
+            let split = smooth(age / SPLIT);
+            let big = reach_p * (scale + (1.0 - scale) * split);
+            let start = (reach_p * scale - small).max(0.0);
+            let touching = reach_p + small;
+            let gap = if age < SPLIT {
+                start + (touching - start) * split
+            } else {
+                touching + (offset - touching) * smooth((age - SPLIT) / (1.0 - SPLIT))
+            };
+            let center = parent_pos + dir * gap;
+            pos = center.lerp(pos, smooth((age - SPLIT) / (1.0 - SPLIT)));
+            // Where the cells meet: the line through the two outlines' crossings, measured from
+            // the newborn's center toward the parent (in its radius units).
+            let d = gap.max(1e-3);
+            let meet = (d * d - big * big + small * small) / (2.0 * d) / o.radius.max(1e-6);
+            let side = (-dir).to_angle() - o.heading;
+            // The new walls show from the start: a clear line between the two from the first bulge.
+            let walls = smooth(age / 0.2);
+            division = Some([
+                unorm(side.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU),
+                unorm(meet / 4.0 + 0.5),
+                unorm(walls),
+            ]);
+        }
+        if o.bud_offset != glam::Vec2::ZERO && o.born > 0 {
+            grow = smooth((since(o.born) - SPLIT * BUD_TIME) / SPROUT_TIME);
         }
         let with_parts = t.part_count > 0 && radius >= parts_from;
         let instances = if with_parts {
@@ -1215,6 +1303,9 @@ fn update_organisms(
         }
         if t.is_motile() {
             flags |= FLAG_MOTILE;
+        }
+        if division.is_some() {
+            flags |= FLAG_DIVIDING;
         }
         if !plagued.is_empty() {
             let sick = *sick_cache.entry(o.species).or_insert_with(|| {
@@ -1267,7 +1358,10 @@ fn update_organisms(
                 unorm(t.fixation),
                 unorm(t.lure),
             ],
-            wound: wound(o.hurt_dir, o.heading),
+            wound: match division {
+                Some([side, meet, walls]) => [wound(o.hurt_dir, o.heading)[0], side, meet, walls],
+                None => wound(o.hurt_dir, o.heading),
+            },
         };
         let holds = if with_parts {
             o.grasps
@@ -1290,27 +1384,9 @@ fn update_organisms(
             heading: o.heading,
             seed,
             quad,
+            grow,
             holds,
         };
-        if let Some((from, to, width, t)) = neck {
-            // The neck between parent and bud narrows in the middle and pinches off.
-            let along = to - from;
-            let length = along.length().max(1e-3);
-            let half =
-                glam::Vec2::new(length * 0.5 + width, width * 1.1).max(glam::Vec2::splat(px));
-            b.push_oriented(
-                (from + to) * 0.5,
-                half,
-                along / length,
-                Quad {
-                    shape: [half.x / width, width / px, 5.0, t],
-                    tint: quad.tint,
-                    body: [0, 0, 0, 0],
-                    state: [0, 0, FLAG_FX, 255],
-                    ..Default::default()
-                },
-            );
-        }
         if let Some(i) = &instances {
             push_parts(&mut b, i, &owner, false, px, now);
         }
@@ -1379,6 +1455,7 @@ fn update_organisms(
                 heading: pose.heading,
                 seed: body.seed,
                 quad: part_quad,
+                grow: 1.0,
                 holds: Vec::new(),
             };
             let instances = if pose.parts_fade < 0.99 && pose.radius >= parts_from {

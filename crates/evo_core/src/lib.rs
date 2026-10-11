@@ -10,6 +10,7 @@ pub mod environment;
 pub mod events;
 pub mod field;
 pub mod genome;
+pub mod god;
 pub mod grid;
 pub mod map;
 pub mod notebook;

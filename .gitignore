@@ -2,3 +2,7 @@
 /saves
 *.jsonl
 /dist
+/trailer/out
+/trailer/share
+/trailer/*.mkv
+/trailer/__pycache__

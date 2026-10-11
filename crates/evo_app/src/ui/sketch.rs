@@ -455,7 +455,7 @@ pub fn draw_specimen(
         &|p| if inside(p) { 0.6 } else { 0.0 },
     );
     organelles(&mut pen, &body, t, organism_seed);
-    pattern(&mut pen, &body, t, line_w);
+    pattern(&mut pen, &body, t, line_w, screen_bounds, scale);
     // Lit centre, darker rim (per bead), in graphite.
     let rim = |p: Vec2| -> f32 {
         let d = body.distance(p);
@@ -737,7 +737,7 @@ fn in_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
 }
 
 /// Spots, stripes or rings, as the shader lays them out.
-fn pattern(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32) {
+fn pattern(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32, bounds: Rect, scale_px: f32) {
     let style = t.pattern >> 6;
     let scale = 2.0 + (t.pattern & 63) as f32 / 10.0;
     let ext = vec2(body.shape.half_length, body.shape.half_width) * 1.1;
@@ -752,13 +752,33 @@ fn pattern(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32) {
             }
         }
         2 => {
-            // Bands across the body where sin(x · scale · 3) > 0.
-            let step = TAU / (scale * 3.0);
-            let mut x = -body.shape.half_length;
-            while x < body.shape.nose() {
-                let w = body.shape.width_at(x) * 0.95;
-                pen.path_colored(&[vec2(x, -w), vec2(x, w)], line_w * 2.2, 0.55, dark);
-                x += step;
+            // Bands across the body where sin(x · scale · 3) > 0 (darkest in the middle of
+            // each, soft at the edges, as the shader shades them), hatched in the darker
+            // colour; a light pencil line marks each band's edges, kept inside the outline.
+            let f = scale * 3.0;
+            let band = |x: f32| smoothstep(-0.2, 0.2, (x * f).sin());
+            // Cross-hatched, denser than the body's own shading, so the bands stand out.
+            for angle in [1.2, -1.1] {
+                pen.hatch(
+                    bounds,
+                    angle,
+                    (scale_px * 0.035).clamp(1.1, 2.0),
+                    dark,
+                    1.0,
+                    &|p| if body.inside(p) { band(p.x) } else { 0.0 },
+                );
+            }
+            let k0 = (-body.shape.half_length * f / PI).floor() as i32;
+            let k1 = (body.shape.nose() * f / PI).ceil() as i32;
+            for k in k0..=k1 {
+                let x = k as f32 * PI / f;
+                let w = body.shape.width_at(x) * 1.05;
+                let across: Vec<Vec2> = (0..=24)
+                    .map(|i| vec2(x, -w + 2.0 * w * i as f32 / 24.0))
+                    .collect();
+                for run in across.split(|&p| !body.inside(p)).filter(|r| r.len() > 1) {
+                    pen.path_colored(run, line_w * 0.8, 0.45, dark);
+                }
             }
         }
         3 => {

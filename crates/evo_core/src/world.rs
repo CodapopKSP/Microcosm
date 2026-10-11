@@ -292,7 +292,7 @@ pub struct World {
     /// Species the viewer recorded in the field notebook (doesn't affect the simulation).
     #[serde(default)]
     pub notebook: crate::notebook::Notebook,
-    rng: Rng,
+    pub(crate) rng: Rng,
     #[serde(skip)]
     scratch: Option<Scratch>,
     #[serde(skip)]
@@ -541,8 +541,9 @@ fn tentacle_pull(
     let axis = (reach.mouth - reach.center).normalize_or_zero();
     let rel = target - reach.center;
     let aim = if rel.dot(axis) < 0.0 {
+        // (A little forward of the side, so it carries on round to the mouth, not stop there.)
         let side = if axis.perp_dot(rel) >= 0.0 { 1.0 } else { -1.0 };
-        reach.center + axis.perp() * side * (reach.radius + target_radius)
+        reach.center + (axis.perp() * side + axis * 0.3) * (reach.radius + target_radius)
     } else {
         reach.mouth
     };
@@ -568,6 +569,7 @@ fn pull_share(holder_mass: f32, target_mass: f32, anchored: bool) -> f32 {
 
 struct ThinkCtx<'a> {
     config: &'a Config,
+    organisms: &'a [Organism],
     grid: &'a SpatialGrid,
     carcass_grid: &'a SpatialGrid,
     env: &'a Environment,
@@ -598,7 +600,22 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
     let hunts = t.hunt > 0.0;
     let reach = Reach::new(pos, o.heading, r, t, cfg.feeding.body_contact);
     let mut prey: Option<(u32, f32)> = None;
-    let mut free: u8 = ((1u16 << reach.grasp_count) - 1) as u8;
+    // A tentacle keeps hold of what it held last tick while that's still in its reach, so prey
+    // is reeled in one at a time rather than swapped for whatever else is near; only free
+    // tentacles pick up something new. (One whose catch is gone is free again next tick.)
+    let mut holding: u8 = 0;
+    for (k, g) in o.grasps.iter().enumerate().take(reach.grasp_count) {
+        if g.holding(ctx.tick) {
+            holding |= 1 << k;
+        }
+    }
+    let mut free: u8 = ((1u16 << reach.grasp_count) - 1) as u8 & !holding;
+    let kept = |holding: &mut u8, mask: u8, held: &dyn Fn(&Grasp) -> bool| {
+        let k = (0..reach.grasp_count)
+            .find(|&k| *holding & mask & (1 << k) != 0 && held(&o.grasps[k]))?;
+        *holding &= !(1 << k);
+        Some(k)
+    };
     let mut push = Vec2::ZERO;
     ctx.grid.query(pos, reach.extent().max(r), 0.0, |e| {
         if e.index as usize == i {
@@ -622,7 +639,11 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             if prey.is_none_or(|(_, pr)| e.radius < pr) && reach.touches(e.pos, e.radius) > 0.0 {
                 prey = Some((e.index, e.radius));
             }
-            if let Some(k) = reach.grab(&mut free, e.pos, e.radius) {
+            let id = ctx.organisms[e.index as usize].id;
+            let mask = reach.grasping(e.pos, e.radius);
+            if let Some(k) = kept(&mut holding, mask, &|g| g.organism == Some(id))
+                .or_else(|| reach.grab(&mut free, e.pos, e.radius))
+            {
                 intent.grabs[k] = e.index;
             }
         }
@@ -640,10 +661,14 @@ fn think(i: usize, o: &Organism, ctx: &ThinkCtx) -> Intent {
             if intent.carcass == NONE && reach.touches(e.pos, e.radius) > 0.0 {
                 intent.carcass = e.index;
             }
-            if let Some(k) = reach.grab(&mut free, e.pos, e.radius) {
+            let mask = reach.grasping(e.pos, e.radius);
+            let near = |g: &Grasp| g.organism.is_none() && g.pos.distance(e.pos) < e.radius.max(1.0);
+            if let Some(k) =
+                kept(&mut holding, mask, &near).or_else(|| reach.grab(&mut free, e.pos, e.radius))
+            {
                 intent.grabs[k] = e.index | CARCASS;
             }
-            intent.carcass == NONE || free != 0
+            intent.carcass == NONE || free != 0 || holding != 0
         });
     }
 
@@ -1568,6 +1593,7 @@ impl World {
         // 3. Think.
         let think_ctx = ThinkCtx {
             config,
+            organisms: &self.organisms,
             grid: &scratch.grid,
             carcass_grid: &scratch.carcass_grid,
             env: &self.env,
@@ -1680,7 +1706,7 @@ impl World {
     }
 
     /// Start events rolled this tick, apply ongoing ones (plague deaths, barriers), log endings.
-    fn apply_events(&mut self, fx: crate::events::EventEffects, time: f64) {
+    pub(crate) fn apply_events(&mut self, fx: crate::events::EventEffects, time: f64) {
         let dt = self.config.time.dt;
         if fx.start_plague {
             let total = self.organisms.len().max(1) as f32;
@@ -2293,7 +2319,7 @@ impl World {
                 let reaches = |pos: Vec2, radius: f32| {
                     pos.distance_squared(base) < (grasp_r + radius) * (grasp_r + radius)
                 };
-                let (holder, pos, radius) = if target & CARCASS != 0 {
+                let (holder, pos, radius, held) = if target & CARCASS != 0 {
                     let Some(c) = self.carcasses.get_mut((target & !CARCASS) as usize) else {
                         continue;
                     };
@@ -2307,7 +2333,7 @@ impl World {
                     c.pos += dragged;
                     terrain.collide(&mut o.pos, &mut o.vel, r);
                     terrain.collide(&mut c.pos, &mut c.vel, c.radius);
-                    (o, c.pos, c.radius)
+                    (o, c.pos, c.radius, None)
                 } else {
                     let j = target as usize;
                     if j == i || j >= self.organisms.len() {
@@ -2324,12 +2350,12 @@ impl World {
                     prey.pos += dragged;
                     terrain.collide(&mut o.pos, &mut o.vel, r);
                     terrain.collide(&mut prey.pos, &mut prey.vel, prey.radius);
-                    (o, prey.pos, prey.radius)
+                    (o, prey.pos, prey.radius, Some(prey.id))
                 };
                 if holder.grasps.len() < reach.grasp_count {
                     holder.grasps.resize(reach.grasp_count, Grasp::default());
                 }
-                holder.grasps[k].hold(pos, radius, tick);
+                holder.grasps[k].hold(pos, radius, tick, held);
             }
 
             // Anything the organism can't store is lost: energy as detritus, nutrients excreted.
@@ -2516,7 +2542,7 @@ impl World {
         self.organisms.extend(births);
     }
 
-    fn remove_dead(&mut self) {
+    pub(crate) fn remove_dead(&mut self) {
         let config = &self.config;
         let body_energy = config.metabolism.body_energy;
         let detritus = &mut self.env.detritus;
@@ -3386,6 +3412,49 @@ mod tests {
             with > 3.0 * without,
             "tentacles bring it to be eaten: {with} vs {without}"
         );
+    }
+
+    #[test]
+    fn a_tentacle_keeps_hold_of_its_catch() {
+        // A big hunter with a dozen small prey around one tentacle: the tentacle reels in one
+        // and holds it until it's eaten, rather than swapping between whatever is nearest.
+        let mut world = empty_world();
+        let h = world.config.world.height;
+        let mut g = world.ancestor;
+        g.0[gene::SIZE] = 0xC0;
+        g.0[gene::PHOTO] = 0x00;
+        g.0[gene::HUNT] = 0xFF;
+        g = with_part(g, 0, PartKind::Tentacle, 2, 0xFF, 16);
+        let pos = Vec2::new(2000.0, h - 300.0);
+        let hunter = add(&mut world, g, pos);
+        world.organisms[hunter].heading = 0.0;
+        let id = world.organisms[hunter].id;
+        let r = world.organisms[hunter].radius;
+        let z = world.organisms[hunter].traits.grasps[0];
+        let mut prey = world.ancestor;
+        prey.0[gene::SIZE] = 0x10;
+        prey.0[gene::HUE] = 0xD0;
+        let mut rng = Rng::new(7);
+        for _ in 0..12 {
+            let off = Vec2::new(rng.f32() - 0.5, rng.f32() - 0.5) * z.radius * r * 1.2;
+            add(&mut world, prey, pos + Vec2::new(z.x, z.y) * r + off);
+        }
+        for o in &mut world.organisms {
+            o.repro_cooldown = 1e9;
+        }
+        let mut first = None;
+        for _ in 0..150 {
+            world.step();
+            let held = world.find(id).unwrap().grasps[0].organism;
+            let Some(catch) = *first.get_or_insert(held) else {
+                continue;
+            };
+            if world.find(catch).is_none() {
+                return; // Eaten, never let go of.
+            }
+            assert_eq!(held, Some(catch), "swapped its catch at tick {}", world.tick);
+        }
+        panic!("the first catch was never eaten");
     }
 
     #[test]
