@@ -28,14 +28,17 @@ case "$os" in
     linux)
         cp target/dist/evo_app "$out/microcosm"
         chmod +x "$out/microcosm"
+        # For a desktop shortcut (the window sets its own icon).
+        cp packaging/icon/microcosm.png "$out/microcosm.png"
         ;;
     windows)
         cp target/dist/evo_app.exe "$out/Microcosm.exe"
         ;;
     macos)
         app="$out/Microcosm.app/Contents"
-        mkdir -p "$app/MacOS"
+        mkdir -p "$app/MacOS" "$app/Resources"
         cp target/dist/evo_app "$app/MacOS/Microcosm"
+        cp packaging/icon/Microcosm.icns "$app/Resources/Microcosm.icns"
         sed "s/@VERSION@/$version/g" packaging/Info.plist > "$app/Info.plist"
         # Sign the whole bundle ad hoc (no Apple account needed). The linker only signs the
         # bare program; a bundle without its own signature looks tampered with, and macOS

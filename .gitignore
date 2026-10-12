@@ -6,3 +6,4 @@
 /trailer/share
 /trailer/*.mkv
 /trailer/__pycache__
+/packaging/icon/__pycache__

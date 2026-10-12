@@ -10,6 +10,8 @@
     <string>io.itch.microcosm</string>
     <key>CFBundleExecutable</key>
     <string>Microcosm</string>
+    <key>CFBundleIconFile</key>
+    <string>Microcosm</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>

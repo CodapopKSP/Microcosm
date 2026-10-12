@@ -26,3 +26,9 @@ bevy = { version = "0.19.1", default-features = false, features = [
 bevy_egui = { version = "0.42", default-features = false, features = ["render", "default_fonts"] }
 # The button sounds' own audio output (see ui_sfx.rs); the same version Bevy plays sound with.
 rodio = { version = "0.22", default-features = false, features = ["playback", "tracing"] }
+# Only for the window icon (the version Bevy uses; its features come from Bevy).
+winit = { version = "0.30", default-features = false }
+
+[build-dependencies]
+# The Windows program icon (see build.rs).
+winresource = "0.1"

@@ -226,8 +226,31 @@ fn main() {
         sfx::SfxPlugin,
         ui_sfx::UiSfxPlugin,
     ))
-    .add_systems(Update, (screenshot_and_exit, toggle_fullscreen))
+    .add_systems(Update, (screenshot_and_exit, toggle_fullscreen, set_window_icon))
     .run();
+}
+
+/// The app icon (256 px, raw RGBA; made by `packaging/icon/make_icon.py`).
+const ICON: &[u8] = include_bytes!("../assets/icon/icon-256.rgba");
+
+/// Give the window the app icon, for taskbars and window switchers, once it exists. (On macOS
+/// the app bundle's icon is used instead; on Windows the program file carries it too.)
+fn set_window_icon(
+    windows: Query<Entity, With<bevy::window::PrimaryWindow>>,
+    mut done: Local<bool>,
+    _main_thread: bevy::ecs::system::NonSendMarker,
+) {
+    if *done {
+        return;
+    }
+    let Ok(entity) = windows.single() else { return };
+    bevy::winit::WINIT_WINDOWS.with_borrow(|winit| {
+        let Some(window) = winit.get_window(entity) else { return };
+        if let Ok(icon) = winit::window::Icon::from_rgba(ICON.to_vec(), 256, 256) {
+            window.set_window_icon(Some(icon));
+        }
+        *done = true;
+    });
 }
 
 /// The world named by the command line: a save (`--load`, else the autosave unless `--new` or

@@ -1224,8 +1224,13 @@ fn new_world(
     // Both cards are drawn as tall as the taller one was last frame.
     let target = *card_height;
     let mut tallest = 0.0f32;
+    // The cards take the height they need, up to what leaves room for the Start button below
+    // them: on a short screen they scroll and the button stays in view.
+    let errors = error.is_some() as usize + setup.genome_error.is_some() as usize;
+    let below = 18.0 + 48.0 + 16.0 + errors as f32 * 22.0;
     egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
+        .max_height((ui.available_height() - below).max(120.0))
+        .auto_shrink([false, true])
         .show(ui, |ui| {
             ui.columns(2, |cols| {
                 card().show(&mut cols[0], |ui| {
@@ -1252,30 +1257,29 @@ fn new_world(
                     }
                 });
             });
-            ui.add_space(18.0);
-            ui.vertical_centered(|ui| {
-                if let Some(e) = error.as_ref() {
-                    ui.colored_label(ERROR, e);
-                }
-                if let Some(e) = &setup.genome_error {
-                    ui.colored_label(ERROR, format!("Genome: {e}"));
-                }
-                let ready = setup.genome_error.is_none();
-                let button = ui.add_enabled(
-                    ready,
-                    egui::Button::new(egui::RichText::new("Start").size(22.0))
-                        .min_size([260.0, 48.0].into()),
-                );
-                crate::ui_sfx::hover_sound(&button);
-                if button.clicked() {
-                    match create_world(config_path.as_deref(), setup, &launch.0.save_dir) {
-                        Ok(w) => *start = Some(w),
-                        Err(e) => *error = Some(e),
-                    }
-                }
-            });
-            ui.add_space(24.0);
         });
+    ui.add_space(18.0);
+    ui.vertical_centered(|ui| {
+        if let Some(e) = error.as_ref() {
+            ui.colored_label(ERROR, e);
+        }
+        if let Some(e) = &setup.genome_error {
+            ui.colored_label(ERROR, format!("Genome: {e}"));
+        }
+        let ready = setup.genome_error.is_none();
+        let button = ui.add_enabled(
+            ready,
+            egui::Button::new(egui::RichText::new("Start").size(22.0))
+                .min_size([260.0, 48.0].into()),
+        );
+        crate::ui_sfx::hover_sound(&button);
+        if button.clicked() {
+            match create_world(config_path.as_deref(), setup, &launch.0.save_dir) {
+                Ok(w) => *start = Some(w),
+                Err(e) => *error = Some(e),
+            }
+        }
+    });
     *card_height = tallest;
 }
 
@@ -1351,7 +1355,9 @@ fn build_preview(ctx: &egui::Context, map: &str, config: Config) -> Preview {
 
 /// The map, with where life starts: drag to draw that area, click to move it.
 fn map_view(ui: &mut egui::Ui, setup: &mut Setup, p: &Preview) {
-    let size = egui::vec2(ui.available_width(), 250.0);
+    // Shorter on short screens, so more of the page fits.
+    let height = (ui.ctx().content_rect().height() * 0.28).clamp(150.0, 250.0);
+    let size = egui::vec2(ui.available_width(), height);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     painter.image(
