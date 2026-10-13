@@ -1,5 +1,5 @@
-//! Music: the menu track loops on the menus, and fades out when a world starts or an editor
-//! opens (they're quiet). It's built into the program (`assets/audio/menu.ogg`).
+//! Music: the menu track loops on the menus, and fades out when a world starts, an editor
+//! opens, or the menu shows the manual (they're quiet). It's built into the program (`assets/audio/menu.ogg`).
 
 use bevy::audio::{
     AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume,
@@ -26,7 +26,19 @@ impl Plugin for MusicPlugin {
             .add_systems(OnEnter(AppState::GenomeEditor), fade_out_menu_music)
             .add_systems(OnEnter(AppState::Running), fade_out_menu_music)
             .init_resource::<MusicClock>()
-            .add_systems(Update, (fade, clock, follow_volume));
+            .init_resource::<MenuQuiet>()
+            .add_systems(Update, (fade, clock, follow_volume))
+            .add_systems(
+                Update,
+                (
+                    fade_out_menu_music.run_if(resource_changed::<MenuQuiet>.and_then(is_quiet)),
+                    start_menu_music.run_if(
+                        resource_changed::<MenuQuiet>
+                            .and_then(not(is_quiet))
+                            .and_then(in_state(AppState::Menu)),
+                    ),
+                ),
+            );
     }
 }
 
@@ -37,6 +49,14 @@ pub struct MusicClock {
     pub section: Option<u32>,
     /// The track playing, and when (real seconds) it started.
     track: Option<(Entity, f64)>,
+}
+
+/// Set by the menu while it shows a page that should be quiet (the manual).
+#[derive(Resource, Default, PartialEq)]
+pub struct MenuQuiet(pub bool);
+
+fn is_quiet(quiet: Res<MenuQuiet>) -> bool {
+    quiet.0
 }
 
 /// The menu track playing.
@@ -59,8 +79,9 @@ fn start_menu_music(
     track: Option<Res<MenuTrack>>,
     mut sources: ResMut<Assets<AudioSource>>,
     settings: Res<crate::settings::Settings>,
+    quiet: Res<MenuQuiet>,
 ) {
-    if !playing.is_empty() {
+    if !playing.is_empty() || quiet.0 {
         return;
     }
     // Back to the menu while the last one was still fading: start over.

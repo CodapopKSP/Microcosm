@@ -24,6 +24,10 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "wav",
 ] }
 bevy_egui = { version = "0.42", default-features = false, features = ["render", "default_fonts"] }
+# The in-game manual (docs/manual/manual.md) and its figures.
+egui_commonmark = { version = "0.25", default-features = false, features = ["pulldown_cmark"] }
+egui_extras = { version = "0.36", default-features = false, features = ["image"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # The button sounds' own audio output (see ui_sfx.rs); the same version Bevy plays sound with.
 rodio = { version = "0.22", default-features = false, features = ["playback", "tracing"] }
 # Only for the window icon (the version Bevy uses; its features come from Bevy).

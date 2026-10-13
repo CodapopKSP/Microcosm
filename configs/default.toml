@@ -256,7 +256,6 @@ max_population = 250000  # safety cap on births
 # "B:207060300000 C:10C040 D:00FF0000 G:400080000000 H:2030 N:80808080808080808000 P:086010 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:FFFF"
 vent_ancestor = ""
 vent_initial = 40        # around each vent at the start (if there is a vent ancestor)
-vent_seed = 20           # settle at a new vent when no vent life lives nearby
 
 # Random world events. "_every" values are mean sim hours between occurrences (0 = never).
 [events]

@@ -1,5 +1,5 @@
 //! Where the game keeps things, so it runs from anywhere (an install folder, a download):
-//! the default settings and the built-in maps are built into the program, and saves, the
+//! the default settings, the built-in maps and the manual are built into the program, and saves, the
 //! player's own maps and the organisms they make in the genome editor go in the system's
 //! per-user data folder:
 //!
@@ -22,6 +22,9 @@ const BUILTIN_MAPS: &[(&str, &[u8])] = &[(
     include_bytes!("../../../configs/maps/Deep Ocean.map"),
 )];
 
+/// The manual (`docs/manual`, built in), opened from the main menu.
+const MANUAL: &[u8] = include_bytes!("../../../docs/manual/Microcosm-Manual.pdf");
+
 /// The game's folder in the system's per-user data folder (created when first needed).
 pub fn data_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -43,6 +46,32 @@ pub fn data_dir() -> PathBuf {
 /// The player's settings (master volume and so on).
 pub fn settings_path() -> PathBuf {
     data_dir().join("settings.toml")
+}
+
+/// Open the manual in the system's PDF viewer. The built-in copy is written to the data folder
+/// first (again whenever the game's copy differs, so a new version replaces an old one).
+pub fn open_manual() -> Result<(), String> {
+    let path = data_dir().join("Microcosm-Manual.pdf");
+    if std::fs::read(&path).ok().as_deref() != Some(MANUAL) {
+        std::fs::create_dir_all(data_dir()).map_err(|e| e.to_string())?;
+        std::fs::write(&path, MANUAL).map_err(|e| format!("couldn't write the manual: {e}"))?;
+    }
+    let mut command = if cfg!(target_os = "windows") {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", ""]);
+        c
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    let mut child = command
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("couldn't open {}: {e}", path.display()))?;
+    // Reap the opener when it exits (it hands the file to the viewer and quits).
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }
 
 /// Where worlds are saved (unless `--save-dir` says otherwise).

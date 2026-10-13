@@ -6,6 +6,7 @@ mod camera;
 mod editor;
 mod gallery;
 mod genome_editor;
+mod manual;
 mod menu;
 mod music;
 mod paths;

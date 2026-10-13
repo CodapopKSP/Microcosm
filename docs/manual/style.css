@@ -1,0 +1,161 @@
+/* Print layout for the manual (WeasyPrint). */
+
+@page {
+  size: A4;
+  margin: 20mm 19mm 22mm 19mm;
+  @bottom-center {
+    content: counter(page);
+    font: 8.5pt "Noto Sans", "DejaVu Sans", sans-serif;
+    color: #8a8984;
+  }
+  @top-right {
+    content: string(chapter);
+    font: 8pt "Noto Sans", "DejaVu Sans", sans-serif;
+    color: #8a8984;
+    letter-spacing: 0.04em;
+  }
+}
+@page :first {
+  margin: 0;
+  @bottom-center { content: none; }
+  @top-right { content: none; }
+}
+@page contents {
+  @top-right { content: none; }
+}
+
+html {
+  font-family: "Noto Serif", "DejaVu Serif", Georgia, serif;
+  font-size: 9.6pt;
+  line-height: 1.5;
+  color: #1d1d1b;
+}
+body { margin: 0; }
+
+/* Cover */
+.cover {
+  page: cover;
+  height: 297mm;
+  background: #0a1626;
+  color: #e9f1f7;
+  text-align: center;
+  padding-top: 52mm;
+  box-sizing: border-box;
+  break-after: page;
+}
+.cover-title {
+  font: 600 46pt/1 "Noto Sans", "DejaVu Sans", sans-serif;
+  letter-spacing: 0.06em;
+}
+.cover-sub {
+  font: 15pt "Noto Serif", "DejaVu Serif", serif;
+  margin-top: 6mm;
+  color: #a9c4d8;
+}
+.cover-img {
+  display: block;
+  width: 170mm;
+  margin: 26mm auto 0;
+  border-radius: 2mm;
+}
+.cover-foot {
+  margin-top: 30mm;
+  font: 9pt "Noto Sans", "DejaVu Sans", sans-serif;
+  color: #7f9cb2;
+}
+
+/* Contents */
+.toc { page: contents; break-after: page; }
+.toc ul { list-style: none; padding: 0; margin: 0; }
+.toc li { font-family: "Noto Sans", "DejaVu Sans", sans-serif; }
+.toc a { color: inherit; text-decoration: none; }
+.toc a::after {
+  content: leader(".") target-counter(attr(href), page);
+  color: #8a8984;
+}
+.toc .toc-1 { font-weight: 600; font-size: 10pt; margin-top: 3.2mm; }
+.toc .toc-2 { font-size: 9pt; margin-left: 6mm; color: #3a3a37; }
+.toc-title { string-set: none; }
+
+/* Chapters and headings */
+.chapter { break-before: page; }
+h1, h2, h3 { font-family: "Noto Sans", "DejaVu Sans", sans-serif; color: #0b0b0b; break-after: avoid; }
+h1 {
+  font-size: 22pt;
+  font-weight: 600;
+  margin: 0 0 6mm;
+  padding-bottom: 3mm;
+  border-bottom: 0.6pt solid #d8d7d2;
+  string-set: chapter content();
+}
+h2 { font-size: 13pt; font-weight: 600; margin: 7mm 0 2mm; }
+h3 { font-size: 10.5pt; font-weight: 600; margin: 5mm 0 1.5mm; }
+p { margin: 0 0 2.6mm; orphans: 3; widows: 3; }
+ul { margin: 0 0 2.6mm; padding-left: 5mm; }
+li { margin-bottom: 1mm; }
+strong { font-weight: 700; }
+
+code {
+  font-family: "Ubuntu Mono", "DejaVu Sans Mono", monospace;
+  font-size: 0.95em;
+  background: #f2f1ee;
+  padding: 0 0.6mm;
+  border-radius: 0.6mm;
+}
+pre {
+  background: #f2f1ee;
+  border-radius: 1.2mm;
+  padding: 2.5mm 3.5mm;
+  margin: 0 0 3mm;
+  break-inside: avoid;
+}
+pre code {
+  background: none;
+  padding: 0;
+  font-size: 8.6pt;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1mm 0 4mm;
+  font-family: "Noto Sans", "DejaVu Sans", sans-serif;
+  font-size: 8.2pt;
+  line-height: 1.38;
+}
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+th {
+  text-align: left;
+  font-weight: 600;
+  color: #52514e;
+  border-bottom: 0.8pt solid #b9b8b2;
+  padding: 1.4mm 2mm 1.2mm 0;
+}
+td {
+  vertical-align: top;
+  border-bottom: 0.4pt solid #e4e3df;
+  padding: 1.3mm 2.4mm 1.3mm 0;
+}
+td:first-child { white-space: nowrap; }
+
+/* Figures */
+figure {
+  margin: 3mm 0 5mm;
+  break-inside: avoid;
+  text-align: center;
+}
+figure img { max-width: 100%; }
+figure.shot img { width: 100%; border-radius: 1.2mm; }
+figcaption {
+  text-align: left;
+  font-family: "Noto Sans", "DejaVu Sans", sans-serif;
+  font-size: 8.2pt;
+  line-height: 1.4;
+  color: #52514e;
+  margin-top: 1.8mm;
+}
+figcaption b { color: #0b0b0b; font-weight: 600; }

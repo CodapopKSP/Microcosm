@@ -1648,14 +1648,6 @@ impl World {
                         None,
                         Some(p),
                     );
-                    // Drifting spores settle there if no vent life lives nearby (while there's
-                    // any life left at all).
-                    let settled = self.organisms.iter().any(|o| {
-                        o.traits.chemo > 0.3 && o.pos.distance_squared(p) < 1500.0 * 1500.0
-                    });
-                    if !settled && !self.organisms.is_empty() {
-                        self.seed_vent(p, self.config.population.vent_seed);
-                    }
                 }
                 EnvEvent::VentDied(p) => self.log_at(
                     EventKind::Environment,
@@ -2729,7 +2721,6 @@ mod tests {
         c.vents.min_depth = 1500.0;
         c.population.initial = 300;
         c.population.vent_initial = 0;
-        c.population.vent_seed = 0;
         c
     }
 

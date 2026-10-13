@@ -347,7 +347,7 @@ Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Min
 | **Plague** | ~every 8 h | Strikes the most common species (only if it holds ≥35% of all life); ~70% of its members die over 10 min. Kill-the-winner keeps any one species from taking over |
 | **Rock wall** | ~every 30 h | A wall rises from the seafloor to the surface over about 6 minutes and splits the ocean in two for ~20 h, then sinks. Separated populations drift apart genetically (allopatric speciation), then meet again |
 | **Meteor impact** | ~every 48 h | Kills everything within 700 units, releases minerals, and dims the sun by up to 70% for ~4 days (an impact winter) |
-| **Extinction is final** | Always | If everything dies, nothing is reseeded: the world goes on empty, and the log says "The last species has gone extinct. Life has ceased in this world." (With the optional vent ancestor, a new vent with no vent life nearby is settled by 20 of them, while any life remains.) |
+| **Extinction is final** | Always | If everything dies, nothing is reseeded: the world goes on empty, and the log says "The last species has gone extinct. Life has ceased in this world." |
 
 ## 9. Future extensions
 

@@ -60,6 +60,7 @@ enum Page {
     Splash,
     NewWorld,
     Load,
+    Documentation,
 }
 
 struct SaveFile {
@@ -157,6 +158,8 @@ struct Menu {
     /// The map the last picture was of (so coming back from the editor doesn't reset the
     /// chosen start area).
     preview_map: Option<String>,
+    /// The manual, prepared the first time the Documentation page opens.
+    manual: Option<crate::manual::Manual>,
 }
 
 impl Default for Menu {
@@ -194,6 +197,7 @@ impl Default for Menu {
             open_genome_editor: None,
             user_presets: crate::paths::list_organisms(),
             preview_map: None,
+            manual: None,
         }
     }
 }
@@ -438,6 +442,7 @@ fn draw_menu(
     mut exit: MessageWriter<AppExit>,
     time: Res<Time<Real>>,
     mut styled: Local<bool>,
+    mut quiet: ResMut<crate::music::MenuQuiet>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?.clone();
     if !*styled {
@@ -469,8 +474,11 @@ fn draw_menu(
                 Page::Splash => splash(ui, &mut menu, &launch, &mut start, &mut exit, t),
                 Page::NewWorld => new_world(ui, &ctx, &mut menu, &launch, &mut start),
                 Page::Load => load(ui, &mut menu, &mut start),
+                Page::Documentation => documentation(ui, &mut menu),
             }
         });
+    // The music stops while the manual is open, and comes back after.
+    quiet.set_if_neq(crate::music::MenuQuiet(menu.page == Page::Documentation));
     if let Some(world) = start {
         commands.insert_resource(SimState::new(world, &launch.0));
         next.set(AppState::Running);
@@ -904,6 +912,11 @@ fn splash(
             menu.open_genome_editor = Some(None);
         }
         ui.add_space(10.0);
+        if big_button(ui, "Documentation").clicked() {
+            menu.page = Page::Documentation;
+            menu.error = None;
+        }
+        ui.add_space(10.0);
         if big_button(ui, "Quit").clicked() {
             exit.write(AppExit::Success);
         }
@@ -1080,6 +1093,36 @@ fn load(ui: &mut egui::Ui, menu: &mut Menu, start: &mut Option<World>) {
             }
         }
     });
+}
+
+/// The manual, with its contents beside it, and a button to open it as a PDF instead.
+fn documentation(ui: &mut egui::Ui, menu: &mut Menu) {
+    ui.horizontal(|ui| {
+        if back_button(ui) {
+            menu.page = Page::Splash;
+            menu.error = None;
+        }
+        ui.add_space(10.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(egui::RichText::new("Documentation").size(30.0).color(TEXT));
+            ui.label(egui::RichText::new("How the world of Microcosm works").size(13.0).color(MUTED));
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let r = ui
+                .button(egui::RichText::new("Open as PDF").size(15.0))
+                .on_hover_text("The same manual, laid out for printing and sharing");
+            crate::ui_sfx::hover_sound(&r);
+            if r.clicked() {
+                menu.error = crate::paths::open_manual().err();
+            }
+            if let Some(e) = &menu.error {
+                ui.colored_label(ERROR, e);
+            }
+        });
+    });
+    ui.add_space(14.0);
+    menu.manual.get_or_insert_with(Default::default).show(ui);
 }
 
 /// One save: its name, what world it holds (map, date, life), and when it was saved. The whole

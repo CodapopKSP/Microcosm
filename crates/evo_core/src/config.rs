@@ -1151,8 +1151,10 @@ pub struct PopulationConfig {
     pub vent_ancestor: String,
     /// Vent ancestors spawned around each vent at the start.
     pub vent_initial: u32,
-    /// Vent ancestors that settle at a newly opened vent when no vent life lives nearby.
-    pub vent_seed: u32,
+    /// No longer used (new vents aren't settled by fresh vent ancestors); still read from older
+    /// saves and configs.
+    #[serde(skip_serializing, rename = "vent_seed")]
+    pub legacy_vent_seed: Option<u32>,
 }
 
 impl Default for PopulationConfig {
@@ -1171,7 +1173,7 @@ impl Default for PopulationConfig {
             max_population: 250_000,
             vent_ancestor: String::new(),
             vent_initial: 40,
-            vent_seed: 20,
+            legacy_vent_seed: None,
         }
     }
 }

@@ -17,6 +17,7 @@ Click any organism to see what each gene does.
 - [docs/DESIGN.md](docs/DESIGN.md): the rules (world, genome, ecology, behavior, species)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): code layout, tick pipeline, performance
 - [docs/IDEAS.md](docs/IDEAS.md): future ideas, parked until the current systems are balanced
+- [docs/manual/Microcosm-Manual.pdf](docs/manual/Microcosm-Manual.pdf): the player's guide to how the world works (source: [docs/manual/manual.md](docs/manual/manual.md))
 
 ## Requirements
 
@@ -28,7 +29,8 @@ Click any organism to see what each gene does.
 ```bash
 # Viewer (release mode matters: the sim is much slower unoptimized).
 # Opens the main menu: continue the autosave, set up a new world (map, seed, starting
-# population, where life starts, the ancestor's genome), or load any save. The Menu
+# population, where life starts, the ancestor's genome), load any save, or read the manual
+# (Documentation). The Menu
 # button in the game saves and comes back here.
 cargo run --release
 
