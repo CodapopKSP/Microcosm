@@ -340,7 +340,7 @@ Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Min
 
 | Event | Timescale | Effect |
 |-------|-----------|--------|
-| Day/night, seasons | 10 min / 1 h | Pulses of light and temperature: reserves, and strategies that last the night, pay off |
+| Day/night, seasons | Day 10 min; season 15 min (1.5 days); year 1 h | Pulses of light and temperature: reserves, and strategies that last the night, pay off |
 | Climate | Days | Global temperature drifts ±8 °C: range shifts, temperature specialists rise and fall |
 | Vent lifecycle | Hours | Vents flare, fade and die; new ones open elsewhere. Colonization and founder effects |
 | **Upwelling** | ~every 1.5 h | Minerals and nutrients well up into the sunlit water for 30 min: blooms, and a surface bonanza for chemotrophs and mixotrophs |

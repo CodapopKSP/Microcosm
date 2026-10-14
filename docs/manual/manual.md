@@ -294,7 +294,7 @@ Symmetry and repetition multiply a part. A mirrored pair of legs on every segmen
 
 ## The part catalog
 
-Fifteen kinds of part. *Length* is in body radii, from size `00` to size `FF`. *Mass*, *upkeep* and *drag* are per unit of size; even a tiny part counts as 20% of full size for these.
+Fifteen kinds of part. *Length* is in body radii, from size `00` to size `FF`. *Mass*, *upkeep* and *drag* are for one part at full size (`FF`). A smaller part has less, but never less than a fifth: it has 0.2 + 0.8 × (size ÷ 255) of each, so 20% at `00`, 60% at `80` and 100% at `FF`. Each copy (in a pair, a ring, or on every segment) counts separately.
 
 | Kind | Job | Length | Mass | Upkeep | Drag |
 |---|---|---|---|---|---|
@@ -314,7 +314,7 @@ Fifteen kinds of part. *Length* is in body radii, from size `00` to size `FF`. *
 | E Jaw | Bite strength. Works best facing forward. | 0.25–0.85 | 0.06 | 0.10 | 0.04 |
 | F Shell plate | Armor on the side it faces; insulation. Heavy. | 0.08–0.33 | 0.12 | 0.12 | 0.10 |
 
-Part upkeep is multiplied by 1.5 before it is added to U. Part mass is a fraction of body mass: it makes the body more expensive to build and makes it sink (buoyancy drops by 1.5 × total part mass).
+Part upkeep is multiplied by 1.5 before it is added to U. For example, a pair of eyes at size `80` adds 2 × 0.08 × 0.6 × 1.5 ≈ 0.14 to U. Part mass is a fraction of body mass: it makes the body more expensive to build and makes it sink (buoyancy drops by 1.5 × total part mass).
 
 ![Each part kind at full size (FF) on a radius-4 body facing right. Tentacles are a ring of 3, spines a ring of 6, shell plates a ring of 5; most others are mirrored pairs.](figures/strip-parts.png)
 
@@ -467,7 +467,7 @@ The Oxygenic gene (G1) splits photosynthesis in two:
 
 ## Chemosynthesis
 
-Chemosynthesizers absorb dissolved minerals: 20 × capability × radius × mineral concentration per second, which depletes the water. Uptake grows with the radius, not the mass, so small bodies do best per unit of mass. Where several organisms want more than a cell holds, they share it.
+Chemosynthesizers absorb dissolved minerals: 20 × capability × radius × mineral concentration per second, which depletes the water. Uptake grows with the radius, not the mass, so small bodies do best per unit of mass. Each organism feeds from the 32-unit grid cell it is in. When the organisms in a cell want more than the cell holds, each gets the same fraction of what it asked for, so the cell is emptied and bigger feeders still get more. Nutrient uptake and filtering marine snow are shared the same way.
 
 ## Scavenging
 
@@ -639,7 +639,7 @@ A genus name describes the genus's founding genome, and an epithet describes the
 
 | Event | How often | What happens |
 |---|---|---|
-| Day, night, seasons | 10 min, 1 hour | Light and temperature rise and fall. Reserves and strategies that last the night pay off. |
+| Day and night, seasons | A day is 10 min; each season is 15 min (1.5 days), so a year of four is 1 hour | Light and temperature rise and fall. Reserves and strategies that last the night pay off. |
 | Climate drift | Days | Global temperature wanders up to ±8 °C |
 | Vent lifecycle | Hours | Temporary vents open, flare, fade and die |
 | Upwelling | About every 1.5 hours | For 30 minutes, minerals and nutrients well up into the top 600 units over a band 1,500 units wide. Blooms follow. |

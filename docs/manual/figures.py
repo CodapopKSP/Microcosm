@@ -207,8 +207,9 @@ def temperature_stress():
     for ax in (a1, a2):
         ax.set_xlim(-3, 3)
         ax.set_xticks([-3, -2, -1, 0, 1, 2, 3])
-        ax.set_xticklabels(["−3", "−2", "−1", "0", "+1", "+2", "+3"])
-        ax.set_xlabel("(T − preferred) ÷ tolerance")
+        # En dashes for minus signs: some Noto Sans builds lack U+2212.
+        ax.set_xticklabels(["–3", "–2", "–1", "0", "+1", "+2", "+3"])
+        ax.set_xlabel("(T – preferred) ÷ tolerance")
         ax.axvspan(-1, 1, color="#f0efec", zorder=0, lw=0)
     a1.text(0, 2.9, "within tolerance", ha="center", color=INK2, fontsize=8)
     fig.tight_layout(w_pad=2)
@@ -391,7 +392,7 @@ def placement_wheel():
     body.append(text(cx + a + 66, cy + 4, "front", 10, INK2, anchor="start"))
     body.append(text(cx - a - 66, cy + 4, "back", 10, INK2, anchor="end"))
     body.append(text(cx, cy - b - 44, "left side (+90°)", 10, INK2))
-    body.append(text(cx, cy + b + 52, "right side (−90°)", 10, INK2))
+    body.append(text(cx, cy + b + 52, "right side (–90°)", 10, INK2))
     # Heading arrow.
     body.append(arrow(cx - 30, cy, cx + 40, cy, "#2f6f2f"))
     (OUT / "diagram-placement.svg").write_text(svg(420, 300, "".join(body)))
@@ -454,9 +455,15 @@ def feeding_reach():
     (OUT / "diagram-reach.svg").write_text(svg(560, 260, "".join(body)))
 
 
-def flow_diagram(name, nodes, edges, width, height):
-    """Boxes and arrows. nodes: id -> (x, y, w, label lines, fill). edges: (a, b, label, bend)."""
+def flow_diagram(name, nodes, edges, width, height, groups=()):
+    """Boxes and arrows. nodes: id -> (x, y, w, label lines, fill). edges: (a, b, label, bend),
+    where bend is a curve's offset or a list of points to route through. groups: dashed boxes
+    drawn behind, as (x0, y0, x1, y1, label)."""
     body, labels = [], []
+    for x0, y0, x1, y1, label in groups:
+        body.append(f'<rect x="{x0}" y="{y0}" width="{x1 - x0}" height="{y1 - y0}" rx="10" '
+                    f'fill="#f7f7f5" stroke="{MUTED}" stroke-width="1" stroke-dasharray="5 4"/>')
+        body.append(text(x0 + 12, y1 - 10, label, 9.5, INK2, anchor="start"))
 
     def anchor(n, toward):
         x, y, w, lines, _ = nodes[n]
@@ -471,6 +478,17 @@ def flow_diagram(name, nodes, edges, width, height):
         return x + dx * s, y + dy * s
 
     for a, b, label, bend in edges:
+        if a == b:
+            # A loop under the box, back into it.
+            x, y, w, lines, _ = nodes[a]
+            bottom = y + (16 + 14 * len(lines)) / 2
+            x1, x2, depth = x - 22, x + 22, 46
+            body.append(f'<path d="M{x1},{bottom} C{x1 - 8},{bottom + depth} {x2 + 8},{bottom + depth} '
+                        f'{x2 + 1},{bottom + 7}" fill="none" stroke="{INK2}" stroke-width="1.4"/>')
+            body.append(head(x2, bottom, math.atan2(-depth, -8), INK2))
+            if label:
+                labels.append(label_box(x, bottom + depth * 0.75 + 11, label))  # under the loop
+            continue
         if isinstance(bend, list):
             # An explicit route: a polyline through the given points.
             (px, py), (qx, qy) = bend[-2], bend[-1]
@@ -479,9 +497,11 @@ def flow_diagram(name, nodes, edges, width, height):
             pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in bend[:-1] + [end])
             body.append(f'<polyline points="{pts}" fill="none" stroke="{INK2}" stroke-width="1.4" '
                         f'stroke-linejoin="round"/>' + head(qx, qy, angle, INK2))
-            (lx, ly), (mx2, my2) = bend[1], bend[2]
-            body.append(f'<text x="{lx + 6}" y="{(ly + my2) / 2}" font-size="9" fill="{INK2}" '
-                        f'text-anchor="start">{label}</text>')
+            if label:
+                # On the middle of the route's longest leg.
+                (sx, sy), (tx, ty) = max(zip(bend, bend[1:]),
+                                         key=lambda st: math.dist(st[0], st[1]))
+                labels.append(label_box((sx + tx) / 2, (sy + ty) / 2, label))
             continue
         ax_, ay_ = nodes[a][0], nodes[a][1]
         bx_, by_ = nodes[b][0], nodes[b][1]
@@ -515,24 +535,28 @@ def flow_diagram(name, nodes, edges, width, height):
 
 def energy_flow():
     nodes = {
-        "sun": (110, 36, 130, ["Sunlight"], "#fbe8b8"),
-        "minerals": (470, 36, 170, ["Minerals", "vents, rotting detritus"], "#fbd9cb"),
-        "photo": (110, 130, 150, ["Photosynthesizers", "light → energy"], "#d6f0d6"),
-        "chemo": (470, 130, 150, ["Chemosynthesizers", "minerals → energy"], "#d6f0d6"),
-        "hunt": (290, 220, 130, ["Hunters", "eat the living"], "#f8d1d1"),
-        "carcass": (110, 310, 120, ["Carcasses"], "#e4e3df"),
-        "scav": (470, 310, 140, ["Scavengers", "eat the dead"], "#dedaf3"),
-        "snow": (290, 400, 170, ["Detritus", "(marine snow)"], "#e4e3df"),
+        "sun": (130, 36, 130, ["Sunlight"], "#fbe8b8"),
+        "minerals": (520, 36, 170, ["Minerals", "vents, rotting detritus"], "#fbd9cb"),
+        "photo": (130, 150, 150, ["Photosynthesizers", "live on light"], "#d6f0d6"),
+        "chemo": (520, 150, 150, ["Chemosynthesizers", "live on minerals"], "#d6f0d6"),
+        "hunt": (325, 235, 130, ["Hunters", "eat the living"], "#f8d1d1"),
+        "scav": (520, 325, 140, ["Scavengers", "eat the dead"], "#dedaf3"),
+        "carcass": (130, 445, 120, ["Carcasses"], "#e4e3df"),
+        "snow": (325, 530, 170, ["Detritus", "(marine snow)"], "#e4e3df"),
     }
+    # Every kind of organism dies into a carcass: one arrow from the box around them all.
+    living = (40, 115, 615, 372, "Every living organism")
     edges = [
         ("sun", "photo", "", 0), ("minerals", "chemo", "", 0),
         ("photo", "hunt", "eaten", 0), ("chemo", "hunt", "eaten", 0),
-        ("photo", "carcass", "die", 0), ("hunt", "carcass", "die", 0),
-        ("carcass", "scav", "eaten", 0),
+        ("scav", "hunt", "eaten", 0),
+        ("hunt", "hunt", "eat each other", 0),
+        (None, "carcass", "die", [(130, 372), (130, 401), (130, 430)]),
+        ("carcass", "scav", "eaten", 0), ("carcass", "hunt", "eaten", 0),
         ("carcass", "snow", "rot", 0), ("snow", "scav", "filtered", 0),
-        ("snow", "minerals", "rots into minerals", [(375, 400), (640, 400), (640, 36), (557, 36)]),
+        ("snow", "minerals", "rots into minerals", [(410, 530), (680, 530), (680, 36), (607, 36)]),
     ]
-    flow_diagram("diagram-energy.svg", nodes, edges, 760, 440)
+    flow_diagram("diagram-energy.svg", nodes, edges, 740, 575, groups=[living])
 
 
 def nutrient_cycle():

@@ -6,50 +6,38 @@ exists, and what to watch out for. The goal for all of them is the one in
 [VISION.md](VISION.md): new ways of living should **evolve** from genes and selection, never
 be switched on by hand.
 
-Suggested order is at the end. Before the new ideas, a record of changes that were built and
-then set aside.
+Suggested order is at the end. Before the new ideas, a record of changes that were built on an
+earlier branch and set aside.
 
 ---
 
-## Changes from other branches
+## Set-aside changes
 
-This branch (`rewrite-stable`) starts from commit 451e398, "Fine tuning, first good version",
-plus visual-only updates that were checked not to change the simulation (a 1-hour seed-1
-run gives identical results). Since then, changes are brought back one at a time. So far: the
-new-part placement fix (kept), and the tentacle rework (tried and removed; now being tried
-again with a grasp of the tentacle's full length; see below). The two later commits on the `rewrite` branch changed the
-simulation, and the runs after them were much less diverse. Their changes are listed here
-so they can be brought back **one at a time**, each checked in a long run before the next.
+The game was rebuilt from commit 451e398, "Fine tuning, first good version", because the runs
+after the last two commits on the old `rewrite` branch were much less diverse. Their simulation
+changes are listed here so they can be brought back **one at a time**, each checked in a long
+run before the next.
+
+Already brought back: the tentacle rework (each tentacle grasps one thing within its full
+length of its base and drags it to the mouth, `tentacle_reach` 1.0; the selection overlay shows
+the grasps), the wide mineral halo around each vent (`vents.halo`), and the shelf and cliff
+vents (in the generated ocean as `terrain.shelf_vents`; the Deep Ocean map has its own painted
+permanent vents). The old "fewer vents" change no longer applies: painted maps decide where
+vents can open.
 
 ### From 8a4e47c, "Update tentacles"
 
-- **Tentacles grab and pull instead of eating.** On this branch a tentacle lets its owner eat
-  anything within one big circle around the body, at full mouth speed. The rework gave each
-  tentacle its own grasp circle around its *base*; each held one thing and dragged it to the
-  mouth (`tentacle_pull`), shared by mass, so big prey pulled the hunter instead; the viewer
-  bent tentacles around what they held. *Tried again on this branch and removed:* in a 3-hour
-  seed-1 run only 1% of organisms carried tentacles, predators were stationary and ate what
-  drifted into them, and most organisms shared one body plan with a few fronds. If it comes
-  back, it needs a reason for tentacles to pay, such as feeding a little directly while
-  holding something. *Third try (current):* the same rework with the grasp at 100% of the
-  tentacle's length instead of 80% (`tentacle_reach` 1.0).
 - **Jaws bite where they sit.** Jaws near the mouth made the mouth bite harder; jaws elsewhere
-  became their own bite sites. Mouth jaws also cracked shells (`jaw_pierce` 0.6). Before,
-  jaws only strengthened the mouth, weighted by how far forward they faced.
-- **Terrain: the shelf vent system and the floating island.** A permanent vent in a chamber
-  under the shelf with a shaft up and a tunnel out through the cliff, a second permanent vent
-  down the cliff, and a floating island in mid-water with a vent chamber and tunnels
-  (`shelf_vents`, `island` under `[terrain]`).
-- **Fewer vents:** random vents 5 → 4 and shallow vents 2 → 1 (the permanent ones replace
-  them).
-- **Selection overlay and inspector** showing each tentacle's grasp and each jaw's bite site
-  (goes with the tentacle and jaw changes).
+  became their own bite sites. Mouth jaws also cracked shells (`jaw_pierce` 0.6). Today jaws
+  only strengthen the mouth, weighted by how far forward they face. The selection overlay
+  showed each jaw's bite site.
+- **A floating island** in mid-water with a vent chamber and tunnels (`island` under
+  `[terrain]`).
 
 ### From 90344a1, "Large updates, sweeping. Mostly hunting and chem."
 
-The visual parts of this commit are already on this branch: the new mouth art, the subtler
-bite effect, the swallowing animation, no feeding glow, and the star and speck fixes. Its
-simulation changes (built on top of the tentacle rework above) were:
+Its visual parts are already in: the mouth art, the subtler bite effect, the swallowing
+animation, no feeding glow, and the star and speck fixes. Its simulation changes were:
 
 - **Mouth-only eating:** no more eating through the body at 30%.
 - **Hunters stop at 90% energy** (`full`): they leave prey and carcasses alone and stop
@@ -63,19 +51,22 @@ simulation changes (built on top of the tentacle rework above) were:
   cheaper, less speed penalty, and armor makes prey count as bigger for swallowing
   (`shell_bulk`).
 - **Stronger generalist penalty** (0.4 → 0.5).
-- **Vents and minerals:** a wide mineral halo around each vent, a smaller oxygen-free core,
-  faster-spreading and longer-lasting minerals, the shelf vent under its shaft as a
-  **chimney** that shoots minerals up to the sunlit water (needs the shelf vent system).
-- **Chemosynthesis:** uptake rate 2 → 3, energy per unit of minerals 1 → 2, upkeep 0.3 → 0.2.
+- **Vents:** a smaller oxygen-free core, faster-spreading and longer-lasting minerals, and the
+  shelf vent as a **chimney** that shoots minerals up to the sunlit water.
+- **Chemosynthesis:** faster uptake, more energy per unit of minerals, lower upkeep. The
+  numbers were on an older scale (uptake 2 → 3; today's `chemo_rate` is 20), so they need
+  working out again before trying it.
 
 ---
 
 ## 1. Colonizing the depths
 
-**The problem.** Below the twilight zone almost nothing lives. The deep water has plenty of
-nutrients, but no energy: light is gone, vents are rare points, and marine snow mostly rots
-before it sinks that far. Deep life can't pay its way, so there's a moat between the surface
-and the deep that lineages rarely cross, in either direction.
+**Where it stands.** Deep life exists now, but it's thin and much of it lives at vents. Marine
+snow that reaches the floor piles up there as sediment that scavengers filter, rotting without
+oxygen releases extra minerals, and caves keep shedding detritus. In two saved worlds, 4% and
+24% of organisms lived deeper than 2,500 units (1,225 and 3,938), and only some of those
+(257 and 1,748) more than 600 units from a vent. The deep is still far poorer than the
+surface: light is gone and vents are a handful of points.
 
 **What real oceans do.** Deep life runs on four things: food falling from above, chemistry
 seeping out of the sea floor, a thin layer of low-oxygen water at mid depth, and animals
@@ -83,13 +74,9 @@ that commute up and down every day.
 
 **Ideas, roughly cheapest first:**
 
-- **A sediment layer on the floor.** Marine snow that reaches rock or the sea floor settles
-  into a slow-rotting sediment field instead of vanishing. That makes a widespread, reliable
-  food bank for bottom scavengers ("deposit feeders"), with legs and holdfasts finally
-  having a big surface to work on.
-- **Cold seeps.** Rotting sediment, where oxygen runs out, releases minerals (sulfide) back
-  into the water: weak, spread-out chemosynthesis along the whole floor, not just at vents.
-  Chemotrophs no longer need to find one of seven points.
+- **Stronger cold seeps.** Oxygen-poor rot already releases extra minerals wherever sediment
+  lies. Making that a real, steady source along the floor (or at painted seep spots) would let
+  chemotrophs live away from the few vents.
 - **Twilight photosynthesis.** Make mineral-based (purple) photosynthesis work in much dimmer
   light than oxygen-producing (green) photosynthesis, as green sulfur bacteria do in the real
   ocean. The purple lineage then owns the twilight zone near vents and seeps, and green owns
@@ -158,8 +145,8 @@ record the father).
 it can harm the host (a parasite), help it (a mutualist, as chloroplasts and mitochondria
 once did), or drift between the two, depending on genes and on how it spreads.
 
-Tentacle latchers chewing on a big organism are already a kind of external parasite; this is
-the internal version.
+Small hunters that hold on to a big organism with tentacles and bite it are already a kind of
+external parasite; this is the internal version.
 
 **The inside of a host, kept simple.** No spatial model: a host holds up to a few
 *inclusions* (say 4), each a small record of genome, mass, energy and age. The inside is one
@@ -214,8 +201,8 @@ carry which inclusion species.
 **The goal.** Today each drive (toward light, warmth, prey, away from bigger organisms,
 toward kin…) has one fixed strength for life. Real behaviour depends on state: hungry versus
 full, young versus ready to breed, hurt, night versus day. A hard-coded "stop hunting when
-full" rule (see [Changes from other branches](#changes-from-other-branches)) would be one
-example; these should *evolve* instead.
+full" rule (see [Set-aside changes](#set-aside-changes)) would be one example; these should
+*evolve* instead.
 
 **Modulators (a new chromosome).** A few slots, like the body-part slots, each saying
 "*this state* changes *that drive* by *this much*":
@@ -252,7 +239,9 @@ when ready to breed"), and the current mood shows next to the activity label.
 metamorphosis as options that evolve gradually, not as fixed features.
 
 **Stage-specific body parts.** The body-part type byte has a spare bit (bit 7). Use it
-(plus a second flag) to mark a part as juvenile-only, adult-only or both. A larva with
+(plus a second flag) to mark a part as juvenile-only, adult-only or both. (Today any symmetry
+value above 5 reads as 5, so a set bit 7 reads as a ring of 6: the decoder has to mask it off
+first.) A larva with
 flagella for spreading out can settle into a sessile adult with a holdfast and fronds: a
 barnacle-style life cycle, from one genome.
 
@@ -338,8 +327,8 @@ decoded; comparing two is one integer comparison.
 ## 7. Gradual exaptation: parts that turn into other parts
 
 **The problem.** A body part's kind is 4 bits of its slot's type byte. When that byte mutates,
-the part jumps straight to a neighbouring kind in the catalog (fin ↔ leg, spine ↔ jaw,
-eye ↔ antenna). There are no in-between forms, so a new organ appears all at once, usually
+the part jumps straight to a neighbouring kind in the catalog (fin ↔ frond or tail fluke,
+spine ↔ jaw, eye ↔ antenna). There are no in-between forms, so a new organ appears all at once, usually
 useless at first, and is usually lost again. Real exaptation is gradual: a structure doing
 one job slowly reshapes into something that does another, and every step on the way works a
 little.
@@ -415,16 +404,19 @@ simulation, which keeps using the radius and the body shape it has today. Candid
 
 ## 9. Populating the cut-off basin: sea spray and flight
 
-**The setup.** Past the ocean's right edge a mountain about 2,000 wide rises about 380 above
-sea level, and beyond it lies a basin of water that the mountain cuts off. It starts empty:
-ancestors, recolonization, random vents and events all stay in the ocean. It's a blank slate
-waiting for a way in.
+**The setup.** The built-in generated ocean (used when there's no map file, or by a `.toml`
+map naming the `ocean` generator) has a mountain about 2,000 wide and 380 above sea level past
+the ocean's right edge, and beyond it a basin of water that the mountain cuts off. It starts
+empty: ancestors, random vents and events all stay in the ocean. It's a blank slate waiting
+for a way in. The shipped Deep Ocean map has no basin (its land on the right is solid rock
+with caves and tunnels), but a painted map could have one.
 
-**The scale problem.** Organisms are radius 1–60 and swim at most around 40 u/s. Leaping out
-of the water at that speed, with a sensible gravity (about 50 u/s²), reaches only about 16
-above the surface, and even a good glider (5 across for every 1 down) then covers only about
-80. Leaping and gliding alone will never cross this mountain; something has to give (see
-"Flight" below).
+**The scale problem.** Top swimming speed is 20 × √radius at full swimming strength, so most
+organisms (radius 1.4–3) manage 20–35 u/s and only rare giants go much faster. Leaping out of
+the water at 40 u/s, with a sensible gravity (about 50 u/s²), reaches only about 16 above the
+surface, and even a good glider (5 across for every 1 down) then covers only about 80. Leaping
+and gliding alone will never cross this mountain; something has to give (see "Flight"
+below).
 
 **Two routes, in order:**
 
@@ -480,7 +472,44 @@ decide what thrives there.
 
 ---
 
-## 10. Watching over the web, and performance
+## 10. Small offspring
+
+**The problem.** The Offspring size gene (R0) is meant to allow anything from splitting in two
+to many tiny buds, but tiny offspring never appear. In two saved worlds (16,000 and 29,000
+organisms, up to about 190 generations from the ancestor), 99.5–99.8% of newborns were 30–50%
+of their parent's mass.
+
+**Why:**
+
+- **A floor on newborn size.** A newborn's mass is the adult mass × the gene's fraction, but
+  never below 1 (`genes.min_radius` squared, in `reproduce()`). Most organisms are radius 1.4–3
+  (mass 2–9), so their smallest possible newborn is already 11–50% of the parent. Below that
+  the gene does nothing, so it drifts freely: in one save 7.8% of organisms carried R0 near `7x`
+  (about 2% newborns) with no effect at all.
+- **Large organisms rarely move the gene.** Only bodies of radius 8 or more can have small
+  newborns, and they're rare (under 1.5% of organisms in both saves). R0 starts at `FF` and
+  mutates in about 3% of births by a few steps; after 150–190 generations a lineage has had
+  about five mutations of it, moving it by about ±15. Reaching `80` (about 3% newborns) needs
+  sustained selection, and whether large organisms gain anything from small offspring hasn't
+  been tested.
+- **Small adults are sterile.** A parent keeps at least half its adult mass and a newborn needs
+  mass 1, so an adult lighter than 2 (radius under 1.41, Size gene below `10`) can never
+  reproduce. That's a hidden floor on body size.
+
+**Options:**
+
+- **Lower the newborn floor** (for example `min_radius` 0.5), which also removes the sterility
+  trap. Tiny newborns can be swallowed by almost anything, and Brownian jitter and toxin hit them
+  harder, so check that they can survive at all; more, smaller bodies also cost performance.
+- **Fix only the sterility:** an adult under mass 2 buds a newborn of half its own mass.
+- **Give small offspring a reason to pay:** eggs ([§5](#5-life-stages-eggs-and-metamorphosis))
+  make the many-small versus few-large trade-off concrete.
+- **Test the selection first:** large organisms with R0 swept from `FF` down, compared on
+  population growth in a headless run.
+
+---
+
+## 11. Watching over the web, and performance
 
 Today the viewer runs the simulation itself (`evo_app/src/sim.rs` calls `world.step()`). To let
 people watch, and click organisms, from a URL, the simulation has to run on a server and the
@@ -509,8 +538,8 @@ also does the drawing.
    - the background maps (chemicals, temperature) sent less often;
    - the viewer working without its own simulation.
 
-   Bandwidth is the main cost. About 6000 organisms × ~20 bytes × 15 updates/s is about
-   2 MB/s per viewer for the whole world; sending only what's on screen cuts that a lot. The
+   Bandwidth is the main cost. About 30,000 organisms × ~20 bytes × 15 updates/s is about
+   9 MB/s per viewer for the whole world; sending only what's on screen cuts that a lot. The
    server's work doesn't grow with the number of viewers, only its bandwidth does.
 3. **The server draws a separate video for each viewer, like cloud gaming.** Every viewer
    costs a server-side render and a GPU video encode. Expensive, and it tops out at a handful of
@@ -528,7 +557,7 @@ server works just as well, since options 1 and 2 need no server GPU.
 ### What viewers need for option 2
 
 Not much. The browser only draws: the server does all the simulation, so the viewer's machine
-does none of it. The world is a few thousand small shapes, a background shader and some
+does none of it. The world is tens of thousands of small shapes, a background shader and some
 particles, which is light work for any GPU from the last several years, including laptop and
 phone GPUs.
 
@@ -545,35 +574,36 @@ phone GPUs.
 
 ### Performance, and the GPU
 
-Measured on seed 1 at 6 years, with about 6000 organisms on 12 cores, the whole tick takes about
-6.6 ms. Normal speed is 30 ticks per second (`dt` = 1/30), so it runs about 6× faster than
-real time, around 190 ticks per second. Where the time goes (ms per tick):
+Measured with `evo_headless` on 12 cores, on two saved worlds (October 2026): a world of
+29,000 organisms takes about 14 ms per tick, and one of 16,000 about 8 ms. Normal speed is 30
+ticks per second (`dt` = 1/30), so they run about 2.4× and 4× faster than real time. Where the
+time goes (ms per tick; grids and light run side by side):
 
-| Phase | ms | What it is |
-|---|---|---|
-| feed | 1.6 | eating, grabbing, tentacle pulls |
-| think | 1.6 | senses and decisions for every organism |
-| act | 1.2 | movement, collisions with rock and each other |
-| light | 0.6 | shading from bodies and rock |
-| grids | 0.5 | spatial lookup grids |
-| life | 0.5 | births, deaths, ageing |
-| environment | 0.4 | chemical diffusion, vents, temperature |
-| staging | 0.3 | preparing the tick |
+| Phase | 29,000 | 16,000 | What it is |
+|---|---|---|---|
+| feed | 3.8 | 1.8 | eating, grabbing, tentacle pulls |
+| think | 3.8 | 1.6 | senses and decisions for every organism |
+| act | 2.1 | 1.0 | movement, collisions with rock and each other |
+| grids | 1.4 | 1.0 | spatial lookup grids |
+| life | 1.3 | 0.8 | births, deaths, ageing |
+| staging | 0.8 | 0.9 | preparing the tick |
+| environment | 0.7 | 0.7 | chemical diffusion, vents, temperature |
+| light | 0.4 | 0.3 | shading from bodies and rock |
 
-**A live stream at normal speed has about 5× headroom today**, so performance only matters if
-the world or the population grows a lot (10× the organisms), or for faster-than-real-time
-headless runs when balancing.
+**A live stream at normal speed has 2–4× headroom today**, so performance only matters if the
+world or the population grows a lot, or for faster-than-real-time headless runs when
+balancing.
 
 Cheaper wins come before the GPU:
 - **Profile first** (for example `cargo flamegraph` on a headless run) to find the hot loops
   inside feed and think.
-- **Memory layout:** organisms are structs holding a genome, part lists and a `Vec` of grasps.
+- **Memory layout:** organisms are big structs (genome, decoded traits, a `Vec` of grasps).
   Keeping the hot fields (position, velocity, energy) in tight arrays, and decoded traits
   cached, helps the CPU cache. This is likely the biggest CPU win.
-- **Less work per tick:** some things don't need every tick — senses every 2–3 ticks, light
-  and diffusion every few ticks, staggered across organisms.
-- **Serial phases:** births, deaths and carcasses are probably serial; checking that each phase
-  really uses all cores is cheap.
+- **Less work per tick:** senses could run every 3 ticks instead of 2, and diffusion less
+  often, staggered across organisms.
+- **Serial phases:** contact feeding, carcasses and births are still serial; checking that each
+  phase really uses all cores is cheap.
 
 **What suits the GPU:** the grid work — chemical and temperature diffusion, vent plumes, light
 from above — is the same small sum at every cell. That's ideal for compute shaders and would
@@ -598,20 +628,13 @@ a fixed order. The GPU is bad at all of that, so it stays on the CPU.
 world, faster balancing runs), profile and fix memory layout first; move the grids to the GPU
 only if the maps need to get much finer.
 
-**Done since (CPU, about 1.4× faster overall).** A full 6-year seed-1 run went from 72 to
-50 minutes. The changes:
-- organisms are re-sorted into spatial order every 100 ticks;
-- the grid clears only the occupied band of rows, and the smallest bodies get their own fine
-  level;
-- `best_move` uses precomputed direction tables;
-- each organism refreshes its current every 4 ticks;
-- feeding does the water trade in parallel (contested cells shared fairly), gives each field its
-  own thread, and applies bites prey by prey in parallel;
-- light updates every other tick, with a parallel shade deposit, and builds alongside the grid;
-- reproduction and death candidates are found in parallel.
-
-Seeds 1–3 on both builds showed no consistent quality change. The profiling tools are
-`examples/bench.rs` (ms per phase plus a state fingerprint) and `examples/profile.rs`.
+**Already done** (about 1.4× faster overall): organisms re-sorted into spatial order every 100
+ticks; the grid clears only occupied rows and the smallest bodies get their own fine level;
+`best_move` uses precomputed direction tables; currents refreshed every 4 ticks per organism;
+steering every 2 ticks; light every other tick, built alongside the grids; feeding's water
+trade, field updates and bites in parallel; reproduction and death candidates found in parallel.
+The profiling tools are `examples/bench.rs` (ms per phase plus a state fingerprint) and
+`examples/profile.rs`.
 
 ### Longer ticks (`dt`)
 
@@ -630,8 +653,9 @@ second stays the same:
   slightly slower reactions.
 - **Per-tick damage terms:** `starvation_damage` is applied to the energy deficit each tick, so
   check it still scales.
-- **Precision:** a microbe moves about 0.3 units per tick instead of 0.17. Bodies are about 1.6
-  units across, so collisions and chases get slightly coarser but should hold.
+- **Precision:** a fast microbe moves about 1.5 units per tick at 1/20 instead of 1 at 1/30.
+  Most bodies are 3–4 units across, so collisions and chases get slightly coarser but should
+  hold.
 
 The viewer would step 20 (or 15) times per second at 1×. Drawing already interpolates between
 ticks. Verify the way the CPU work was verified: 6-year runs on several seeds, comparing species
@@ -652,13 +676,14 @@ settles, so a change in behaviour isn't mistaken for a tuning result.
 
 ## Suggested order
 
-The set-aside changes come first, one at a time. The terrain (the shelf vent system and island)
-and the chemistry-only changes are the least likely to hurt diversity, so try them before the
-tentacle and hunting changes.
+The set-aside changes come first, one at a time. The island and the vent and chemistry changes
+are the least likely to hurt diversity, so try them before the jaw, swallowing and hunting
+changes.
 
 The species rework (§6) is small and independent of everything else, so it can be done at any
 time. It's also worth doing early, because it makes the results of balancing easier to read.
-Body shapes (§8) are visual only and independent too. Gradual exaptation (§7) changes how
+Body shapes (§8) are visual only and independent too. Small offspring (§10) is small and
+independent, but it changes the balance, so do it between tuning rounds, not during one. Gradual exaptation (§7) changes how
 body plans evolve, so do it after the current balance is settled, and with §6, since the two
 decide together when a changing part makes a new species.
 
