@@ -131,6 +131,21 @@ impl World {
         }
         count
     }
+
+    /// End one active event (by its place in `happenings.active`), as if it had run its course:
+    /// a wall sinks at once, an impact winter clears. Returns whether there was such an event.
+    pub fn call_off_event(&mut self, index: usize) -> bool {
+        if index >= self.happenings.active.len() {
+            return false;
+        }
+        let ended = self.happenings.active.remove(index);
+        let fx = EventEffects {
+            ended: vec![ended],
+            ..Default::default()
+        };
+        self.apply_events(fx, self.time());
+        true
+    }
 }
 
 #[cfg(test)]
@@ -235,5 +250,37 @@ mod tests {
         assert!(w.happenings.active.is_empty() && w.happenings.pending.is_empty());
         assert!(w.terrain.is_free(mid, 1.0), "the wall is gone");
         assert_eq!(w.happenings.sun_factor(w.time()), 1.0);
+    }
+
+    #[test]
+    fn one_event_can_be_called_off_alone() {
+        let mut w = world();
+        for t in [Trigger::Upwelling, Trigger::Impact] {
+            w.trigger(t);
+        }
+        w.step();
+        // Age the winter so its dust has thickened.
+        if let Some(WorldEvent::ImpactWinter { started, .. }) = w
+            .happenings
+            .active
+            .iter_mut()
+            .find(|e| matches!(e, WorldEvent::ImpactWinter { .. }))
+        {
+            *started -= 600.0;
+        }
+        assert!(w.happenings.sun_factor(w.time()) < 1.0, "the sun is dimmed");
+        let winter = w
+            .happenings
+            .active
+            .iter()
+            .position(|e| matches!(e, WorldEvent::ImpactWinter { .. }))
+            .expect("an impact winter");
+        assert!(w.call_off_event(winter));
+        assert_eq!(w.happenings.sun_factor(w.time()), 1.0, "the sun is back");
+        assert!(
+            matches!(w.happenings.active[..], [WorldEvent::Upwelling { .. }]),
+            "the upwelling goes on"
+        );
+        assert!(!w.call_off_event(5), "no such event");
     }
 }

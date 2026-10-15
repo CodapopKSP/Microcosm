@@ -596,13 +596,19 @@ fn life_card(ui: &mut egui::Ui, world: &World) {
     });
 }
 
-/// Events going on now, as clickable chips.
-fn now_card(ui: &mut egui::Ui, world: &World, goto: &mut Option<Vec2>) {
+/// Events going on now, as clickable chips. Hovering a chip widens it to show an X inside that
+/// ends the event (`call_off` gets its index).
+fn now_card(
+    ui: &mut egui::Ui,
+    world: &World,
+    goto: &mut Option<Vec2>,
+    call_off: &mut Option<usize>,
+) {
     use evo_core::events::WorldEvent;
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new("Now").size(12.5).color(MUTED));
         let h = world.config.world.height;
-        for e in &world.happenings.active {
+        for (index, e) in world.happenings.active.iter().enumerate() {
             let (text, color, target) = match e {
                 WorldEvent::Plague { species, .. } => (
                     format!("Plague: {}", world.species.name(*species)),
@@ -632,24 +638,97 @@ fn now_card(ui: &mut egui::Ui, world: &World, goto: &mut Option<Vec2>) {
                     Some(Vec2::new(*x, built.min(h) - 300.0)),
                 ),
             };
-            let chip = egui::Button::new(egui::RichText::new(text).size(12.5).color(color))
-                .fill(color.gamma_multiply(0.15))
-                .stroke(Stroke::new(1.0, color.gamma_multiply(0.6)))
-                .corner_radius(10);
-            let response = ui.add(chip);
-            if target.is_some() {
-                crate::ui_sfx::hover_sound(&response);
-            }
-            let response = if target.is_some() {
-                response.on_hover_text("Click to look")
-            } else {
-                response
-            };
-            if response.clicked() && target.is_some() {
-                *goto = target;
+            if let Some(action) = event_chip(ui, index, &text, color, target.is_some()) {
+                match action {
+                    ChipAction::Look => *goto = target,
+                    ChipAction::End => *call_off = Some(index),
+                }
             }
         }
     });
+}
+
+enum ChipAction {
+    Look,
+    End,
+}
+
+/// One event in the Now card: a rounded chip with its text. While hovered it widens to show an
+/// X at its right end that ends the event; a click anywhere else looks at the event (if
+/// `lookable`).
+fn event_chip(
+    ui: &mut egui::Ui,
+    index: usize,
+    text: &str,
+    color: Color32,
+    lookable: bool,
+) -> Option<ChipAction> {
+    const X_SPACE: f32 = 18.0;
+    let id = ui.id().with(("now_chip", index));
+    // Widened if it was hovered last frame (the size has to be known before it's laid out).
+    let open = ui.ctx().data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    let galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(12.5),
+        color,
+    );
+    let pad = ui.spacing().button_padding;
+    let size = vec2(
+        galley.size().x + 2.0 * pad.x + if open { X_SPACE } else { 0.0 },
+        galley.size().y + 2.0 * pad.y,
+    );
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    ui.ctx().data_mut(|d| d.insert_temp(id, response.hovered()));
+    let x_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - X_SPACE - 2.0, rect.top()),
+        rect.right_bottom(),
+    );
+    let on_x = open && response.hover_pos().is_some_and(|p| x_rect.contains(p));
+
+    let painter = ui.painter();
+    let fill = if response.hovered() && !on_x && lookable { 0.25 } else { 0.15 };
+    painter.rect(
+        rect,
+        10.0,
+        color.gamma_multiply(fill),
+        Stroke::new(1.0, color.gamma_multiply(0.6)),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(rect.left_top() + pad, galley, color);
+    if open {
+        let c = x_rect.center() - vec2(1.0, 0.0);
+        let r = 7.0;
+        if on_x {
+            painter.circle_filled(c, r, color.gamma_multiply(0.35));
+        }
+        let x_color = if on_x { Color32::WHITE } else { color };
+        let d = r * 0.45;
+        let stroke = Stroke::new(1.5, x_color);
+        painter.line_segment([c + vec2(-d, -d), c + vec2(d, d)], stroke);
+        painter.line_segment([c + vec2(-d, d), c + vec2(d, -d)], stroke);
+    }
+
+    crate::ui_sfx::hover_sound(&response);
+    let response = if on_x {
+        response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("End this event")
+    } else if lookable {
+        response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Click to look")
+    } else {
+        response
+    };
+    if !response.clicked() {
+        None
+    } else if on_x {
+        Some(ChipAction::End)
+    } else if lookable {
+        Some(ChipAction::Look)
+    } else {
+        None
+    }
 }
 
 const MAP_MODES: [(MapMode, &str); 6] = [
@@ -715,6 +794,7 @@ pub fn draw(
     let under_x = weather.left().max(column_right + GAP);
     if !sim.world.happenings.active.is_empty() {
         let mut goto = None;
+        let mut call_off = None;
         // In the slot beside the clock card: its bottom lines up with the clock's (when the
         // weather card is beside the clock), and it's slim so it fits.
         let height = ctx
@@ -731,7 +811,7 @@ pub fn draw(
                 ui.set_max_width((right_edge - under_x).max(200.0));
                 card()
                     .inner_margin(egui::Margin::symmetric(10, 4))
-                    .show(ui, |ui| now_card(ui, &sim.world, &mut goto));
+                    .show(ui, |ui| now_card(ui, &sim.world, &mut goto, &mut call_off));
             })
             .response
             .rect;
@@ -743,6 +823,9 @@ pub fn draw(
             cam.director = false;
             selection.follow = false;
             cam.focus(p, Some(2.0));
+        }
+        if let Some(index) = call_off {
+            sim.world.call_off_event(index);
         }
     }
 
