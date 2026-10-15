@@ -942,6 +942,14 @@ fn toolbar(
                 {
                     cam.director = !cam.director;
                 }
+                let response = round_button(ui, ui_state.show_acts, r, |p, c, s, color| {
+                    icon_bolt(p, c, s * 0.9, color)
+                })
+                .on_hover_text("Acts of God");
+                if response.clicked() {
+                    ui_state.show_acts = !ui_state.show_acts;
+                }
+                ui_state.acts_button = Some(response.rect);
             });
         });
 
@@ -1155,5 +1163,17 @@ fn icon_speaker(p: &egui::Painter, c: Pos2, s: f32, color: Color32, volume: f32)
         let d = s * 0.35;
         p.line_segment([x + vec2(-d, -d), x + vec2(d, d)], Stroke::new(1.4, color));
         p.line_segment([x + vec2(-d, d), x + vec2(d, -d)], Stroke::new(1.4, color));
+    }
+}
+
+/// A lightning bolt.
+pub(super) fn icon_bolt(p: &egui::Painter, c: egui::Pos2, s: f32, color: egui::Color32) {
+    let pt = |x: f32, y: f32| c + egui::vec2(x, y) * s;
+    // Two overlapping wedges: the top one points up and right, the bottom one down and left.
+    for tri in [
+        [pt(0.3, -1.0), pt(-0.5, 0.15), pt(0.1, 0.15)],
+        [pt(-0.3, 1.0), pt(0.5, -0.15), pt(-0.1, -0.15)],
+    ] {
+        p.add(egui::Shape::convex_polygon(tri.to_vec(), color, egui::Stroke::NONE));
     }
 }

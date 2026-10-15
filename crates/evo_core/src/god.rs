@@ -1,13 +1,19 @@
-//! God powers, for the viewer's hidden debug panel: place organisms, smite, heal or move them,
-//! and call off the world's events. Nothing in a normal run uses these.
+//! God powers, for the viewer's Acts of God panel and its hidden debug panel: place organisms,
+//! smite, heal or move them, start events where the player points, pour substances into the
+//! water, and call events off. Nothing in a normal run uses these.
 
 use glam::Vec2;
 
 use crate::World;
+use crate::environment::Substance;
 use crate::events::EventEffects;
+use crate::stats::EventKind;
 use crate::genome::Genome;
 use crate::organism::{DeathCause, Organism};
 use crate::traits::Traits;
+
+/// How far a pour of a substance spreads (units), unless told otherwise: the smallest pour.
+pub const SUBSTANCE_RADIUS: f32 = 20.0;
 
 impl World {
     /// Place `count` well-fed adults with `genome` around `pos`, wherever there's open water
@@ -132,6 +138,96 @@ impl World {
         count
     }
 
+    /// Strike `species` (or the named species it belongs to) with a plague, whatever its share
+    /// of all life. False if that species already has one or has no members.
+    pub fn act_plague(&mut self, species: u32) -> bool {
+        let root = self.species.established_ancestor(species).unwrap_or(species);
+        let Some(pop) = self.species.get(root).map(|s| s.population) else {
+            return false;
+        };
+        if pop == 0 || self.happenings.plague_rate(root) > 0.0 {
+            return false;
+        }
+        let time = self.time();
+        self.happenings.add_plague(root, time, &self.config);
+        let name = self.species.name(root).to_string();
+        self.log(
+            EventKind::Disaster,
+            format!("Plague! A disease sweeps through {name}, {pop} strong."),
+            None,
+            Some(root),
+        );
+        true
+    }
+
+    /// Start an upwelling centred on `x`.
+    pub fn act_upwelling(&mut self, x: f32) {
+        let time = self.time();
+        let start = self.happenings.start_upwelling(x, time, &self.config);
+        let fx = EventEffects {
+            start_upwelling: Some(start),
+            ..Default::default()
+        };
+        self.apply_events(fx, time);
+    }
+
+    /// A meteor strikes at `at`: everything within the impact radius dies, minerals are
+    /// released, and dust dims the sun for days. Returns how many it killed.
+    pub fn act_meteor(&mut self, at: Vec2) -> usize {
+        let time = self.time();
+        let before = self.organisms.iter().filter(|o| o.dead.is_none()).count();
+        self.happenings.start_impact_winter(time, &self.config);
+        let fx = EventEffects {
+            impact: Some(at),
+            ..Default::default()
+        };
+        self.apply_events(fx, time);
+        let after = self.organisms.iter().filter(|o| o.dead.is_none()).count();
+        self.remove_dead();
+        before - after
+    }
+
+    /// Start a rock wall rising from the seafloor at `x`.
+    pub fn act_rock_wall(&mut self, x: f32) {
+        let time = self.time();
+        let start = self.happenings.start_barrier(x, time, &self.config);
+        let fx = EventEffects {
+            start_barrier: Some(start),
+            ..Default::default()
+        };
+        self.apply_events(fx, time);
+    }
+
+    /// Pour a standard dose of `substance` into the water within `radius` of `at`: the same
+    /// amount whatever the radius, so a wider pour is thinner.
+    pub fn add_substance(&mut self, substance: Substance, at: Vec2, radius: f32) {
+        self.env.add_substance(substance, at, radius, substance.dose());
+    }
+
+    /// How many living organisms a strike of radius `r` at `at` would reach (as a meteor's).
+    pub fn organisms_within(&self, at: Vec2, r: f32) -> usize {
+        self.organisms
+            .iter()
+            .filter(|o| o.dead.is_none() && o.pos.distance(at) < r + o.radius)
+            .count()
+    }
+
+    /// The living organisms whose centres lie in the rectangle between `a` and `b`.
+    pub fn organisms_in(&self, a: Vec2, b: Vec2) -> Vec<u64> {
+        let (min, max) = (a.min(b), a.max(b));
+        self.organisms
+            .iter()
+            .filter(|o| {
+                o.dead.is_none()
+                    && o.pos.x >= min.x
+                    && o.pos.x <= max.x
+                    && o.pos.y >= min.y
+                    && o.pos.y <= max.y
+            })
+            .map(|o| o.id)
+            .collect()
+    }
+
     /// End one active event (by its place in `happenings.active`), as if it had run its course:
     /// a wall sinks at once, an impact winter clears. Returns whether there was such an event.
     pub fn call_off_event(&mut self, index: usize) -> bool {
@@ -152,6 +248,7 @@ impl World {
 mod tests {
     use super::*;
     use crate::Config;
+    use crate::environment::Substance;
     use crate::events::{Trigger, WorldEvent};
 
     fn world() -> World {
@@ -250,6 +347,64 @@ mod tests {
         assert!(w.happenings.active.is_empty() && w.happenings.pending.is_empty());
         assert!(w.terrain.is_free(mid, 1.0), "the wall is gone");
         assert_eq!(w.happenings.sun_factor(w.time()), 1.0);
+    }
+
+    #[test]
+    fn acts_of_god_strike_where_they_are_aimed() {
+        let mut w = world();
+        let at = open_water(&w);
+
+        // A plague on the clicked organism's species, even a small one; not twice.
+        let ids = w.spawn_at(w.ancestor, at, 3);
+        let species = w.find(ids[0]).unwrap().species;
+        let root = w.species.established_ancestor(species).unwrap_or(species);
+        assert!(w.act_plague(species));
+        assert!(w.happenings.plague_rate(root) > 0.0);
+        assert!(!w.act_plague(species), "already has one");
+
+        // An upwelling and a rock wall where they were aimed.
+        w.act_upwelling(1234.0);
+        w.act_rock_wall(4321.0);
+        assert!(w.happenings.active.iter().any(|e| matches!(e,
+            WorldEvent::Upwelling { x, .. } if *x == 1234.0)));
+        assert!(w.happenings.active.iter().any(|e| matches!(e,
+            WorldEvent::Barrier { x, .. } if *x == 4321.0)));
+
+        // A meteor kills what's around the point and darkens the sky.
+        let near = w.spawn_at(w.ancestor, at, 5);
+        let killed = w.act_meteor(at);
+        assert!(killed >= near.len(), "killed {killed}");
+        assert!(near.iter().all(|id| w.find(*id).is_none()));
+        assert!(w.happenings.is_active(|e| matches!(e, WorldEvent::ImpactWinter { .. })));
+    }
+
+    #[test]
+    fn substances_are_poured_where_aimed() {
+        let mut w = world();
+        let at = open_water(&w);
+        let far = at + Vec2::new(2000.0, 0.0);
+        let amount = |f: &crate::field::Field| f.total() * f.cell_area() as f64;
+        for radius in [SUBSTANCE_RADIUS, 300.0] {
+            let before = (amount(&w.env.nutrients), w.env.nutrients.sample(far));
+            w.add_substance(Substance::Nutrients, at, radius);
+            let after = (amount(&w.env.nutrients), w.env.nutrients.sample(far));
+            let added = after.0 - before.0;
+            let dose = Substance::Nutrients.dose() as f64;
+            assert!((added - dose).abs() < dose * 1e-3, "radius {radius}: added {added}");
+            assert_eq!(after.1, before.1, "nothing far away");
+        }
+        w.add_substance(Substance::Toxin, at, SUBSTANCE_RADIUS);
+        assert!(w.env.toxin_present && w.env.toxin.sample(at) > 0.0);
+    }
+
+    #[test]
+    fn organisms_in_a_box() {
+        let mut w = world();
+        let at = open_water(&w);
+        let ids = w.spawn_at(w.ancestor, at, 4);
+        let found = w.organisms_in(at - Vec2::splat(100.0), at + Vec2::splat(100.0));
+        assert!(ids.iter().all(|id| found.contains(id)));
+        assert!(w.organisms_in(at, at + Vec2::splat(0.001)).len() <= 1);
     }
 
     #[test]

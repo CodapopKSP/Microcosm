@@ -879,6 +879,50 @@ impl Environment {
             });
     }
 
+    /// Pour `amount` of `substance` into the water within `radius` of `pos`: most at the centre,
+    /// fading to nothing at the edge (rock cells get none). A pour smaller than a grid cell goes
+    /// into the cell it lands in.
+    pub fn add_substance(&mut self, substance: Substance, pos: Vec2, radius: f32, amount: f32) {
+        let field = match substance {
+            Substance::Nutrients => &mut self.nutrients,
+            Substance::Minerals => &mut self.minerals,
+            Substance::Oxygen => &mut self.oxygen,
+            Substance::Co2 => &mut self.co2,
+            Substance::Toxin => {
+                self.toxin_present = true;
+                &mut self.toxin
+            }
+            Substance::Detritus => &mut self.detritus,
+        };
+        let r = radius.max(field.cell * 0.5);
+        let (x0, y0) = field.coords(pos - Vec2::splat(r));
+        let (x1, y1) = field.coords(pos + Vec2::splat(r));
+        let mut cells = Vec::new();
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let i = field.index(x, y);
+                let c = Vec2::new((x as f32 + 0.5) * field.cell, (y as f32 + 0.5) * field.cell);
+                let t = (1.0 - c.distance(pos) / r).max(0.0);
+                if !field.solid[i] && t > 0.0 {
+                    cells.push((i, t * t));
+                }
+            }
+        }
+        if cells.is_empty() {
+            let i = field.index_at(pos);
+            if field.solid[i] {
+                return;
+            }
+            cells.push((i, 1.0));
+        }
+        // Concentration is amount per unit area.
+        let total: f32 = cells.iter().map(|c| c.1).sum();
+        let per = amount / (total * field.cell_area());
+        for (i, w) in cells {
+            field.data[i] += per * w;
+        }
+    }
+
     /// Spread `amount` of mineral energy over the water cells in the rectangle `min..max`.
     pub fn inject_minerals(&mut self, min: Vec2, max: Vec2, amount: f32) {
         inject(&mut self.minerals, min, max, amount);
@@ -955,6 +999,57 @@ fn inject(f: &mut Field, min: Vec2, max: Vec2, amount: f32) {
     let per = amount / cells.len() as f32 / f.cell_area();
     for i in cells {
         f.data[i] += per;
+    }
+}
+
+/// Something that can be poured into the water (god powers).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Substance {
+    Nutrients,
+    Minerals,
+    Oxygen,
+    Co2,
+    Toxin,
+    /// Marine snow: food for scavengers.
+    Detritus,
+}
+
+impl Substance {
+    pub const ALL: [Substance; 6] = [
+        Substance::Nutrients,
+        Substance::Minerals,
+        Substance::Oxygen,
+        Substance::Co2,
+        Substance::Toxin,
+        Substance::Detritus,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Substance::Nutrients => "Nutrients",
+            Substance::Minerals => "Minerals",
+            Substance::Oxygen => "Oxygen",
+            Substance::Co2 => "CO₂",
+            Substance::Toxin => "Toxin",
+            Substance::Detritus => "Marine snow",
+        }
+    }
+
+    /// How much one pour adds: about what five small organisms (radius 2, like the ancestor)
+    /// need from birth to breeding. Each needs about 6 energy (2.5 to grow from mass 2 to 4,
+    /// 2.4 to fill its reserves to the breeding threshold, the rest to live meanwhile) and 2
+    /// nutrients (one per unit of mass grown). So: 30 energy of minerals or marine snow; 10
+    /// nutrients; the 60 CO₂ that photosynthesis uses to make 30 energy, or the 60 oxygen that
+    /// breathing uses to burn it; and toxin enough to harm small organisms where it lands.
+    pub fn dose(self) -> f32 {
+        match self {
+            Substance::Nutrients => 10.0,
+            Substance::Minerals => 30.0,
+            Substance::Oxygen => 60.0,
+            Substance::Co2 => 60.0,
+            Substance::Toxin => 50.0,
+            Substance::Detritus => 30.0,
+        }
     }
 }
 

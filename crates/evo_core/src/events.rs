@@ -179,43 +179,61 @@ impl Events {
         }
         if forced(Trigger::Upwelling) || rolling && self.roll(cfg.upwelling_every) {
             let x = self.rng.range(0.1, 0.9) * w;
-            fx.start_upwelling = Some((x, cfg.upwelling_width));
-            self.active.push(WorldEvent::Upwelling {
-                x,
-                width: cfg.upwelling_width,
-                until: time + cfg.upwelling_duration as f64,
-                rate: cfg.upwelling_rate,
-            });
+            fx.start_upwelling = Some(self.start_upwelling(x, time, config));
         }
         if (forced(Trigger::Impact) || rolling && self.roll(cfg.impact_every))
             && !self.is_active(|e| matches!(e, WorldEvent::ImpactWinter { .. }))
         {
             let p = Vec2::new(self.rng.range(0.1, 0.9) * w, h - cfg.impact_radius * 0.4);
             fx.impact = Some(p);
-            self.active.push(WorldEvent::ImpactWinter {
-                started: time,
-                until: time + (cfg.impact_winter_days * config.time.day_length) as f64,
-                strength: cfg.impact_winter,
-            });
+            self.start_impact_winter(time, config);
         }
         if (forced(Trigger::Barrier) || rolling && self.roll(cfg.barrier_every))
             && !self.is_active(|e| matches!(e, WorldEvent::Barrier { .. }))
         {
             let x = self.rng.range(0.25, 0.7) * w;
-            let id = self.next_barrier_id;
-            self.next_barrier_id += 1;
-            fx.start_barrier = Some((x, cfg.barrier_width));
-            self.active.push(WorldEvent::Barrier {
-                id,
-                x,
-                width: cfg.barrier_width,
-                started: time,
-                rise: cfg.barrier_rise as f64 * 3600.0,
-                stand: cfg.barrier_duration as f64 * 3600.0,
-                built: 0.0,
-            });
+            fx.start_barrier = Some(self.start_barrier(x, time, config));
         }
         fx
+    }
+
+    /// Start an upwelling centred on `x`. Returns its centre and width (for the log).
+    pub fn start_upwelling(&mut self, x: f32, time: f64, config: &Config) -> (f32, f32) {
+        let cfg = &config.events;
+        self.active.push(WorldEvent::Upwelling {
+            x,
+            width: cfg.upwelling_width,
+            until: time + cfg.upwelling_duration as f64,
+            rate: cfg.upwelling_rate,
+        });
+        (x, cfg.upwelling_width)
+    }
+
+    /// Start an impact winter: dust from a meteor that just struck dims the sun.
+    pub fn start_impact_winter(&mut self, time: f64, config: &Config) {
+        let cfg = &config.events;
+        self.active.push(WorldEvent::ImpactWinter {
+            started: time,
+            until: time + (cfg.impact_winter_days * config.time.day_length) as f64,
+            strength: cfg.impact_winter,
+        });
+    }
+
+    /// Start a rock wall rising at `x`. Returns its position and width (for the log).
+    pub fn start_barrier(&mut self, x: f32, time: f64, config: &Config) -> (f32, f32) {
+        let cfg = &config.events;
+        let id = self.next_barrier_id;
+        self.next_barrier_id += 1;
+        self.active.push(WorldEvent::Barrier {
+            id,
+            x,
+            width: cfg.barrier_width,
+            started: time,
+            rise: cfg.barrier_rise as f64 * 3600.0,
+            stand: cfg.barrier_duration as f64 * 3600.0,
+            built: 0.0,
+        });
+        (x, cfg.barrier_width)
     }
 
     /// Register a plague on `species` (chosen by the world).

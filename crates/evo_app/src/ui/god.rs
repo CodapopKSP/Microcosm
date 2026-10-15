@@ -480,7 +480,7 @@ fn header(ui: &mut egui::Ui) -> bool {
     let mut open = true;
     ui.horizontal(|ui| {
         let (r, _) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
-        icon_bolt(ui.painter(), r.center(), 10.0, WARN);
+        hud::icon_bolt(ui.painter(), r.center(), 10.0, WARN);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             ui.label(egui::RichText::new("God powers").size(17.0).strong());
@@ -539,16 +539,4 @@ fn button(ui: &mut egui::Ui, text: &str, danger: bool) -> egui::Response {
         color,
     );
     response
-}
-
-/// A lightning bolt.
-fn icon_bolt(p: &egui::Painter, c: egui::Pos2, s: f32, color: egui::Color32) {
-    let pt = |x: f32, y: f32| c + egui::vec2(x, y) * s;
-    // Two overlapping wedges: the top one points up and right, the bottom one down and left.
-    for tri in [
-        [pt(0.3, -1.0), pt(-0.5, 0.15), pt(0.1, 0.15)],
-        [pt(-0.3, 1.0), pt(0.5, -0.15), pt(-0.1, -0.15)],
-    ] {
-        p.add(egui::Shape::convex_polygon(tri.to_vec(), color, egui::Stroke::NONE));
-    }
 }

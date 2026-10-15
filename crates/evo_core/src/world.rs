@@ -1367,7 +1367,7 @@ impl World {
         self.tick as f64 * self.config.time.dt as f64
     }
 
-    fn log(&mut self, kind: EventKind, text: String, organism: Option<u64>, species: Option<u32>) {
+    pub(crate) fn log(&mut self, kind: EventKind, text: String, organism: Option<u64>, species: Option<u32>) {
         self.log_at(kind, text, organism, species, None);
     }
 

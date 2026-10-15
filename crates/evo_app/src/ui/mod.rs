@@ -1,5 +1,7 @@
-//! egui panels: HUD, organism inspector (chromosomes), species list, events, charts, help.
+//! egui panels: HUD, organism inspector (chromosomes), species list, events, charts, help, and
+//! the Acts of God tools.
 
+pub(crate) mod acts;
 mod charts;
 pub(crate) mod god;
 mod hud;
@@ -87,6 +89,9 @@ pub struct UiState {
     fonts_ready: bool,
     /// The Menu button was pressed: save and go back to the menus.
     to_menu: bool,
+    /// The Acts of God panel is open, and where its toolbar button is (it opens beside it).
+    pub show_acts: bool,
+    pub acts_button: Option<egui::Rect>,
 }
 
 impl Default for UiState {
@@ -113,6 +118,8 @@ impl Default for UiState {
             styled: false,
             fonts_ready: false,
             to_menu: false,
+            show_acts: false,
+            acts_button: None,
         }
     }
 }
@@ -123,21 +130,23 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UiState>()
             .init_resource::<god::GodMode>()
+            .init_resource::<acts::ActsOfGod>()
             .add_systems(Startup, apply_stream_option)
             .add_systems(
                 Update,
-                (ui_keys, god::god_keys).run_if(in_state(crate::AppState::Running)),
+                (ui_keys, god::god_keys, acts::acts_keys)
+                    .run_if(in_state(crate::AppState::Running)),
             )
             .add_systems(
                 Update,
-                god::god_pointer
+                (god::god_pointer, acts::acts_pointer)
                     .after(crate::sim::SimStep)
                     .before(crate::camera::camera_input)
                     .run_if(in_state(crate::AppState::Running)),
             )
             .add_systems(
                 EguiPrimaryContextPass,
-                (draw_ui, god::god_panel)
+                (draw_ui, god::god_panel, acts::acts_panel)
                     .chain()
                     .run_if(in_state(crate::AppState::Running)),
             );
@@ -892,6 +901,11 @@ fn help(ui: &mut egui::Ui) {
         help_row(ui, &[K("Ctrl"), Plus, K("2")], "Upwelling");
         help_row(ui, &[K("Ctrl"), Plus, K("3")], "Meteor");
         help_row(ui, &[K("Ctrl"), Plus, K("4")], "Rock wall");
+        help_row(
+            ui,
+            &[Mouse("Bolt button")],
+            "Acts of God: aim events, move or kill organisms, pour substances (Esc puts a tool down)",
+        );
     });
 
     help_section(ui, "Genome", HELP_GENOME);

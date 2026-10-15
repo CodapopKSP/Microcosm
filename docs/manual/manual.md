@@ -647,7 +647,7 @@ A genus name describes the genus's founding genome, and an epithet describes the
 | Rock wall | About every 30 hours | A wall 200 units wide rises from the seafloor to the surface over 6 minutes, splits the ocean in two for 20 hours, then sinks. Populations on either side evolve apart, then meet again. |
 | Meteor impact | About every 48 hours | Kills everything within 700 units of the impact near the surface, releases minerals, and dims the sun by up to 70% for 4 days, clearing slowly |
 
-Events are random; the times above are averages. Ctrl+1–4 triggers a plague, upwelling, meteor or rock wall immediately.
+Events are random; the times above are averages. Ctrl+1–4 triggers a plague, upwelling, meteor or rock wall immediately, and Acts of God (see *Observing the World*) lets you aim them.
 
 **Extinction is final.** If every organism dies, nothing is reseeded. The world goes on empty and the log records: "The last species has gone extinct. Life has ceased in this world."
 
@@ -667,6 +667,22 @@ Clicking an organism opens the inspector and follows it. Its four tabs show:
 ![The inspector's Genome tab for a *Phylloplasmidium calidus* living at the shelf vent. Each chromosome is a row of bytes; opening one (here B, Body) lists each gene's value and what it means for this organism.](figures/shot-inspector.png)
 
 Right-clicking the water opens the water inspector for that spot: light, temperature and the amount of every substance.
+
+## Acts of God
+
+The lightning-bolt button at the bottom of the right-hand toolbar opens Acts of God: tools that change the world where you point. Pick a tool, then click in the world. The cursor becomes a crosshair, the area the act will reach is outlined, and a label beside the cursor says what a click will do. Escape, or clicking the tool again, puts it down.
+
+| Tool | What it does |
+|---|---|
+| Move | Drag an organism to move it. To move several, drag a box around them (hold Shift to start the box on an organism), then drag any of them. Click empty water to let go. |
+| Kill | Click an organism to kill it, or drag a box to kill everything in it. They leave carcasses as usual. |
+| Plague | Click an organism: the named species it belongs to falls sick for 10 minutes, whatever its share of all life. |
+| Upwelling | Minerals and nutrients well up to the surface around where you click, for 30 minutes. |
+| Meteor | Strikes where you click: everything within 700 units dies, minerals are released, and the sun dims for 4 days. |
+| Rock wall | A wall rises from the seafloor where you click, stands for 20 hours, then sinks. |
+| Pour into the water | Pick a substance (nutrients, minerals, oxygen, CO₂, toxin or marine snow), then click to pour a dose of it into the water around the click. A dose is about what five small organisms need to grow up and breed: 30 energy of minerals or marine snow, 10 nutrients, or 60 oxygen or CO₂. *Radius* sets how far it spreads, from 20 to 800 units, without changing the amount; click again to pour more. Poured toxin carries no species' colour, so it harms every organism. |
+
+Events started this way behave like random ones. Every event going on is listed in the *Now* bar under the weather; hovering one shows an X that ends it at once.
 
 ## Controls
 
@@ -690,3 +706,4 @@ Right-clicking the water opens the water inspector for that spot: light, tempera
 | M | Chemistry map: oxygen, CO₂, nutrients, minerals, toxin |
 | F5 | Quicksave |
 | Ctrl+1–4 | Plague, upwelling, meteor, rock wall |
+| Bolt button | Acts of God (see above); Esc puts a tool down |
