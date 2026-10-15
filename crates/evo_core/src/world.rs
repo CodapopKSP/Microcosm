@@ -907,7 +907,18 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
     let target = Vec2::from_angle(direction) * intent.throttle * speed * r.sqrt();
     let response = (phys.response / r.sqrt() * dt).min(1.0);
     o.vel += (target - o.vel) * response;
-    if anchored {
+    // Left out of the water by a falling sea: no swimming and no currents. It drops until it's
+    // back in the water or lands on rock (a holdfast keeps it where it is), and can't breathe.
+    let sea = env.sea_level;
+    let out_of_water = o.pos.y > sea;
+    if out_of_water {
+        o.vel = if anchored {
+            Vec2::ZERO
+        } else {
+            Vec2::new(0.0, -phys.fall_speed)
+        };
+        o.pos += o.vel * dt;
+    } else if anchored {
         o.vel = Vec2::ZERO;
         o.pos += intent.push * 0.3;
     } else {
@@ -922,14 +933,28 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
             o.water = crate::currents::flow(
                 o.pos,
                 ctx.time,
-                cfg.world.height,
+                sea,
                 &cfg.currents,
+                cfg.world.seed,
+            ) + crate::currents::storm_flow(
+                o.pos,
+                ctx.time,
+                sea,
+                &ctx.env.storms,
+                &cfg.events,
                 cfg.world.seed,
             );
         }
         o.pos += (o.vel + (drift + brownian + o.water) * (1.0 - grip)) * dt + intent.push;
     }
     ctx.terrain.collide(&mut o.pos, &mut o.vel, r);
+    // In the water it stays under the surface, carried down as the sea falls, unless rock
+    // leaves no room (then it's left out of the water).
+    if !out_of_water && o.pos.y > sea - r {
+        o.pos.y = sea - r;
+        o.vel.y = o.vel.y.min(0.0);
+        ctx.terrain.collide(&mut o.pos, &mut o.vel, r);
+    }
 
     // Energy needs.
     let m75 = o.mass.powf(0.75);
@@ -973,8 +998,12 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
     // (costlier, and it leaks organic waste). Whatever can't be met suffocates.
     let demand = basal + movement;
     let available = (oxygen / cc.oxygen_half).clamp(0.0, 1.0);
-    let aerobic = t.aerobic.min(available);
-    let ferment = (1.0 - aerobic).min(t.ferment);
+    let (aerobic, ferment) = if out_of_water {
+        (0.0, 0.0)
+    } else {
+        let aerobic = t.aerobic.min(available);
+        (aerobic, (1.0 - aerobic).min(t.ferment))
+    };
     let shortfall = (1.0 - aerobic - ferment).max(0.0);
     let mut cost = demand * (aerobic + ferment * (1.0 + cc.ferment_penalty));
     chem.oxygen -= demand * aerobic * cc.oxygen_per_energy * dt;
@@ -1191,7 +1220,13 @@ fn best_move(
 /// Light for this tick: shade from bodies, then sunlight down every column. Each thread owns
 /// a slab of columns and adds the bodies over it in organism order, so the sums don't depend
 /// on scheduling.
-fn shade(light: &mut crate::environment::LightField, entries: &[Entry], sun: f32, half_depth: f32) {
+fn shade(
+    light: &mut crate::environment::LightField,
+    entries: &[Entry],
+    sun: f32,
+    half_depth: f32,
+    sea_level: f32,
+) {
     let geometry = light.geometry();
     let ny = geometry.ny;
     let slab = geometry
@@ -1219,7 +1254,7 @@ fn shade(light: &mut crate::environment::LightField, entries: &[Entry], sun: f32
                 });
             }
         });
-    light.propagate(sun, half_depth);
+    light.propagate(sun, half_depth, sea_level);
 }
 
 /// Reorder organisms along a Z-order curve over 32-unit cells, so that bodies near each other
@@ -1361,6 +1396,13 @@ impl World {
         for o in &mut self.organisms {
             o.traits = crate::traits::Traits::decode(&o.genome, &self.config);
         }
+        // The fields' masks were saved with the sea where it was; only the level itself isn't.
+        self.env.sea_level = self.sea_level();
+    }
+
+    /// The water's surface now (world y): the top of the world unless the sea has fallen.
+    pub fn sea_level(&self) -> f32 {
+        self.config.world.height - self.happenings.sea_drop(self.time())
     }
 
     pub fn time(&self) -> f64 {
@@ -1371,7 +1413,7 @@ impl World {
         self.log_at(kind, text, organism, species, None);
     }
 
-    fn log_at(
+    pub(crate) fn log_at(
         &mut self,
         kind: EventKind,
         text: String,
@@ -1494,6 +1536,14 @@ impl World {
         self.env.update_clock(tick, config);
         let time = tick as f64 * dt as f64;
         let effects = self.happenings.update(time, dt, config);
+        // What the environment needs from the events going on.
+        self.happenings
+            .temperature_shifts(time, &mut self.env.temperature_shifts);
+        self.happenings.storms(time, &mut self.env.storms);
+        let sea_level = config.world.height - self.happenings.sea_drop(time);
+        if sea_level != self.env.sea_level {
+            self.env.set_sea_level(sea_level, &self.terrain, config);
+        }
         self.env.clock.sun *= self.happenings.sun_factor(time);
         let mut env_events = Vec::new();
         if tick.is_multiple_of(FIELD_INTERVAL) {
@@ -1502,7 +1552,7 @@ impl World {
                 .update_fields(field_dt, config, &self.terrain, &mut env_events);
             for e in &self.happenings.active {
                 if let WorldEvent::Upwelling { x, width, rate, .. } = e {
-                    let h = config.world.height;
+                    let h = self.env.sea_level;
                     let (min, max) = (
                         Vec2::new(x - width * 0.5, h - 600.0),
                         Vec2::new(x + width * 0.5, h),
@@ -1560,6 +1610,7 @@ impl World {
         } = &mut *scratch;
         let entries = &*entries;
         let carcasses = &self.carcasses;
+        let sea_level = self.env.sea_level;
         let light = &mut self.env.light;
         let (sun, half_depth) = (self.env.clock.sun, config.light.half_depth);
         let (grid_time, light_time) = rayon::join(
@@ -1579,7 +1630,7 @@ impl World {
             || {
                 let start = std::time::Instant::now();
                 if lit_now {
-                    shade(light, entries, sun, half_depth);
+                    shade(light, entries, sun, half_depth, sea_level);
                 }
                 start.elapsed().as_secs_f64()
             },
@@ -1839,6 +1890,33 @@ impl World {
                     )
                 }
                 WorldEvent::Upwelling { .. } => {}
+                WorldEvent::TemperatureShift { x, delta, .. } => {
+                    let what = if *delta > 0.0 { "heat wave" } else { "cold snap" };
+                    let pos = Vec2::new(*x, self.config.world.height - 300.0);
+                    self.log_at(
+                        EventKind::Environment,
+                        format!("The {what} near x={x:.0} is over."),
+                        None,
+                        None,
+                        Some(pos),
+                    );
+                }
+                WorldEvent::SeaLevel { .. } => self.log(
+                    EventKind::Environment,
+                    "The sea is back at its usual level.".into(),
+                    None,
+                    None,
+                ),
+                WorldEvent::Storm { x, .. } => {
+                    let pos = Vec2::new(*x, self.config.world.height - 300.0);
+                    self.log_at(
+                        EventKind::Environment,
+                        format!("The storm near x={x:.0} blows itself out."),
+                        None,
+                        None,
+                        Some(pos),
+                    );
+                }
             }
         }
         if !dirty.is_empty() {
@@ -2375,19 +2453,35 @@ impl World {
         let detritus = &mut self.env.detritus;
         // A body's nutrients go into the marine snow, and sink with it.
         let snow = &mut self.env.snow_nutrients;
+        let storms = &self.env.storms;
+        let sea = self.env.sea_level;
         let area = detritus.cell_area();
         for c in &mut self.carcasses {
-            c.vel.y = -phys.carcass_sink * c.radius.sqrt();
-            c.vel.x *= 0.9;
-            let water = crate::currents::flow(
-                c.pos,
-                time,
-                config.world.height,
-                &config.currents,
-                config.world.seed,
-            );
-            c.pos += (c.vel + water) * dt;
-            self.terrain.collide(&mut c.pos, &mut c.vel, c.radius);
+            if c.pos.y > sea {
+                // Out of the water: it drops.
+                c.vel = Vec2::new(0.0, -phys.fall_speed);
+                c.pos += c.vel * dt;
+                self.terrain.collide(&mut c.pos, &mut c.vel, c.radius);
+            } else {
+                c.vel.y = -phys.carcass_sink * c.radius.sqrt();
+                c.vel.x *= 0.9;
+                let water = crate::currents::flow(
+                    c.pos,
+                    time,
+                    sea,
+                    &config.currents,
+                    config.world.seed,
+                ) + crate::currents::storm_flow(
+                    c.pos,
+                    time,
+                    sea,
+                    storms,
+                    &config.events,
+                    config.world.seed,
+                );
+                c.pos += (c.vel + water) * dt;
+                self.terrain.collide(&mut c.pos, &mut c.vel, c.radius);
+            }
             // Small bodies decompose faster (microbes within about a minute).
             let rate = phys.carcass_decay * (6.0 / c.radius.max(0.5)).clamp(1.0, 5.0);
             let lost = c.energy * rate * dt;
@@ -2598,7 +2692,7 @@ impl World {
             ..Default::default()
         };
         sample.death_causes = std::mem::take(&mut self.stats.causes_since_sample);
-        let height = self.config.world.height;
+        let height = self.env.sea_level;
         let mut radius_sum = 0.0;
         let mut part_sum = 0u64;
         for o in &self.organisms {

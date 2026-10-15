@@ -5,7 +5,7 @@
 
 use glam::Vec2;
 
-use crate::config::CurrentsConfig;
+use crate::config::{CurrentsConfig, EventsConfig};
 use crate::rng::mix64;
 
 #[inline]
@@ -74,6 +74,35 @@ pub fn flow(pos: Vec2, time: f32, height: f32, cfg: &CurrentsConfig, seed: u64) 
     // Water can't flow out through the surface.
     let near_surface = (depth / 60.0).clamp(0.0, 1.0);
     v.y *= near_surface;
+    v
+}
+
+/// Extra water velocity at `pos` from storms, given as (centre, width, strength 0..1): fast
+/// small eddies in the upper water, strongest at the surface and in the storm's middle.
+pub fn storm_flow(
+    pos: Vec2,
+    time: f32,
+    height: f32,
+    storms: &[(f32, f32, f32)],
+    cfg: &EventsConfig,
+    seed: u64,
+) -> Vec2 {
+    let depth = (height - pos.y).max(0.0);
+    let reach = (1.0 - depth / cfg.storm_depth.max(1.0)).max(0.0);
+    if storms.is_empty() || reach <= 0.0 {
+        return Vec2::ZERO;
+    }
+    let mut v = Vec2::ZERO;
+    for &(x, width, strength) in storms {
+        let k = strength * crate::events::across(x, width, pos.x) * reach * reach;
+        if k > 0.0 {
+            let s = cfg.storm_eddy_scale.max(1.0);
+            let (_, gx, gy) = noise3_grad(seed ^ 0x5707, pos.x / s, pos.y / s, time / 20.0);
+            v += Vec2::new(gy, -gx) * cfg.storm_speed * k;
+        }
+    }
+    // Water can't flow out through the surface.
+    v.y *= (depth / 60.0).clamp(0.0, 1.0);
     v
 }
 

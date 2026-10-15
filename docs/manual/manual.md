@@ -680,9 +680,13 @@ The lightning-bolt button at the bottom of the right-hand toolbar opens Acts of 
 | Upwelling | Minerals and nutrients well up to the surface around where you click, for 30 minutes. |
 | Meteor | Strikes where you click: everything within 700 units dies, minerals are released, and the sun dims for 4 days. |
 | Rock wall | A wall rises from the seafloor where you click, stands for 20 hours, then sinks. |
+| Heat wave | The water within 1,500 units either side of where you click warms by up to 6 °C for 30 minutes: fully at the surface, less with depth (about a third as much 700 units down). It builds up and dies away gradually. |
+| Cold snap | The same, but the water cools by up to 6 °C. |
+| Storm | For 20 minutes, fast eddies churn the top 500 units of water within 1,250 units either side of where you click, tossing organisms and carcasses about. The storm also stirs the upper water, evening it out with the water below it, which brings nutrients up to the surface. |
+| Sea level | The sea falls by the *Drop* amount (50 to 3,000 units) over 5 minutes, stays low for 2 hours, then rises back over 5 minutes. Swimmers are carried down with the surface. Anything left out of the water drops until it reaches water or rock, and can't breathe there: it suffocates like an aerobe in a dead zone. Drained water loses what it held, and the returning sea refills it with ordinary seawater. Vents left above the water still smoke but release nothing: no minerals, CO₂, nutrients or heat. |
 | Pour into the water | Pick a substance (nutrients, minerals, oxygen, CO₂, toxin or marine snow), then click to pour a dose of it into the water around the click. A dose is about what five small organisms need to grow up and breed: 30 energy of minerals or marine snow, 10 nutrients, or 60 oxygen or CO₂. *Radius* sets how far it spreads, from 20 to 800 units, without changing the amount; click again to pour more. Poured toxin carries no species' colour, so it harms every organism. |
 
-Events started this way behave like random ones. Every event going on is listed in the *Now* bar under the weather; hovering one shows an X that ends it at once.
+Heat waves, cold snaps, storms and sea-level changes only happen as Acts of God. Events started this way otherwise behave like random ones. Every event going on is listed in the *Now* bar under the weather; hovering one shows an X that ends it at once.
 
 ## Controls
 

@@ -359,6 +359,10 @@ pub(super) fn god_panel(
                     WorldEvent::Upwelling { .. } => "upwelling",
                     WorldEvent::ImpactWinter { .. } => "impact winter",
                     WorldEvent::Barrier { .. } => "rock wall",
+                    WorldEvent::TemperatureShift { delta, .. } if *delta > 0.0 => "heat wave",
+                    WorldEvent::TemperatureShift { .. } => "cold snap",
+                    WorldEvent::Storm { .. } => "storm",
+                    WorldEvent::SeaLevel { .. } => "low sea",
                 })
                 .collect();
             let text = if active.is_empty() {

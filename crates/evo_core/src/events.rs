@@ -29,6 +29,28 @@ pub enum WorldEvent {
         until: f64,
         strength: f32,
     },
+    /// The water around `x` warms (`delta` > 0: a heat wave) or cools (a cold snap).
+    TemperatureShift {
+        x: f32,
+        width: f32,
+        delta: f32,
+        started: f64,
+        until: f64,
+    },
+    /// Fast churning currents in the upper water around `x`.
+    Storm {
+        x: f32,
+        width: f32,
+        started: f64,
+        until: f64,
+    },
+    /// The sea falls by `drop` over `change` seconds, stays low for `low`, then rises back.
+    SeaLevel {
+        drop: f32,
+        started: f64,
+        change: f64,
+        low: f64,
+    },
     /// A rock wall rises from the seafloor at `x`, stands, then sinks.
     Barrier {
         id: u32,
@@ -142,7 +164,15 @@ impl Events {
             let done = match &self.active[i] {
                 WorldEvent::Plague { until, .. }
                 | WorldEvent::Upwelling { until, .. }
-                | WorldEvent::ImpactWinter { until, .. } => time >= *until,
+                | WorldEvent::ImpactWinter { until, .. }
+                | WorldEvent::TemperatureShift { until, .. }
+                | WorldEvent::Storm { until, .. } => time >= *until,
+                WorldEvent::SeaLevel {
+                    started,
+                    change,
+                    low,
+                    ..
+                } => time >= started + change * 2.0 + low,
                 WorldEvent::Barrier {
                     started,
                     rise,
@@ -219,6 +249,92 @@ impl Events {
         });
     }
 
+    /// Start a heat wave (`warmer`) or cold snap around `x`. Returns the change in °C.
+    pub fn start_temperature_shift(&mut self, x: f32, warmer: bool, time: f64, config: &Config) -> f32 {
+        let cfg = &config.events;
+        let delta = if warmer { cfg.temperature_shift } else { -cfg.temperature_shift };
+        self.active.push(WorldEvent::TemperatureShift {
+            x,
+            width: cfg.temperature_shift_width,
+            delta,
+            started: time,
+            until: time + cfg.temperature_shift_duration as f64,
+        });
+        delta
+    }
+
+    /// Start a storm around `x`.
+    pub fn start_storm(&mut self, x: f32, time: f64, config: &Config) {
+        let cfg = &config.events;
+        self.active.push(WorldEvent::Storm {
+            x,
+            width: cfg.storm_width,
+            started: time,
+            until: time + cfg.storm_duration as f64,
+        });
+    }
+
+    /// Start the sea falling by `drop` (at most 80% of the water's depth). Returns the drop.
+    pub fn start_sea_level(&mut self, drop: f32, time: f64, config: &Config) -> f32 {
+        let cfg = &config.events;
+        let drop = drop.clamp(0.0, config.world.height * 0.8);
+        self.active.push(WorldEvent::SeaLevel {
+            drop,
+            started: time,
+            change: cfg.sea_level_change as f64,
+            low: cfg.sea_level_low as f64,
+        });
+        drop
+    }
+
+    /// How far below its usual level the sea is at `time`.
+    pub fn sea_drop(&self, time: f64) -> f32 {
+        let mut most = 0.0f32;
+        for e in &self.active {
+            if let WorldEvent::SeaLevel {
+                drop,
+                started,
+                change,
+                low,
+            } = e
+            {
+                let t = time - started;
+                let change = change.max(1.0);
+                let f = if t < change {
+                    t / change
+                } else if t < change + low {
+                    1.0
+                } else {
+                    1.0 - (t - change - low) / change
+                };
+                let f = f.clamp(0.0, 1.0) as f32;
+                most = most.max(drop * f * f * (3.0 - 2.0 * f));
+            }
+        }
+        most
+    }
+
+    /// The heat waves and cold snaps now, as (centre, width, °C change at the surface right
+    /// now), each building up and dying away gradually.
+    pub fn temperature_shifts(&self, time: f64, out: &mut Vec<(f32, f32, f32)>) {
+        out.clear();
+        for e in &self.active {
+            if let WorldEvent::TemperatureShift { x, width, delta, started, until } = e {
+                out.push((*x, *width, delta * envelope(*started, *until, time)));
+            }
+        }
+    }
+
+    /// The storms now, as (centre, width, strength 0..1).
+    pub fn storms(&self, time: f64, out: &mut Vec<(f32, f32, f32)>) {
+        out.clear();
+        for e in &self.active {
+            if let WorldEvent::Storm { x, width, started, until } = e {
+                out.push((*x, *width, envelope(*started, *until, time)));
+            }
+        }
+    }
+
     /// Start a rock wall rising at `x`. Returns its position and width (for the log).
     pub fn start_barrier(&mut self, x: f32, time: f64, config: &Config) -> (f32, f32) {
         let cfg = &config.events;
@@ -258,6 +374,20 @@ impl Events {
             })
             .sum()
     }
+}
+
+/// How strong an event lasting from `started` to `until` is at `time`: it builds up over the
+/// first 15% and dies away over the last 15%.
+pub fn envelope(started: f64, until: f64, time: f64) -> f32 {
+    let t = ((time - started) / (until - started).max(1.0)).clamp(0.0, 1.0) as f32;
+    (t / 0.15).min((1.0 - t) / 0.15).clamp(0.0, 1.0)
+}
+
+/// How much of an event centred on `x`, `width` wide, reaches `px`: all of it in the middle,
+/// fading smoothly to nothing at the edges.
+pub fn across(x: f32, width: f32, px: f32) -> f32 {
+    let t = (1.0 - (px - x).abs() / (width * 0.5).max(1.0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Height of a barrier's top at `time` (world y), given the floor under it.

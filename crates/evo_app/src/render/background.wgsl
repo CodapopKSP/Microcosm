@@ -15,7 +15,7 @@ struct Background {
     land: vec4<f32>,      // mountain outline: first sample x, spacing, sample count, on
     land_profile: array<vec4<f32>, 64>, // its height at each sample (4 per entry)
     sky: vec4<f32>,  // year phase (0 = start of spring), surface ice 0..1, moon phase (0 = full), snowfall 0..1
-    orbit: vec4<f32>, // sun and moon path: center x, half width, height above the surface, 0
+    orbit: vec4<f32>, // sun and moon path: center x, half width, height above the surface; sea level
     vent_ceilings: array<vec4<f32>, 16>, // rock over each vent: height (1e4 = none), reach left, right
 };
 
@@ -405,6 +405,120 @@ fn sdf_at(uv: vec2<f32>) -> f32 {
     return (textureSample(terrain_tex, terrain_sampler, uv).r - 0.5) * 128.0;
 }
 
+// Impact winter's dust pall, churning brown-grey.
+fn dust_pall(wp: vec2<f32>, time: f32) -> vec3<f32> {
+    let dust = fbm(vec2<f32>(wp.x * 0.0008 + time * 0.02, wp.y * 0.002));
+    return mix(vec3<f32>(0.09, 0.075, 0.06), vec3<f32>(0.2, 0.16, 0.12), dust);
+}
+
+// The sky at `wp`, above a sea whose surface is at `sea`: by season and time of day, with the
+// sun, moon and stars, winter snow, impact dust and the tops of ice floes.
+fn sky_color(wp: vec2<f32>, sea: f32, px: f32, time: f32) -> vec3<f32> {
+    let year = bg.sky.x;
+    let ice = bg.sky.y;
+    let h = clamp((wp.y - sea) / 1200.0, 0.0, 1.0);
+    // Each season has its own sky: fresh spring blue, deep summer blue, warm hazy autumn,
+    // pale grey winter.
+    let sw = season_weights(year);
+    let horizon = vec3<f32>(0.44, 0.7, 0.78) * sw.x + vec3<f32>(0.38, 0.62, 0.86) * sw.y
+        + vec3<f32>(0.66, 0.56, 0.44) * sw.z + vec3<f32>(0.66, 0.72, 0.78) * sw.w;
+    let zenith = vec3<f32>(0.1, 0.38, 0.66) * sw.x + vec3<f32>(0.06, 0.22, 0.62) * sw.y
+        + vec3<f32>(0.2, 0.26, 0.44) * sw.z + vec3<f32>(0.3, 0.38, 0.52) * sw.w;
+    let sky_day = mix(horizon, zenith, h);
+    let night_low = mix(vec3<f32>(0.02, 0.03, 0.07), vec3<f32>(0.025, 0.035, 0.08), sw.w);
+    let sky_night = mix(night_low, vec3<f32>(0.005, 0.008, 0.02), h);
+    // Without oxygen (and its ozone) the day sky is a hazy orange; lots of CO2 adds haze.
+    let o2 = clamp(bg.air.x, 0.0, 1.5);
+    let haze_day = mix(vec3<f32>(0.62, 0.42, 0.25), vec3<f32>(0.35, 0.34, 0.33), h);
+    var day = mix(haze_day, sky_day, smoothstep(0.05, 0.6, o2));
+    day = mix(day, vec3<f32>(0.5, 0.48, 0.42), clamp((bg.air.y - 1.5) * 0.25, 0.0, 0.5));
+    var sky = mix(sky_night, day * 0.7, clamp(bg.sun.x * 1.3, 0.0, 1.0));
+
+    // The sun and moon rise out of the sea at one point, arc across part of the sky and
+    // set into the sea further along: the sun from 6:00 to 18:00 (higher in summer), the
+    // moon through the night. They're in the world like everything else.
+    let day_phase = bg.sun.z;
+    let elevation = -cos(day_phase * TAU);
+    let arc_height = bg.orbit.z * (0.85 + 0.15 * sin(year * TAU));
+    let sun_u = fract(day_phase - 0.25 + 0.1) * 2.0 - 0.2;
+    let sun_pos = vec2<f32>(
+        bg.orbit.x + bg.orbit.y * (2.0 * sun_u - 1.0),
+        sea + sin(sun_u * 3.14159265) * arc_height,
+    );
+    // Dawn and dusk: the low sky glows orange-pink, most around the sun.
+    let twilight = 1.0 - smoothstep(0.0, 0.3, abs(elevation + 0.03));
+    let near_sun = exp(-abs(wp.x - sun_pos.x) / 3000.0);
+    let dusk = twilight * (1.0 - h) * (1.0 - h) * (0.35 + 0.65 * near_sun);
+    sky = mix(sky, vec3<f32>(0.95, 0.45, 0.28) * 0.75, clamp(dusk, 0.0, 1.0) * 0.8);
+
+    // Stars at night (hidden by impact dust).
+    let winter = bg.effects.x;
+    // Fixed in the world (they don't reshuffle on zoom), about a pixel across at any zoom.
+    let star_cell = floor(wp / 60.0);
+    let twinkle = 0.4 + 0.6 * cell_hash(star_cell, 91u);
+    var star = specks(wp, 60.0, vec2<f32>(0.0), 0.12, 0.9 * px, px, 0.9) * twinkle
+        * (1.0 - clamp(bg.sun.x * 3.0, 0.0, 1.0));
+
+    if sun_u > -0.2 && sun_u < 1.2 {
+        let r = 80.0;
+        let d = length(wp - sun_pos);
+        let low = 1.0 - smoothstep(0.0, 0.45, elevation);
+        let disc_col = mix(vec3<f32>(2.2, 2.0, 1.6), vec3<f32>(2.2, 0.9, 0.4), low);
+        let disc = 1.0 - smoothstep(r - px, r + px, d);
+        sky += disc_col * 0.18 * exp(-d / (r * 2.2)) + vec3<f32>(1.0, 0.8, 0.5) * 0.06 * exp(-d / (r * 9.0));
+        sky = mix(sky, disc_col, disc);
+    }
+    let moon_u = fract(day_phase - 0.75 + 0.1) * 2.0 - 0.2;
+    if moon_u > -0.2 && moon_u < 1.2 {
+        let r = 60.0;
+        let moon_pos = vec2<f32>(
+            bg.orbit.x + bg.orbit.y * (2.0 * moon_u - 1.0),
+            sea + sin(moon_u * 3.14159265) * arc_height,
+        );
+        let q = wp - moon_pos;
+        let d = length(q);
+        let disc = 1.0 - smoothstep(r - px, r + px, d);
+        // Phase: a shadow disc slides across (new moon at 0.5, full at 0 and 1).
+        let shadow_pos = vec2<f32>((bg.sky.z - 0.5) * 4.0 * r, 0.0);
+        let shadow = 1.0 - smoothstep(r - px, r + px, length(q - shadow_pos));
+        let craters = 0.82 + 0.18 * value_noise(q / r * 3.0 + vec2<f32>(5.0, 1.0));
+        let face = vec3<f32>(1.15, 1.2, 1.3) * craters;
+        let lit = disc * (1.0 - shadow);
+        let fullness = abs(bg.sky.z - 0.5) * 2.0;
+        sky += vec3<f32>(0.25, 0.3, 0.4) * 0.12 * fullness * exp(-d / (r * 2.5));
+        sky = mix(sky, sky * 0.6 + vec3<f32>(0.02, 0.025, 0.035), disc * shadow);
+        sky = mix(sky, face, lit);
+        star *= 1.0 - disc;
+    }
+    sky += vec3<f32>(star) * (1.0 - winter);
+
+    // Winter: snow drifting down (only in winter, however much ice there is).
+    let snowfall = bg.sky.w;
+    if snowfall > 0.0 {
+        // Sized and spaced on screen (it's weather close to the viewer), in two layers.
+        let near_cell = 34.0 * px;
+        let flurry = vec2<f32>(sin(time * 0.5 + wp.y / (60.0 * px)) * 6.0 * px, time * 45.0 * px);
+        var snow = specks(wp, near_cell, flurry, snowfall * 0.3, 1.6 * px, px, 5.5);
+        let far_flurry = vec2<f32>(sin(time * 0.3 + 2.0) * 4.0 * px, time * 22.0 * px);
+        snow += 0.6 * specks(wp, 21.0 * px, far_flurry, snowfall * 0.25, 1.0 * px, px, 6.5);
+        sky += vec3<f32>(0.8, 0.83, 0.88) * snow * (0.3 + 0.7 * clamp(bg.sun.x * 2.0, 0.0, 1.0));
+    }
+
+    // Impact winter: a churning brown-grey dust pall.
+    let pall = dust_pall(wp, time);
+    sky = mix(sky, pall, clamp(winter * 1.4, 0.0, 0.95));
+
+    // The tops of the ice floes, standing a little out of the water.
+    let floe = ice_at(wp.x, ice, time, px);
+    if floe.x > 0.0 {
+        let y = wp.y - sea;
+        let top = 0.15 * floe.y;
+        let inside = (1.0 - smoothstep(top - px, top + px, y)) * floe.x;
+        sky = mix(sky, ice_color(wp, y, floe.y, bg.sun.x), inside);
+    }
+    return sky;
+}
+
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let size = bg.world.xy;
@@ -412,115 +526,19 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let px = bg.world.w;
     let wp = in.world_position.xy;
     let uv = vec2<f32>(wp.x / size.x, 1.0 - wp.y / size.y);
-    let depth = size.y - wp.y;
+    // The water's surface: the top of the world, unless the sea has fallen.
+    let sea = bg.orbit.w;
+    let depth = sea - wp.y;
     let outside = wp.x < 0.0 || wp.x > size.x || wp.y < 0.0 || wp.y > size.y;
 
-    // Above the surface: the sky, by season and time of day.
-    let year = bg.sky.x;
+    // Above the world: the sky, and the land standing above the sea.
     let ice = bg.sky.y;
     if wp.y > size.y {
-        let h = clamp((wp.y - size.y) / 1200.0, 0.0, 1.0);
-        // Each season has its own sky: fresh spring blue, deep summer blue, warm hazy autumn,
-        // pale grey winter.
-        let sw = season_weights(year);
-        let horizon = vec3<f32>(0.44, 0.7, 0.78) * sw.x + vec3<f32>(0.38, 0.62, 0.86) * sw.y
-            + vec3<f32>(0.66, 0.56, 0.44) * sw.z + vec3<f32>(0.66, 0.72, 0.78) * sw.w;
-        let zenith = vec3<f32>(0.1, 0.38, 0.66) * sw.x + vec3<f32>(0.06, 0.22, 0.62) * sw.y
-            + vec3<f32>(0.2, 0.26, 0.44) * sw.z + vec3<f32>(0.3, 0.38, 0.52) * sw.w;
-        let sky_day = mix(horizon, zenith, h);
-        let night_low = mix(vec3<f32>(0.02, 0.03, 0.07), vec3<f32>(0.025, 0.035, 0.08), sw.w);
-        let sky_night = mix(night_low, vec3<f32>(0.005, 0.008, 0.02), h);
-        // Without oxygen (and its ozone) the day sky is a hazy orange; lots of CO2 adds haze.
-        let o2 = clamp(bg.air.x, 0.0, 1.5);
-        let haze_day = mix(vec3<f32>(0.62, 0.42, 0.25), vec3<f32>(0.35, 0.34, 0.33), h);
-        var day = mix(haze_day, sky_day, smoothstep(0.05, 0.6, o2));
-        day = mix(day, vec3<f32>(0.5, 0.48, 0.42), clamp((bg.air.y - 1.5) * 0.25, 0.0, 0.5));
-        var sky = mix(sky_night, day * 0.7, clamp(bg.sun.x * 1.3, 0.0, 1.0));
-
-        // The sun and moon rise out of the sea at one point, arc across part of the sky and
-        // set into the sea further along: the sun from 6:00 to 18:00 (higher in summer), the
-        // moon through the night. They're in the world like everything else.
-        let day_phase = bg.sun.z;
-        let elevation = -cos(day_phase * TAU);
-        let arc_height = bg.orbit.z * (0.85 + 0.15 * sin(year * TAU));
-        let sun_u = fract(day_phase - 0.25 + 0.1) * 2.0 - 0.2;
-        let sun_pos = vec2<f32>(
-            bg.orbit.x + bg.orbit.y * (2.0 * sun_u - 1.0),
-            size.y + sin(sun_u * 3.14159265) * arc_height,
-        );
-        // Dawn and dusk: the low sky glows orange-pink, most around the sun.
-        let twilight = 1.0 - smoothstep(0.0, 0.3, abs(elevation + 0.03));
-        let near_sun = exp(-abs(wp.x - sun_pos.x) / 3000.0);
-        let dusk = twilight * (1.0 - h) * (1.0 - h) * (0.35 + 0.65 * near_sun);
-        sky = mix(sky, vec3<f32>(0.95, 0.45, 0.28) * 0.75, clamp(dusk, 0.0, 1.0) * 0.8);
-
-        // Stars at night (hidden by impact dust).
+        var sky = sky_color(wp, sea, px, time);
         let winter = bg.effects.x;
-        // Fixed in the world (they don't reshuffle on zoom), about a pixel across at any zoom.
-        let star_cell = floor(wp / 60.0);
-        let twinkle = 0.4 + 0.6 * cell_hash(star_cell, 91u);
-        var star = specks(wp, 60.0, vec2<f32>(0.0), 0.12, 0.9 * px, px, 0.9) * twinkle
-            * (1.0 - clamp(bg.sun.x * 3.0, 0.0, 1.0));
-
-        if sun_u > -0.2 && sun_u < 1.2 {
-            let r = 80.0;
-            let d = length(wp - sun_pos);
-            let low = 1.0 - smoothstep(0.0, 0.45, elevation);
-            let disc_col = mix(vec3<f32>(2.2, 2.0, 1.6), vec3<f32>(2.2, 0.9, 0.4), low);
-            let disc = 1.0 - smoothstep(r - px, r + px, d);
-            sky += disc_col * 0.18 * exp(-d / (r * 2.2)) + vec3<f32>(1.0, 0.8, 0.5) * 0.06 * exp(-d / (r * 9.0));
-            sky = mix(sky, disc_col, disc);
-        }
-        let moon_u = fract(day_phase - 0.75 + 0.1) * 2.0 - 0.2;
-        if moon_u > -0.2 && moon_u < 1.2 {
-            let r = 60.0;
-            let moon_pos = vec2<f32>(
-                bg.orbit.x + bg.orbit.y * (2.0 * moon_u - 1.0),
-                size.y + sin(moon_u * 3.14159265) * arc_height,
-            );
-            let q = wp - moon_pos;
-            let d = length(q);
-            let disc = 1.0 - smoothstep(r - px, r + px, d);
-            // Phase: a shadow disc slides across (new moon at 0.5, full at 0 and 1).
-            let shadow_pos = vec2<f32>((bg.sky.z - 0.5) * 4.0 * r, 0.0);
-            let shadow = 1.0 - smoothstep(r - px, r + px, length(q - shadow_pos));
-            let craters = 0.82 + 0.18 * value_noise(q / r * 3.0 + vec2<f32>(5.0, 1.0));
-            let face = vec3<f32>(1.15, 1.2, 1.3) * craters;
-            let lit = disc * (1.0 - shadow);
-            let fullness = abs(bg.sky.z - 0.5) * 2.0;
-            sky += vec3<f32>(0.25, 0.3, 0.4) * 0.12 * fullness * exp(-d / (r * 2.5));
-            sky = mix(sky, sky * 0.6 + vec3<f32>(0.02, 0.025, 0.035), disc * shadow);
-            sky = mix(sky, face, lit);
-            star *= 1.0 - disc;
-        }
-        sky += vec3<f32>(star) * (1.0 - winter);
-
-        // Winter: snow drifting down (only in winter, however much ice there is).
-        let snowfall = bg.sky.w;
-        if snowfall > 0.0 {
-            // Sized and spaced on screen (it's weather close to the viewer), in two layers.
-            let near_cell = 34.0 * px;
-            let flurry = vec2<f32>(sin(time * 0.5 + wp.y / (60.0 * px)) * 6.0 * px, time * 45.0 * px);
-            var snow = specks(wp, near_cell, flurry, snowfall * 0.3, 1.6 * px, px, 5.5);
-            let far_flurry = vec2<f32>(sin(time * 0.3 + 2.0) * 4.0 * px, time * 22.0 * px);
-            snow += 0.6 * specks(wp, 21.0 * px, far_flurry, snowfall * 0.25, 1.0 * px, px, 6.5);
-            sky += vec3<f32>(0.8, 0.83, 0.88) * snow * (0.3 + 0.7 * clamp(bg.sun.x * 2.0, 0.0, 1.0));
-        }
-
-        // Impact winter: a churning brown-grey dust pall.
-        let dust = fbm(vec2<f32>(wp.x * 0.0008 + time * 0.02, wp.y * 0.002));
-        let pall = mix(vec3<f32>(0.09, 0.075, 0.06), vec3<f32>(0.2, 0.16, 0.12), dust);
-        sky = mix(sky, pall, clamp(winter * 1.4, 0.0, 0.95));
-
-        // The tops of the ice floes, standing a little out of the water.
-        let floe = ice_at(wp.x, ice, time, px);
-        if floe.x > 0.0 {
-            let y = wp.y - size.y;
-            let top = 0.15 * floe.y;
-            let inside = (1.0 - smoothstep(top - px, top + px, y)) * floe.x;
-            sky = mix(sky, ice_color(wp, y, floe.y, bg.sun.x), inside);
-        }
-        // The mountain above sea level (same profile as the terrain below the surface).
+        let pall = dust_pall(wp, time);
+        // The mountain above sea level (same profile as the terrain below the surface). Only
+        // above the world's top: below it (when the sea has fallen) the terrain itself shows.
         let f = (wp.x - bg.land.x) / max(bg.land.y, 1e-3);
         if bg.land.w > 0.5 && f >= 0.0 && f <= bg.land.z - 1.0 {
             let k = i32(floor(f));
@@ -539,6 +557,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         return vec4<f32>(sky, 1.0);
     }
+
+    // Above a fallen sea but inside the world: the world as usual (rock, caves, vents), with
+    // air behind it instead of water, and none of the water's own looks.
+    let in_air = wp.y > sea;
+    let wet = select(1.0, 0.0, in_air);
 
     // Soften the simulated shadows horizontally with depth (light scatters in water).
     let spread = clamp(depth * 0.12, 0.0, 260.0) / size.x;
@@ -567,10 +590,23 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     water = mix(water, shallow, smoothstep(0.55, 1.0, brightness));
     // Gentle darkening with depth even where light is similar, for a sense of scale.
     water *= mix(1.0, 0.6, clamp(depth / size.y, 0.0, 1.0));
+    if in_air {
+        water = sky_color(wp, sea, px, time);
+    }
 
     // Caves (painted maps): the back wall of a hollow in the rock, the same stone as the
     // terrain but far darker, and darker still in the shadow of the rock around it.
-    let cave = textureSample(terrain_tex, terrain_sampler, uv).g;
+    var cave = textureSample(terrain_tex, terrain_sampler, uv).g;
+    // The rock's edge is roughened (below), so it can stand back from the cave's edge into
+    // the rock cell: right against rock, the cave reaches a cell further, so nothing behind
+    // the cave shows through between them.
+    let cell = 1.0 / vec2<f32>(textureDimensions(terrain_tex));
+    let reach = max(
+        max(textureSample(terrain_tex, terrain_sampler, uv + vec2<f32>(cell.x, 0.0)).g,
+            textureSample(terrain_tex, terrain_sampler, uv - vec2<f32>(cell.x, 0.0)).g),
+        max(textureSample(terrain_tex, terrain_sampler, uv + vec2<f32>(0.0, cell.y)).g,
+            textureSample(terrain_tex, terrain_sampler, uv - vec2<f32>(0.0, cell.y)).g));
+    cave = max(cave, reach * (1.0 - smoothstep(2.0, 8.0, sdf_at(uv))));
     if cave > 0.01 && !outside {
         var wall = rock_albedo(wp, px);
         // Distance into the cave from its rock walls: deep shadow near them (an overhang's
@@ -586,22 +622,25 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let streak = smoothstep(0.65, 0.9, value_noise(vec2<f32>((wp.x + wave) * 0.03, wp.y * 0.003)));
         wall = mix(wall, vec3<f32>(0.05, 0.038, 0.024), streak * 0.2);
         wall *= mix(1.0, 0.7, clamp(depth / size.y, 0.0, 1.0));
-        water = mix(water, wall + water * 0.15, smoothstep(0.0, 1.0, cave));
+        // (A cave the sea has left: dry, so barely any of the open air's light gets in; its
+        // wall runs right up to the rock, so the bright air doesn't show as a rim.)
+        let hollow = smoothstep(0.0, select(1.0, 0.3, in_air), cave);
+        water = mix(water, wall + water * select(0.15, 0.02, in_air), hollow);
     }
 
     // Soft god rays in the upper water.
     let ray_x = wp.x * 0.0016 + sin(wp.x * 0.0005 + time * 0.05) * 2.0 + depth * 0.0003;
     let rays = pow(0.5 + 0.5 * sin(ray_x + time * 0.12), 6.0) * 0.6
         + pow(0.5 + 0.5 * sin(ray_x * 1.7 - time * 0.09 + 1.3), 8.0) * 0.4;
-    water += vec3<f32>(0.035, 0.07, 0.065) * rays * lin * exp(-depth / 350.0);
+    water += vec3<f32>(0.035, 0.07, 0.065) * rays * lin * exp(-max(depth, 0.0) / 350.0) * wet;
 
     // Surface shimmer.
-    let surf = exp(-depth / (6.0 * px + 4.0));
+    let surf = exp(-max(depth, 0.0) / (6.0 * px + 4.0)) * wet;
     water += vec3<f32>(0.4, 0.6, 0.6) * surf * (0.3 + 0.7 * bg.sun.x);
 
     // Minerals glow faintly cyan; detritus as drifting marine snow.
-    water += vec3<f32>(0.0, 0.16, 0.2) * minerals;
-    water += vec3<f32>(0.03, 0.025, 0.015) * detritus;
+    water += vec3<f32>(0.0, 0.16, 0.2) * minerals * wet;
+    water += vec3<f32>(0.03, 0.025, 0.015) * detritus * wet;
     // Flakes: one jittered speck per 12-unit cell, sinking slowly; faded out when too small to see.
     let snow_cell = 12.0;
     let sp = vec2<f32>(wp.x, wp.y + time * 5.0) / snow_cell;
@@ -611,20 +650,20 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let fd = length(sp - sc - jitter);
     let flake = (1.0 - smoothstep(flake_r * 0.5, flake_r, fd)) * step(hash21(sc + 7.3), detritus * 0.8)
         * (1.0 - smoothstep(1.5, 4.0, px));
-    water += vec3<f32>(0.22, 0.2, 0.16) * flake;
+    water += vec3<f32>(0.22, 0.2, 0.16) * flake * wet;
 
     // Dead zones (almost no oxygen) turn the water murky purple-brown; blooms of toxin
     // redden it (red tides).
-    let anoxic = (1.0 - smoothstep(0.05, 0.3, oxygen)) * select(1.0, 0.0, outside);
+    let anoxic = (1.0 - smoothstep(0.05, 0.3, oxygen)) * select(1.0, 0.0, outside) * wet;
     let murk = 0.8 + 0.2 * fbm(wp * 0.01 + vec2<f32>(time * 0.01, 0.0));
     water = mix(water, vec3<f32>(0.035, 0.015, 0.03) * murk + water * 0.3, anoxic * 0.7);
-    water += vec3<f32>(0.25, 0.02, 0.02) * toxin * (0.7 + 0.3 * fbm(wp * 0.02 - vec2<f32>(0.0, time * 0.05)));
+    water += vec3<f32>(0.25, 0.02, 0.02) * toxin * wet * (0.7 + 0.3 * fbm(wp * 0.02 - vec2<f32>(0.0, time * 0.05)));
     // What's dissolved in the water, visible when zoomed in: each chemical has its own look.
     let near = 1.0 - smoothstep(1.5, 5.0, px);
     let o2_rich = smoothstep(0.95, 1.3, oxygen);
     // Oxygen-rich water is a little clearer, and fizzes with rising bubbles when supersaturated.
-    water += vec3<f32>(0.0, 0.015, 0.025) * o2_rich * select(1.0, 0.0, outside);
-    if near > 0.0 && !outside {
+    water += vec3<f32>(0.0, 0.015, 0.025) * o2_rich * select(1.0, 0.0, outside) * wet;
+    if near > 0.0 && !outside && !in_air {
         let wobble = vec2<f32>(sin(wp.y * 0.05 + time) * 3.0, 0.0);
         let bubbles = specks(wp + wobble, 9.0, vec2<f32>(0.0, -time * 18.0), o2_rich * 0.4, 1.1, px, 3.1);
         let rim = specks(wp + wobble, 9.0, vec2<f32>(0.0, -time * 18.0), o2_rich * 0.4, 0.6, px, 3.1);
@@ -645,7 +684,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         water = mix(water, vec3<f32>(0.02, 0.01, 0.015), silt * 0.8 * near);
     }
     // Nutrient-rich sunlit water is faintly greener.
-    water += vec3<f32>(0.0, 0.02, 0.004) * nutrients * brightness * select(1.0, 0.0, outside);
+    water += vec3<f32>(0.0, 0.02, 0.004) * nutrients * brightness * select(1.0, 0.0, outside) * wet;
 
     // Vents: hydrothermal chimneys ("black smokers") of the same rock as the seafloor, with
     // a steady plume of smoke rising out and a hot glow at each mouth. Each vent picks one
@@ -716,8 +755,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             water = mix(water, smoke, cover * (0.97 - 0.4 * smoothstep(0.8, 2.2, height)));
         }
 
-        // Bubbles streaming up from each mouth, faster than the smoke.
-        if px < 4.0 {
+        // Bubbles streaming up from each mouth, faster than the smoke (not in air).
+        if px < 4.0 && !in_air {
             for (var k = 0u; k < 3u; k++) {
                 let o = outlets[k];
                 if o.z <= 0.0 {
@@ -853,7 +892,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Impact winter: dusty haze near the surface.
     let winter = bg.effects.x;
-    water = mix(water, vec3<f32>(0.08, 0.07, 0.055), winter * 0.6 * exp(-depth / 900.0));
+    water = mix(water, vec3<f32>(0.08, 0.07, 0.055), winter * 0.6 * exp(-max(depth, 0.0) / 900.0) * wet);
 
     // Visible events: upwellings and moving rock walls.
     var wall_glow = vec3<f32>(0.0);
@@ -867,7 +906,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             // Upwelling: a column of cold, mineral-rich water with streaks rising to the surface
             // (in open water: hidden behind cave walls).
             let across = 1.0 - smoothstep(half_w * 0.6, half_w, abs(dx));
-            let strength = e.w * across * smoothstep(1800.0, 300.0, depth) * (1.0 - smoothstep(0.0, 1.0, cave));
+            let strength = e.w * across * smoothstep(1800.0, 300.0, depth) * (1.0 - smoothstep(0.0, 1.0, cave)) * wet;
             let streak = pow(0.5 + 0.5 * sin(dx * 0.03 + fbm(vec2<f32>(dx * 0.004, wp.y * 0.003 - time * 0.4)) * 6.0), 6.0);
             // Round bubbles rising and wobbling, in two sizes (bigger ones rise faster), fixed in
             // the water so they don't reshuffle on zoom; only drawn close enough to see.
@@ -921,7 +960,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Chemistry map (key M): oxygen, nutrients or toxin laid over the water.
     let map_mode = u32(bg.effects.z + 0.5);
-    if map_mode != 0u && !outside {
+    if map_mode != 0u && !outside && !in_air {
         var map_col = vec3<f32>(0.0);
         if map_mode == 1u {
             let o = clamp(oxygen, 0.0, 1.5) / 1.5;
@@ -942,7 +981,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Ice floes on the surface (winter): most of each floe sits below the waterline.
     let floe = ice_at(wp.x, ice, time, px);
-    if floe.x > 0.0 && !outside {
+    if floe.x > 0.0 && !outside && !in_air {
         let below = 0.85 * floe.y;
         let inside = (1.0 - smoothstep(below - px, below + px, depth)) * floe.x;
         water = mix(water, ice_color(wp, -depth, floe.y, bg.sun.x), inside);

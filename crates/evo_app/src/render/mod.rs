@@ -509,7 +509,7 @@ fn update_background(
         );
         // Rising out of the sea partway across the ocean and setting further along.
         let ocean = cfg.ocean_width();
-        u.orbit = Vec4::new(ocean * 0.5, ocean * 0.22, SUN_HEIGHT, 0.0);
+        u.orbit = Vec4::new(ocean * 0.5, ocean * 0.22, SUN_HEIGHT, world.sea_level());
         let tc = &cfg.terrain;
         let land = &world.terrain.land;
         if !land.is_empty() {

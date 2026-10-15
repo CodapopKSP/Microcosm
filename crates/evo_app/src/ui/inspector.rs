@@ -480,7 +480,7 @@ fn overview(ui: &mut egui::Ui, world: &World, o: &Organism) {
             ),
             (
                 "Depth",
-                format!("{:.0}", world.config.world.height - o.pos.y),
+                format!("{:.0}", world.sea_level() - o.pos.y),
             ),
             ("Upkeep", format!("×{:.2}", t.upkeep)),
             ("Offspring", o.offspring.to_string()),

@@ -17,7 +17,7 @@ fn row(ui: &mut egui::Ui, name: &str, value: String, note: String) {
 pub fn draw(ui: &mut egui::Ui, world: &World, pos: Vec2) {
     let cfg = &world.config;
     let env = &world.env;
-    let height = cfg.world.height;
+    let height = world.sea_level();
     let depth = (height - pos.y).max(0.0);
 
     // The chemistry fields share one grid; that cell is "the tile".
@@ -162,6 +162,13 @@ pub fn draw(ui: &mut egui::Ui, world: &World, pos: Vec2) {
                 world.time() as f32,
                 height,
                 &cfg.currents,
+                cfg.world.seed,
+            ) + evo_core::currents::storm_flow(
+                pos,
+                world.time() as f32,
+                height,
+                &env.storms,
+                &cfg.events,
                 cfg.world.seed,
             );
             let speed = flow.length();

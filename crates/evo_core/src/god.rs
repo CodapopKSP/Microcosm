@@ -198,6 +198,61 @@ impl World {
         self.apply_events(fx, time);
     }
 
+    /// Start a heat wave (`warmer`) or a cold snap around `x`.
+    pub fn act_temperature_shift(&mut self, x: f32, warmer: bool) {
+        let time = self.time();
+        let delta = self
+            .happenings
+            .start_temperature_shift(x, warmer, time, &self.config);
+        let (what, verb) = if warmer {
+            ("A heat wave", "warms")
+        } else {
+            ("A cold snap", "chills")
+        };
+        let pos = Vec2::new(x, self.config.world.height - 300.0);
+        self.log_at(
+            EventKind::Environment,
+            format!("{what} {verb} the water near x={x:.0} by up to {:.0} °C.", delta.abs()),
+            None,
+            None,
+            Some(pos),
+        );
+    }
+
+    /// Start the sea falling by `drop` (it stays low a while, then rises back). False if the
+    /// sea is already changing.
+    pub fn act_sea_level(&mut self, drop: f32) -> bool {
+        if self
+            .happenings
+            .is_active(|e| matches!(e, crate::events::WorldEvent::SeaLevel { .. }))
+        {
+            return false;
+        }
+        let time = self.time();
+        let drop = self.happenings.start_sea_level(drop, time, &self.config);
+        self.log(
+            EventKind::Environment,
+            format!("The sea begins to fall, by {drop:.0} units."),
+            None,
+            None,
+        );
+        true
+    }
+
+    /// Start a storm around `x`.
+    pub fn act_storm(&mut self, x: f32) {
+        let time = self.time();
+        self.happenings.start_storm(x, time, &self.config);
+        let pos = Vec2::new(x, self.config.world.height - 300.0);
+        self.log_at(
+            EventKind::Environment,
+            format!("A storm churns the sea near x={x:.0}."),
+            None,
+            None,
+            Some(pos),
+        );
+    }
+
     /// Pour a standard dose of `substance` into the water within `radius` of `at`: the same
     /// amount whatever the radius, so a wider pour is thinner.
     pub fn add_substance(&mut self, substance: Substance, at: Vec2, radius: f32) {
@@ -376,6 +431,134 @@ mod tests {
         assert!(killed >= near.len(), "killed {killed}");
         assert!(near.iter().all(|id| w.find(*id).is_none()));
         assert!(w.happenings.is_active(|e| matches!(e, WorldEvent::ImpactWinter { .. })));
+    }
+
+    #[test]
+    fn heat_waves_and_cold_snaps_change_the_water_there() {
+        let mut w = world();
+        let at = open_water(&w);
+        let far = Vec2::new((at.x + w.config.world.width * 0.5) % w.config.world.width, at.y);
+        let before = (w.env.temperature.sample(at), w.env.temperature.sample(far));
+        w.act_temperature_shift(at.x, true);
+        // Let it build up (it takes 15% of its length), then let the water update.
+        let duration = w.config.events.temperature_shift_duration;
+        if let Some(WorldEvent::TemperatureShift { started, until, .. }) =
+            w.happenings.active.last_mut()
+        {
+            *started -= duration as f64 * 0.5;
+            *until -= duration as f64 * 0.5;
+        }
+        for _ in 0..40 {
+            w.step();
+        }
+        let after = (w.env.temperature.sample(at), w.env.temperature.sample(far));
+        assert!(after.0 > before.0 + 3.0, "warmer there: {before:?} -> {after:?}");
+        assert!((after.1 - before.1).abs() < 1.0, "not far away: {before:?} -> {after:?}");
+        assert!(w.call_off_event(w.happenings.active.len() - 1));
+        w.act_temperature_shift(at.x, false);
+        assert!(matches!(w.happenings.active.last(),
+            Some(WorldEvent::TemperatureShift { delta, .. }) if *delta < 0.0));
+    }
+
+    #[test]
+    fn storms_churn_and_stir_the_upper_water() {
+        let mut w = world();
+        let h = w.config.world.height;
+        let x = open_water(&w).x;
+        let surface = Vec2::new(x, h - 20.0);
+        let before = w.env.nutrients.sample(surface);
+        w.act_storm(x);
+        if let Some(WorldEvent::Storm { started, until, .. }) = w.happenings.active.last_mut() {
+            *started -= 600.0;
+            *until -= 600.0;
+        }
+        w.step();
+        let flow = crate::currents::storm_flow(
+            surface,
+            w.time() as f32,
+            h,
+            &w.env.storms,
+            &w.config.events,
+            w.config.world.seed,
+        );
+        assert!(flow.length() > 1.0, "the water churns: {flow:?}");
+        for _ in 0..600 {
+            w.step();
+        }
+        let after = w.env.nutrients.sample(surface);
+        assert!(after > before, "richer water stirred up: {before} -> {after}");
+    }
+
+    #[test]
+    fn the_sea_falls_and_returns() {
+        let mut w = world();
+        let h = w.config.world.height;
+        let drop = 300.0;
+        // A swimmer just under the surface, in open water.
+        let x = (1..20)
+            .map(|k| w.config.world.width * 0.05 * k as f32)
+            .find(|&x| w.terrain.floor_at(x) < h - drop - 400.0
+                && w.terrain.is_free(Vec2::new(x, h - 10.0), 5.0)
+                && w.terrain.is_free(Vec2::new(x, h - drop - 50.0), 5.0))
+            .expect("open water");
+        let swimmer = w.spawn_at(w.ancestor, Vec2::new(x, h - 5.0), 1)[0];
+        // A quick fall (10 s, still slower than things drop), stepped through.
+        w.config.events.sea_level_change = 10.0;
+        let change = 10.0;
+        assert!(w.act_sea_level(drop));
+        assert!(!w.act_sea_level(drop), "one at a time");
+        for _ in 0..(11.0 / w.config.time.dt) as usize {
+            w.step();
+        }
+        let sea = w.sea_level();
+        assert!((sea - (h - drop)).abs() < 1.0, "sea at {sea}");
+        assert_eq!(w.env.sea_level, sea);
+        // The drained water holds nothing; the swimmer was carried down with the surface.
+        let air = Vec2::new(x, h - drop * 0.5);
+        let i = w.env.oxygen.index_at(air);
+        assert!(w.env.oxygen.solid[i] && w.env.oxygen.data[i] == 0.0);
+        if let Some(o) = w.find(swimmer) {
+            assert!(o.pos.y <= sea, "carried down with the surface: {} vs {sea}", o.pos.y);
+        }
+        // When the sea comes back, the water fills with ordinary seawater again.
+        if let Some(WorldEvent::SeaLevel { started, low, .. }) = w.happenings.active.last_mut() {
+            *started -= *low + change + 10.0;
+        }
+        w.step();
+        w.step();
+        assert_eq!(w.sea_level(), h);
+        assert!(!w.env.oxygen.solid[i] && w.env.oxygen.data[i] > 0.5, "refilled");
+    }
+
+    #[test]
+    fn organisms_out_of_the_water_suffocate() {
+        let mut w = world();
+        let h = w.config.world.height;
+        // An open spot resting on rock, a few hundred units down.
+        let spot = (1..400)
+            .flat_map(|k| {
+                let x = w.config.world.width * k as f32 / 400.0;
+                (0..300).map(move |j| Vec2::new(x, h - 150.0 - j as f32 * 4.0))
+            })
+            .find(|&p| w.terrain.is_free(p, 3.0) && !w.terrain.is_free(p - Vec2::new(0.0, 6.0), 3.0))
+            .expect("room on some rock");
+        let id = w.spawn_at(w.ancestor, spot, 1)[0];
+        assert!(w.act_sea_level(h - spot.y + 200.0));
+        let change = w.config.events.sea_level_change as f64;
+        if let Some(WorldEvent::SeaLevel { started, .. }) = w.happenings.active.last_mut() {
+            *started -= change + 10.0;
+        }
+        let hp = w.find(id).map(|o| o.hp).unwrap();
+        for _ in 0..15 {
+            w.step();
+        }
+        match w.find(id) {
+            Some(o) => {
+                assert!(o.pos.y > w.sea_level(), "stranded on the rock");
+                assert!(o.hp < hp, "suffocating: {hp} -> {}", o.hp);
+            }
+            None => {} // already dead
+        }
     }
 
     #[test]

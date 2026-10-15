@@ -26,6 +26,10 @@ pub enum Act {
     Upwelling,
     Meteor,
     RockWall,
+    HeatWave,
+    ColdSnap,
+    Storm,
+    SeaLevel,
     Pour,
 }
 
@@ -38,6 +42,10 @@ impl Act {
             Act::Upwelling => "Upwelling",
             Act::Meteor => "Meteor",
             Act::RockWall => "Rock wall",
+            Act::HeatWave => "Heat wave",
+            Act::ColdSnap => "Cold snap",
+            Act::Storm => "Storm",
+            Act::SeaLevel => "Sea level",
             Act::Pour => "Pour",
         }
     }
@@ -54,6 +62,20 @@ impl Act {
             Act::Upwelling => "Click where minerals and nutrients should well up to the surface.",
             Act::Meteor => "Click where the meteor strikes. Everything in the circle dies.",
             Act::RockWall => "Click where a wall of rock rises from the seafloor.",
+            Act::HeatWave => {
+                "Click where the water warms for half an hour, most at the surface."
+            }
+            Act::ColdSnap => {
+                "Click where the water cools for half an hour, most at the surface."
+            }
+            Act::Storm => {
+                "Click where a storm churns the upper water for 20 minutes, tossing organisms \
+                 about and stirring richer water up."
+            }
+            Act::SeaLevel => {
+                "Click anywhere: the sea falls by the amount below over 5 minutes, stays low for \
+                 2 hours, then rises back. Whatever is left out of the water can't breathe."
+            }
             Act::Pour => "Click to pour it into the water there.",
         }
     }
@@ -74,6 +96,8 @@ pub struct ActsOfGod {
     substance: Substance,
     /// How far a pour spreads (units).
     radius: f32,
+    /// How far the sea falls (units).
+    sea_drop: f32,
     /// Organisms picked up with the Move tool (moved together).
     group: Vec<u64>,
     drag: Option<Drag>,
@@ -90,6 +114,7 @@ impl Default for ActsOfGod {
             tool: None,
             substance: Substance::Nutrients,
             radius: SUBSTANCE_RADIUS,
+            sea_drop: 400.0,
             group: Vec::new(),
             drag: None,
             press: None,
@@ -197,7 +222,9 @@ pub(crate) fn acts_pointer(
         );
     };
     let cfg = world.config.events.clone();
-    let height = world.config.world.height;
+    // Events reach down from the sea's surface, wherever it is now.
+    let height = world.sea_level();
+    let world_width = world.config.world.width;
 
     match tool {
         Act::Move => {
@@ -359,6 +386,62 @@ pub(crate) fn acts_pointer(
                 world.act_rock_wall(at.x);
             }
         }
+        Act::HeatWave | Act::ColdSnap => {
+            let warm = tool == Act::HeatWave;
+            let half = cfg.temperature_shift_width * 0.5;
+            let color = if warm {
+                Color::srgba(1.0, 0.55, 0.3, 0.9)
+            } else {
+                Color::srgba(0.55, 0.85, 1.0, 0.9)
+            };
+            // Most of the change is in the top thousand units.
+            rect(
+                &mut gizmos,
+                glam::Vec2::new(at.x - half, height - 1000.0),
+                glam::Vec2::new(at.x + half, height),
+                color,
+            );
+            acts.label = Some(format!(
+                "{} ({}{:.0} °C)",
+                tool.label(),
+                if warm { "+" } else { "−" },
+                cfg.temperature_shift
+            ));
+            if clicked {
+                world.act_temperature_shift(at.x, warm);
+            }
+        }
+        Act::Storm => {
+            let half = cfg.storm_width * 0.5;
+            let color = Color::srgba(0.7, 0.75, 0.85, 0.9);
+            rect(
+                &mut gizmos,
+                glam::Vec2::new(at.x - half, height - cfg.storm_depth),
+                glam::Vec2::new(at.x + half, height),
+                color,
+            );
+            acts.label = Some("Storm".into());
+            if clicked {
+                world.act_storm(at.x);
+            }
+        }
+        Act::SeaLevel => {
+            let changing = world
+                .happenings
+                .is_active(|e| matches!(e, evo_core::events::WorldEvent::SeaLevel { .. }));
+            if changing {
+                acts.label = Some("The sea is already changing".into());
+            } else {
+                // The new waterline, across the whole world.
+                let y = height - acts.sea_drop;
+                let teal = Color::srgba(0.45, 0.85, 0.95, 0.9);
+                gizmos.line_2d(Vec2::new(0.0, y), Vec2::new(world_width, y), teal);
+                acts.label = Some(format!("Sea falls {:.0} u", acts.sea_drop));
+                if clicked {
+                    world.act_sea_level(acts.sea_drop);
+                }
+            }
+        }
         Act::Pour => {
             let color = Color::srgba(0.6, 1.0, 0.85, 0.8);
             gizmos
@@ -430,7 +513,16 @@ pub(super) fn acts_panel(
                     }
                 });
                 section(ui, "Disasters");
-                let disasters = [Act::Plague, Act::Upwelling, Act::Meteor, Act::RockWall];
+                let disasters = [
+                    Act::Plague,
+                    Act::Upwelling,
+                    Act::Meteor,
+                    Act::RockWall,
+                    Act::HeatWave,
+                    Act::ColdSnap,
+                    Act::Storm,
+                    Act::SeaLevel,
+                ];
                 tile_grid(ui, 2, TOOL_HEIGHT, &disasters, |ui, rect, &t| {
                     let r = tool_tile(ui, rect, t.label(), acts.tool == Some(t), |p, c, s, color| {
                         tool_icon(t, p, c, s, color)
@@ -439,6 +531,20 @@ pub(super) fn acts_panel(
                         pick(acts, t);
                     }
                 });
+
+                if acts.tool == Some(Act::SeaLevel) {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Drop").size(12.5).color(MUTED));
+                        ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(60.0);
+                        ui.add(
+                            egui::Slider::new(&mut acts.sea_drop, 50.0..=3000.0)
+                                .logarithmic(true)
+                                .fixed_decimals(0)
+                                .suffix(" u"),
+                        )
+                        .on_hover_text("How far the sea falls");
+                    });
+                }
 
                 // Substances: picking one is the pour tool.
                 section(ui, "Pour into the water");
@@ -647,6 +753,53 @@ fn tool_icon(t: Act, p: &egui::Painter, c: egui::Pos2, s: f32, color: egui::Colo
             for k in 1..4 {
                 let y = r.top() + r.height() * k as f32 / 4.0;
                 p.line_segment([egui::pos2(r.left(), y), egui::pos2(r.right(), y)], stroke);
+            }
+        }
+        Act::HeatWave => {
+            // A thermometer, full, with an arrow up beside it.
+            let tube = egui::Rect::from_center_size(pt(-0.25, -0.2), egui::vec2(s * 0.45, s * 1.3));
+            p.rect_stroke(tube, s * 0.22, stroke, egui::StrokeKind::Middle);
+            p.circle_filled(pt(-0.25, 0.65), s * 0.33, color);
+            p.line_segment([pt(-0.25, 0.4), pt(-0.25, -0.5)], egui::Stroke::new(2.2, color));
+            arrow(pt(0.6, 0.6), pt(0.6, -0.7));
+        }
+        Act::ColdSnap => {
+            // A snowflake.
+            for k in 0..3 {
+                let a = k as f32 * std::f32::consts::PI / 3.0;
+                let dir = egui::vec2(a.cos(), a.sin()) * s;
+                p.line_segment([c - dir, c + dir], stroke);
+                for end in [c + dir * 0.6, c - dir * 0.6] {
+                    let n = egui::vec2(-dir.y, dir.x) * 0.25;
+                    let back = -(end - c).normalized() * s * 0.25;
+                    p.line_segment([end, end + back + n], stroke);
+                    p.line_segment([end, end + back - n], stroke);
+                }
+            }
+        }
+        Act::SeaLevel => {
+            // A waterline with an arrow down beneath it.
+            let pts: Vec<egui::Pos2> = (0..=10)
+                .map(|i| {
+                    let t = i as f32 / 10.0;
+                    pt(-1.0 + 2.0 * t, -0.65 + 0.15 * (t * std::f32::consts::TAU).sin())
+                })
+                .collect();
+            p.add(egui::Shape::line(pts, stroke));
+            arrow(pt(0.0, -0.2), pt(0.0, 0.95));
+        }
+        Act::Storm => {
+            // Wind: three wavy lines.
+            for (k, y) in [-0.6f32, 0.0, 0.6].into_iter().enumerate() {
+                let len = if k == 1 { 1.0 } else { 0.75 };
+                let pts: Vec<egui::Pos2> = (0..=10)
+                    .map(|i| {
+                        let t = i as f32 / 10.0;
+                        let x = -len + 2.0 * len * t;
+                        pt(x, y + 0.18 * (t * std::f32::consts::TAU).sin())
+                    })
+                    .collect();
+                p.add(egui::Shape::line(pts, stroke));
             }
         }
         Act::Pour => {

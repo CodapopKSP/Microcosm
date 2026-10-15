@@ -84,8 +84,10 @@ impl LightField {
         self.geometry().for_each_covered(pos, radius, f);
     }
 
-    /// Propagate sunlight from the surface down every column.
-    pub fn propagate(&mut self, surface: f32, half_depth: f32) {
+    /// Propagate sunlight down every column. `surface` is the light at the top; water
+    /// absorbs it only below `water_top` (the sea's surface: above it, when the sea has fallen,
+    /// is air).
+    pub fn propagate(&mut self, surface: f32, half_depth: f32, water_top: f32) {
         let ny = self.ny;
         let cell = self.cell;
         let water = (-(std::f32::consts::LN_2) * cell / half_depth.max(1.0)).exp();
@@ -112,7 +114,9 @@ impl LightField {
                     } else {
                         share[y] = light * cell;
                     }
-                    light *= water;
+                    if (y as f32 + 0.5) * cell <= water_top {
+                        light *= water;
+                    }
                 }
             });
     }
@@ -287,6 +291,17 @@ pub struct Environment {
     /// Detritus cells in caves, with the share of each that's cave (built on first use).
     #[serde(skip)]
     cave_cells: Option<Vec<(u32, f32)>>,
+    /// Heat waves and cold snaps going on: (centre, width, °C change at the surface now).
+    /// Refreshed from the world's events every tick.
+    #[serde(skip)]
+    pub temperature_shifts: Vec<(f32, f32, f32)>,
+    /// Storms going on: (centre, width, strength 0..1). Refreshed every tick.
+    #[serde(skip)]
+    pub storms: Vec<(f32, f32, f32)>,
+    /// The water's surface now (world y): the top of the world, unless the sea has fallen.
+    /// Above it the fields' cells are air (marked solid, holding nothing).
+    #[serde(skip)]
+    pub sea_level: f32,
 }
 
 /// Copy a terrain rock mask onto another field's grid (cell is solid if its center is rock).
@@ -346,7 +361,7 @@ impl Environment {
         // Chemistry fields start at their usual depth profiles.
         let chem = |kind: Chemical| {
             let mut f = minerals.clone();
-            let refs = reference_profile(kind, &f, config, atmosphere);
+            let refs = reference_profile(kind, &f, config, atmosphere, config.world.height);
             for (y, &value) in refs.iter().enumerate() {
                 for x in 0..f.nx {
                     let i = f.index(x, y);
@@ -390,6 +405,9 @@ impl Environment {
             rng: Rng::new(config.world.seed ^ 0xE4E4_0001),
             since_temperature_update: f32::INFINITY,
             cave_cells: None,
+            temperature_shifts: Vec::new(),
+            storms: Vec::new(),
+            sea_level: config.world.height,
         };
         // Start mid-morning, with vents already at various stages of life.
         env.update_clock(0, config);
@@ -539,6 +557,7 @@ impl Environment {
         // Upward drift of minerals per column (units/s): the plumes over vents.
         let mc = &config.minerals;
         let mut plume_columns = vec![0.0f32; self.minerals.nx];
+        let sea = self.sea_level;
         let mut i = 0;
         while i < self.vents.len() {
             let vent = &mut self.vents[i];
@@ -547,6 +566,12 @@ impl Environment {
             if !vent.fixed && vent.age >= vent.lifetime {
                 events.push(EnvEvent::VentDied(vent.pos));
                 self.vents.swap_remove(i);
+                continue;
+            }
+            // Left in the air by a fallen sea: it keeps venting, but into the air, so the water
+            // gets nothing from it.
+            if vent.pos.y > sea {
+                i += 1;
                 continue;
             }
             // Most of the output pours out at the vent; some seeps out over a wide area around
@@ -665,8 +690,11 @@ impl Environment {
         if let Some(cells) = &self.cave_cells {
             let (d, n) = (dc.cave_rate * dt, dc.cave_nutrients * dt);
             for &(i, share) in cells {
-                self.detritus.data[i as usize] += d * share;
-                self.snow_nutrients.data[i as usize] += n * share;
+                // (Not in a cave the sea has drained.)
+                if !self.detritus.solid[i as usize] {
+                    self.detritus.data[i as usize] += d * share;
+                    self.snow_nutrients.data[i as usize] += n * share;
+                }
             }
         }
         let cell = self.detritus.cell;
@@ -725,7 +753,51 @@ impl Environment {
     }
 
     /// Diffusion, exchange with the air, ventilation of deep water, and toxin breakdown.
+    /// Storms stir the upper water: in each column they reach, everything dissolved evens out
+    /// toward the column's average down to the storm's depth, bringing richer water up.
+    fn stir(&mut self, dt: f32, config: &Config) {
+        if self.storms.is_empty() {
+            return;
+        }
+        let ec = &config.events;
+        let cell = self.oxygen.cell;
+        let (nx, ny) = (self.oxygen.nx, self.oxygen.ny);
+        let rows = ((ec.storm_depth / cell).ceil() as usize).clamp(1, ny);
+        let top = surface_row(&self.oxygen, self.sea_level);
+        let rows = rows.min(top + 1);
+        let storms = self.storms.clone();
+        let mut fields = vec![&mut self.oxygen, &mut self.co2, &mut self.nutrients, &mut self.minerals];
+        if self.toxin_present {
+            fields.push(&mut self.toxin);
+        }
+        for f in fields {
+            for x in 0..nx {
+                let px = (x as f32 + 0.5) * cell;
+                let k: f32 = storms
+                    .iter()
+                    .map(|&(sx, w, s)| s * crate::events::across(sx, w, px))
+                    .fold(0.0, f32::max);
+                if k <= 0.0 {
+                    continue;
+                }
+                let blend = 1.0 - (-ec.storm_mixing * k * dt).exp();
+                let cells: Vec<usize> = (0..rows)
+                    .map(|r| f.index(x, top - r))
+                    .filter(|&i| !f.solid[i])
+                    .collect();
+                if cells.len() < 2 {
+                    continue;
+                }
+                let mean = cells.iter().map(|&i| f.data[i]).sum::<f32>() / cells.len() as f32;
+                for i in cells {
+                    f.data[i] += (mean - f.data[i]) * blend;
+                }
+            }
+        }
+    }
+
     fn update_chemistry(&mut self, dt: f32, config: &Config) {
+        self.stir(dt, config);
         let cc = &config.chemistry;
         let ac = &config.atmosphere;
         let rate = cc.diffusion * dt / (self.oxygen.cell * self.oxygen.cell);
@@ -764,12 +836,13 @@ impl Environment {
         // Ventilation: every cell relaxes slowly toward its usual make-up at that depth.
         let vent = 1.0 - (-cc.ventilation * dt).exp();
         let atmosphere = self.atmosphere;
+        let sea_level = self.sea_level;
         for (field, kind) in [
             (&mut self.oxygen, Chemical::Oxygen),
             (&mut self.co2, Chemical::Co2),
             (&mut self.nutrients, Chemical::Nutrients),
         ] {
-            let refs = reference_profile(kind, field, config, atmosphere);
+            let refs = reference_profile(kind, field, config, atmosphere, sea_level);
             let nx = field.nx;
             let solid = &field.solid;
             field
@@ -788,7 +861,7 @@ impl Environment {
 
         // The surface trades gases with the air; the air changes by what it gains or loses.
         let exchange = 1.0 - (-ac.surface_exchange * dt).exp();
-        let top = self.oxygen.ny - 1;
+        let top = surface_row(&self.oxygen, self.sea_level);
         let area = self.oxygen.cell_area();
         let mut flux = [0.0f64; 2];
         for (k, (field, level)) in [
@@ -853,12 +926,20 @@ impl Environment {
     fn update_temperature(&mut self, config: &Config) {
         self.since_temperature_update = 0.0;
         let tc = &config.temperature;
-        let height = config.world.height;
+        // Depth counts from the sea's surface.
+        let height = self.sea_level;
         let surface = self.clock.surface_temp;
         let cell = self.temperature.cell;
         let nx = self.temperature.nx;
-        let vents: Vec<(Vec2, f32)> = self.vents.iter().map(|v| (v.pos, v.strength)).collect();
+        // (Vents left in the air by a fallen sea heat nothing.)
+        let vents: Vec<(Vec2, f32)> = self
+            .vents
+            .iter()
+            .filter(|v| v.pos.y <= self.sea_level)
+            .map(|v| (v.pos, v.strength))
+            .collect();
         let inv_r2 = 1.0 / (tc.vent_heat_radius * tc.vent_heat_radius);
+        let shifts = &self.temperature_shifts;
         self.temperature
             .data
             .par_chunks_mut(nx)
@@ -866,10 +947,15 @@ impl Environment {
             .for_each(|(y, row)| {
                 let py = (y as f32 + 0.5) * cell;
                 let depth = (height - py).max(0.0);
-                let base = tc.deep + (surface - tc.deep) * (-depth / tc.thermocline_depth).exp();
+                let near_surface = (-depth / tc.thermocline_depth).exp();
+                let base = tc.deep + (surface - tc.deep) * near_surface;
                 for (x, t) in row.iter_mut().enumerate() {
                     let p = Vec2::new((x as f32 + 0.5) * cell, py);
                     let mut heat = 0.0;
+                    // Heat waves and cold snaps reach down as the seasons do.
+                    for &(sx, width, delta) in shifts {
+                        heat += delta * near_surface * crate::events::across(sx, width, p.x);
+                    }
                     for &(vp, s) in &vents {
                         let d2 = p.distance_squared(vp);
                         heat += tc.vent_heat * s * (-d2 * inv_r2).exp();
@@ -936,6 +1022,7 @@ impl Environment {
     /// Re-derive rock masks for the fields after the terrain changed between `x_min` and `x_max`.
     /// Content of cells that became rock is lost (it's a small amount).
     pub fn refresh_masks(&mut self, terrain: &Terrain, x_min: f32, x_max: f32) {
+        let sea = self.sea_level;
         for (field, holds_content) in [
             (&mut self.minerals, true),
             (&mut self.detritus, true),
@@ -954,7 +1041,8 @@ impl Environment {
                 for x in x0..=x1 {
                     let p = Vec2::new((x as f32 + 0.5) * field.cell, (y as f32 + 0.5) * field.cell);
                     let i = field.index(x, y);
-                    let solid = terrain.distance(p) < 0.0;
+                    // Rock, or (for what the water holds) air above a fallen sea.
+                    let solid = terrain.distance(p) < 0.0 || (holds_content && p.y > sea);
                     if solid && !field.solid[i] && holds_content {
                         field.data[i] = 0.0;
                     }
@@ -972,6 +1060,49 @@ impl Environment {
                 light.opaque[x * g.ny + y] = terrain.distance(p) < 0.0 || terrain.is_cave(p);
             }
         }
+    }
+
+    /// Move the sea's surface to `level`. Water left above it drains (what it held is lost);
+    /// water the sea returns to fills with ordinary seawater for its depth.
+    pub fn set_sea_level(&mut self, level: f32, terrain: &Terrain, config: &Config) {
+        let old = self.sea_level;
+        self.sea_level = level;
+        if old == level {
+            return;
+        }
+        let (lo, hi) = (old.min(level), old.max(level));
+        let air = self.atmosphere;
+        for (field, kind) in [
+            (&mut self.minerals, None),
+            (&mut self.detritus, None),
+            (&mut self.snow_nutrients, None),
+            (&mut self.oxygen, Some(Chemical::Oxygen)),
+            (&mut self.co2, Some(Chemical::Co2)),
+            (&mut self.nutrients, Some(Chemical::Nutrients)),
+            (&mut self.toxin, None),
+            (&mut self.toxin_hue_x, None),
+            (&mut self.toxin_hue_y, None),
+        ] {
+            let cell = field.cell;
+            let refs = kind.map(|k| reference_profile(k, field, config, air, level));
+            let y0 = ((lo / cell) - 1.0).floor().max(0.0) as usize;
+            let y1 = ((hi / cell) + 1.0).ceil().min(field.ny as f32) as usize;
+            for y in y0..y1 {
+                let cy = (y as f32 + 0.5) * cell;
+                for x in 0..field.nx {
+                    let p = Vec2::new((x as f32 + 0.5) * cell, cy);
+                    let i = field.index(x, y);
+                    let solid = cy > level || terrain.distance(p) < 0.0;
+                    if solid && !field.solid[i] {
+                        field.data[i] = 0.0;
+                    } else if !solid && field.solid[i] {
+                        field.data[i] = refs.as_ref().map_or(0.0, |r| r[y]);
+                    }
+                    field.solid[i] = solid;
+                }
+            }
+        }
+        self.water_cells = 0;
     }
 
     /// Mineral field total + detritus total (for diagnostics).
@@ -1060,11 +1191,22 @@ enum Chemical {
     Nutrients,
 }
 
+/// The row of `field` holding the water just under a surface at `level`.
+fn surface_row(field: &Field, level: f32) -> usize {
+    ((level / field.cell - 0.5).floor().max(0.0) as usize).min(field.ny - 1)
+}
+
 /// Usual concentration of a chemical in each row of `field` (surface water in equilibrium with
-/// the air; deep water older, with less oxygen and more CO₂ and nutrients).
-fn reference_profile(kind: Chemical, field: &Field, config: &Config, air: Atmosphere) -> Vec<f32> {
+/// the air; deep water older, with less oxygen and more CO₂ and nutrients), for a sea whose
+/// surface is at `height`.
+fn reference_profile(
+    kind: Chemical,
+    field: &Field,
+    config: &Config,
+    air: Atmosphere,
+    height: f32,
+) -> Vec<f32> {
     let cc = &config.chemistry;
-    let height = config.world.height;
     (0..field.ny)
         .map(|y| {
             let depth = (height - (y as f32 + 0.5) * field.cell).max(0.0);
@@ -1140,7 +1282,7 @@ mod tests {
         // A dense layer at the top of one column.
         let i = light.index(col, top);
         light.weight[i] = 3.0;
-        light.propagate(1.0, 400.0);
+        light.propagate(1.0, 400.0, f32::INFINITY);
         let below = light.level[light.index(col, top - 1)];
         let open = light.level[light.index(col + 5, top - 1)];
         assert!(below < open * 0.1, "shaded {below} vs open {open}");
@@ -1155,7 +1297,7 @@ mod tests {
         let config = Config::default();
         let terrain = Terrain::generate(&config);
         let mut light = LightField::new(&config, &terrain);
-        light.propagate(1.0, 400.0);
+        light.propagate(1.0, 400.0, f32::INFINITY);
         let x = config.world.width * 0.5;
         let h = config.world.height;
         let top = light.level_at(Vec2::new(x, h - 1.0));

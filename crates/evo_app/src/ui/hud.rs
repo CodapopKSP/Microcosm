@@ -637,6 +637,32 @@ fn now_card(
                     Color32::from_rgb(200, 170, 130),
                     Some(Vec2::new(*x, built.min(h) - 300.0)),
                 ),
+                WorldEvent::TemperatureShift { x, delta, .. } => (
+                    if *delta > 0.0 {
+                        format!("Heat wave at x={x:.0}")
+                    } else {
+                        format!("Cold snap at x={x:.0}")
+                    },
+                    if *delta > 0.0 {
+                        Color32::from_rgb(255, 150, 90)
+                    } else {
+                        Color32::from_rgb(140, 210, 250)
+                    },
+                    Some(Vec2::new(*x, h - 400.0)),
+                ),
+                WorldEvent::Storm { x, .. } => (
+                    format!("Storm at x={x:.0}"),
+                    Color32::from_rgb(175, 185, 210),
+                    Some(Vec2::new(*x, h - 300.0)),
+                ),
+                WorldEvent::SeaLevel { .. } => (
+                    format!(
+                        "Sea level −{:.0}",
+                        world.config.world.height - world.sea_level()
+                    ),
+                    Color32::from_rgb(110, 210, 225),
+                    None,
+                ),
             };
             if let Some(action) = event_chip(ui, index, &text, color, target.is_some()) {
                 match action {

@@ -65,7 +65,7 @@ cargo run --release -- --stream
 | M | Chemistry map: oxygen, nutrients, toxin |
 | F5 | Quicksave (`quicksave.bin` in the saves folder; see Files and releases below). The world also autosaves every 10 minutes and on exit; the previous save is kept as `*.prev.bin` |
 | Ctrl+1–4 | Trigger a plague, upwelling, meteor, or rock wall right now |
-| Bolt button (toolbar) | Acts of God: move or kill organisms (one, or a dragged box), aim a plague, upwelling, meteor or rock wall, or pour nutrients and other substances where you click. Esc puts a tool down |
+| Bolt button (toolbar) | Acts of God: move or kill organisms (one, or a dragged box), aim a plague, upwelling, meteor, rock wall, heat wave, cold snap or storm, lower the sea, or pour nutrients and other substances where you click. Esc puts a tool down |
 
 ### Files and releases
 
