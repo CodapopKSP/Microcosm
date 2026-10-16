@@ -192,20 +192,8 @@ fn speed_keys(
     if egui_input.wants_any_keyboard_input() {
         return;
     }
-    // Ctrl + 1..4: trigger events on demand.
+    // (Ctrl + digits pick up Acts of God, not speeds.)
     if keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight) {
-        use evo_core::events::Trigger;
-        let triggers = [
-            (KeyCode::Digit1, Trigger::Plague),
-            (KeyCode::Digit2, Trigger::Upwelling),
-            (KeyCode::Digit3, Trigger::Impact),
-            (KeyCode::Digit4, Trigger::Barrier),
-        ];
-        for (key, trigger) in triggers {
-            if keys.just_pressed(key) {
-                state.world.trigger(trigger);
-            }
-        }
         return;
     }
     if keys.just_pressed(KeyCode::Space) {

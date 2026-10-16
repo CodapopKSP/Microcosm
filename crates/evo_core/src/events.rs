@@ -29,18 +29,14 @@ pub enum WorldEvent {
         until: f64,
         strength: f32,
     },
-    /// The water around `x` warms (`delta` > 0: a heat wave) or cools (a cold snap).
+    /// The whole sea warms (`delta` > 0: a heat wave) or cools (a cold snap), most at the surface.
     TemperatureShift {
-        x: f32,
-        width: f32,
         delta: f32,
         started: f64,
         until: f64,
     },
-    /// Fast churning currents in the upper water around `x`.
+    /// Fast churning currents in the upper water, all across the sea.
     Storm {
-        x: f32,
-        width: f32,
         started: f64,
         until: f64,
     },
@@ -249,13 +245,11 @@ impl Events {
         });
     }
 
-    /// Start a heat wave (`warmer`) or cold snap around `x`. Returns the change in °C.
-    pub fn start_temperature_shift(&mut self, x: f32, warmer: bool, time: f64, config: &Config) -> f32 {
+    /// Start a heat wave (`warmer`) or cold snap. Returns the change in °C.
+    pub fn start_temperature_shift(&mut self, warmer: bool, time: f64, config: &Config) -> f32 {
         let cfg = &config.events;
         let delta = if warmer { cfg.temperature_shift } else { -cfg.temperature_shift };
         self.active.push(WorldEvent::TemperatureShift {
-            x,
-            width: cfg.temperature_shift_width,
             delta,
             started: time,
             until: time + cfg.temperature_shift_duration as f64,
@@ -263,12 +257,10 @@ impl Events {
         delta
     }
 
-    /// Start a storm around `x`.
-    pub fn start_storm(&mut self, x: f32, time: f64, config: &Config) {
+    /// Start a storm.
+    pub fn start_storm(&mut self, time: f64, config: &Config) {
         let cfg = &config.events;
         self.active.push(WorldEvent::Storm {
-            x,
-            width: cfg.storm_width,
             started: time,
             until: time + cfg.storm_duration as f64,
         });
@@ -314,25 +306,29 @@ impl Events {
         most
     }
 
-    /// The heat waves and cold snaps now, as (centre, width, °C change at the surface right
-    /// now), each building up and dying away gradually.
-    pub fn temperature_shifts(&self, time: f64, out: &mut Vec<(f32, f32, f32)>) {
-        out.clear();
-        for e in &self.active {
-            if let WorldEvent::TemperatureShift { x, width, delta, started, until } = e {
-                out.push((*x, *width, delta * envelope(*started, *until, time)));
-            }
-        }
+    /// How much warmer (or colder) heat waves and cold snaps make the surface right now (°C),
+    /// each building up and dying away gradually. Several add up.
+    pub fn temperature_shift(&self, time: f64) -> f32 {
+        self.active
+            .iter()
+            .map(|e| match e {
+                WorldEvent::TemperatureShift { delta, started, until } => {
+                    delta * envelope(*started, *until, time)
+                }
+                _ => 0.0,
+            })
+            .sum()
     }
 
-    /// The storms now, as (centre, width, strength 0..1).
-    pub fn storms(&self, time: f64, out: &mut Vec<(f32, f32, f32)>) {
-        out.clear();
-        for e in &self.active {
-            if let WorldEvent::Storm { x, width, started, until } = e {
-                out.push((*x, *width, envelope(*started, *until, time)));
-            }
-        }
+    /// How strong the storms are right now (0..1; the strongest, if there are several).
+    pub fn storm(&self, time: f64) -> f32 {
+        self.active
+            .iter()
+            .map(|e| match e {
+                WorldEvent::Storm { started, until } => envelope(*started, *until, time),
+                _ => 0.0,
+            })
+            .fold(0.0, f32::max)
     }
 
     /// Start a rock wall rising at `x`. Returns its position and width (for the log).
@@ -381,13 +377,6 @@ impl Events {
 pub fn envelope(started: f64, until: f64, time: f64) -> f32 {
     let t = ((time - started) / (until - started).max(1.0)).clamp(0.0, 1.0) as f32;
     (t / 0.15).min((1.0 - t) / 0.15).clamp(0.0, 1.0)
-}
-
-/// How much of an event centred on `x`, `width` wide, reaches `px`: all of it in the middle,
-/// fading smoothly to nothing at the edges.
-pub fn across(x: f32, width: f32, px: f32) -> f32 {
-    let t = (1.0 - (px - x).abs() / (width * 0.5).max(1.0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 /// Height of a barrier's top at `time` (world y), given the floor under it.

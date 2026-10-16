@@ -940,7 +940,7 @@ fn act(o: &mut Organism, intent: &Intent, ctx: &ActCtx) {
                 o.pos,
                 ctx.time,
                 sea,
-                &ctx.env.storms,
+                ctx.env.storm,
                 &cfg.events,
                 cfg.world.seed,
             );
@@ -1537,9 +1537,8 @@ impl World {
         let time = tick as f64 * dt as f64;
         let effects = self.happenings.update(time, dt, config);
         // What the environment needs from the events going on.
-        self.happenings
-            .temperature_shifts(time, &mut self.env.temperature_shifts);
-        self.happenings.storms(time, &mut self.env.storms);
+        self.env.temperature_shift = self.happenings.temperature_shift(time);
+        self.env.storm = self.happenings.storm(time);
         let sea_level = config.world.height - self.happenings.sea_drop(time);
         if sea_level != self.env.sea_level {
             self.env.set_sea_level(sea_level, &self.terrain, config);
@@ -1890,16 +1889,9 @@ impl World {
                     )
                 }
                 WorldEvent::Upwelling { .. } => {}
-                WorldEvent::TemperatureShift { x, delta, .. } => {
+                WorldEvent::TemperatureShift { delta, .. } => {
                     let what = if *delta > 0.0 { "heat wave" } else { "cold snap" };
-                    let pos = Vec2::new(*x, self.config.world.height - 300.0);
-                    self.log_at(
-                        EventKind::Environment,
-                        format!("The {what} near x={x:.0} is over."),
-                        None,
-                        None,
-                        Some(pos),
-                    );
+                    self.log(EventKind::Environment, format!("The {what} is over."), None, None);
                 }
                 WorldEvent::SeaLevel { .. } => self.log(
                     EventKind::Environment,
@@ -1907,16 +1899,12 @@ impl World {
                     None,
                     None,
                 ),
-                WorldEvent::Storm { x, .. } => {
-                    let pos = Vec2::new(*x, self.config.world.height - 300.0);
-                    self.log_at(
-                        EventKind::Environment,
-                        format!("The storm near x={x:.0} blows itself out."),
-                        None,
-                        None,
-                        Some(pos),
-                    );
-                }
+                WorldEvent::Storm { .. } => self.log(
+                    EventKind::Environment,
+                    "The storm blows itself out.".into(),
+                    None,
+                    None,
+                ),
             }
         }
         if !dirty.is_empty() {
@@ -2453,7 +2441,7 @@ impl World {
         let detritus = &mut self.env.detritus;
         // A body's nutrients go into the marine snow, and sink with it.
         let snow = &mut self.env.snow_nutrients;
-        let storms = &self.env.storms;
+        let storm = self.env.storm;
         let sea = self.env.sea_level;
         let area = detritus.cell_area();
         for c in &mut self.carcasses {
@@ -2475,7 +2463,7 @@ impl World {
                     c.pos,
                     time,
                     sea,
-                    storms,
+                    storm,
                     &config.events,
                     config.world.seed,
                 );

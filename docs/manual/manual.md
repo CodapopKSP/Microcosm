@@ -647,7 +647,7 @@ A genus name describes the genus's founding genome, and an epithet describes the
 | Rock wall | About every 30 hours | A wall 200 units wide rises from the seafloor to the surface over 6 minutes, splits the ocean in two for 20 hours, then sinks. Populations on either side evolve apart, then meet again. |
 | Meteor impact | About every 48 hours | Kills everything within 700 units of the impact near the surface, releases minerals, and dims the sun by up to 70% for 4 days, clearing slowly |
 
-Events are random; the times above are averages. Ctrl+1–4 triggers a plague, upwelling, meteor or rock wall immediately, and Acts of God (see *Observing the World*) lets you aim them.
+Events are random; the times above are averages. Acts of God (see *Observing the World*) lets you aim them where you click.
 
 **Extinction is final.** If every organism dies, nothing is reseeded. The world goes on empty and the log records: "The last species has gone extinct. Life has ceased in this world."
 
@@ -670,7 +670,7 @@ Right-clicking the water opens the water inspector for that spot: light, tempera
 
 ## Acts of God
 
-The lightning-bolt button at the bottom of the right-hand toolbar opens Acts of God: tools that change the world where you point. Pick a tool, then click in the world. The cursor becomes a crosshair, the area the act will reach is outlined, and a label beside the cursor says what a click will do. Escape, or clicking the tool again, puts it down.
+The lightning-bolt button at the bottom of the right-hand toolbar opens Acts of God: tools that change the world where you point. Pick a tool (or press Ctrl+1–8 for the disasters, in the panel's order), then click in the world. The cursor becomes a crosshair and a label beside it says what a click will do. Tools that act on one place outline the area they will reach; Sea level draws the waterline the sea will fall to. Heat waves, cold snaps and storms cover the whole sea, so they outline nothing. Escape, or clicking the tool again, puts it down.
 
 | Tool | What it does |
 |---|---|
@@ -680,9 +680,9 @@ The lightning-bolt button at the bottom of the right-hand toolbar opens Acts of 
 | Upwelling | Minerals and nutrients well up to the surface around where you click, for 30 minutes. |
 | Meteor | Strikes where you click: everything within 700 units dies, minerals are released, and the sun dims for 4 days. |
 | Rock wall | A wall rises from the seafloor where you click, stands for 20 hours, then sinks. |
-| Heat wave | The water within 1,500 units either side of where you click warms by up to 6 °C for 30 minutes: fully at the surface, less with depth (about a third as much 700 units down). It builds up and dies away gradually. |
+| Heat wave | Click anywhere: the whole sea warms by up to 6 °C for 30 minutes, fully at the surface and less with depth (about a third as much 700 units down). It builds up and dies away gradually, and the surface temperature in the weather bar shows it. Several at once add up. |
 | Cold snap | The same, but the water cools by up to 6 °C. |
-| Storm | For 20 minutes, fast eddies churn the top 500 units of water within 1,250 units either side of where you click, tossing organisms and carcasses about. The storm also stirs the upper water, evening it out with the water below it, which brings nutrients up to the surface. |
+| Storm | Click anywhere: for 20 minutes, dark clouds roll in, rain falls, and fast eddies churn the top 500 units of water across the whole sea, tossing organisms and carcasses about. The storm also stirs the upper water, evening it out with the water below it, which brings nutrients up to the surface. It builds up over its first 3 minutes and dies away over its last 3. |
 | Sea level | The sea falls by the *Drop* amount (50 to 3,000 units) over 5 minutes, stays low for 2 hours, then rises back over 5 minutes. Swimmers are carried down with the surface. Anything left out of the water drops until it reaches water or rock, and can't breathe there: it suffocates like an aerobe in a dead zone. Drained water loses what it held, and the returning sea refills it with ordinary seawater. Vents left above the water still smoke but release nothing: no minerals, CO₂, nutrients or heat. |
 | Pour into the water | Pick a substance (nutrients, minerals, oxygen, CO₂, toxin or marine snow), then click to pour a dose of it into the water around the click. A dose is about what five small organisms need to grow up and breed: 30 energy of minerals or marine snow, 10 nutrients, or 60 oxygen or CO₂. *Radius* sets how far it spreads, from 20 to 800 units, without changing the amount; click again to pour more. Poured toxin carries no species' colour, so it harms every organism. |
 
@@ -709,5 +709,5 @@ Heat waves, cold snaps, storms and sea-level changes only happen as Acts of God.
 | N | Field notebook |
 | M | Chemistry map: oxygen, CO₂, nutrients, minerals, toxin |
 | F5 | Quicksave |
-| Ctrl+1–4 | Plague, upwelling, meteor, rock wall |
 | Bolt button | Acts of God (see above); Esc puts a tool down |
+| Ctrl+1–8 | Pick up an Acts of God disaster to aim: plague, upwelling, meteor, rock wall, heat wave, cold snap, storm, sea level |

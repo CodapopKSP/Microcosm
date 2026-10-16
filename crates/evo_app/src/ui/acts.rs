@@ -63,14 +63,14 @@ impl Act {
             Act::Meteor => "Click where the meteor strikes. Everything in the circle dies.",
             Act::RockWall => "Click where a wall of rock rises from the seafloor.",
             Act::HeatWave => {
-                "Click where the water warms for half an hour, most at the surface."
+                "Click anywhere: the whole sea warms for half an hour, most at the surface."
             }
             Act::ColdSnap => {
-                "Click where the water cools for half an hour, most at the surface."
+                "Click anywhere: the whole sea cools for half an hour, most at the surface."
             }
             Act::Storm => {
-                "Click where a storm churns the upper water for 20 minutes, tossing organisms \
-                 about and stirring richer water up."
+                "Click anywhere: a storm churns the upper water across the whole sea for 20 \
+                 minutes, tossing organisms about and stirring richer water up."
             }
             Act::SeaLevel => {
                 "Click anywhere: the sea falls by the amount below over 5 minutes, stays low for \
@@ -126,6 +126,15 @@ impl Default for ActsOfGod {
 
 impl ActsOfGod {
     /// Put the tool down and let go of everything.
+    /// Take up a tool, or put it down if it's the one in hand.
+    fn pick(&mut self, tool: Act) {
+        let again = self.tool == Some(tool);
+        self.put_down();
+        if !again {
+            self.tool = Some(tool);
+        }
+    }
+
     fn put_down(&mut self) {
         self.tool = None;
         self.group.clear();
@@ -134,10 +143,52 @@ impl ActsOfGod {
     }
 }
 
-/// Escape puts the tool down.
-pub(super) fn acts_keys(keys: Res<ButtonInput<KeyCode>>, mut acts: ResMut<ActsOfGod>) {
+/// The disasters, in the panel's order (Ctrl+1..8 pick them up).
+const DISASTERS: [Act; 8] = [
+    Act::Plague,
+    Act::Upwelling,
+    Act::Meteor,
+    Act::RockWall,
+    Act::HeatWave,
+    Act::ColdSnap,
+    Act::Storm,
+    Act::SeaLevel,
+];
+
+/// Escape puts the tool down. Ctrl+1..8 open the panel with that disaster in hand, as
+/// clicking its tile does (and put it down again if it's already in hand).
+pub(super) fn acts_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut acts: ResMut<ActsOfGod>,
+    mut ui_state: ResMut<super::UiState>,
+    egui_input: Res<EguiWantsInput>,
+) {
     if keys.just_pressed(KeyCode::Escape) && acts.tool.is_some() {
         acts.put_down();
+    }
+    if egui_input.wants_any_keyboard_input()
+        || !keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
+        || keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])
+    {
+        return;
+    }
+    let digits = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+    ];
+    for (key, act) in digits.into_iter().zip(DISASTERS) {
+        if keys.just_pressed(key) {
+            // The tool needs the panel (and the UI) to be aimed.
+            ui_state.show_ui = true;
+            ui_state.show_acts = true;
+            acts.pick(act);
+        }
     }
 }
 
@@ -388,19 +439,6 @@ pub(crate) fn acts_pointer(
         }
         Act::HeatWave | Act::ColdSnap => {
             let warm = tool == Act::HeatWave;
-            let half = cfg.temperature_shift_width * 0.5;
-            let color = if warm {
-                Color::srgba(1.0, 0.55, 0.3, 0.9)
-            } else {
-                Color::srgba(0.55, 0.85, 1.0, 0.9)
-            };
-            // Most of the change is in the top thousand units.
-            rect(
-                &mut gizmos,
-                glam::Vec2::new(at.x - half, height - 1000.0),
-                glam::Vec2::new(at.x + half, height),
-                color,
-            );
             acts.label = Some(format!(
                 "{} ({}{:.0} °C)",
                 tool.label(),
@@ -408,21 +446,13 @@ pub(crate) fn acts_pointer(
                 cfg.temperature_shift
             ));
             if clicked {
-                world.act_temperature_shift(at.x, warm);
+                world.act_temperature_shift(warm);
             }
         }
         Act::Storm => {
-            let half = cfg.storm_width * 0.5;
-            let color = Color::srgba(0.7, 0.75, 0.85, 0.9);
-            rect(
-                &mut gizmos,
-                glam::Vec2::new(at.x - half, height - cfg.storm_depth),
-                glam::Vec2::new(at.x + half, height),
-                color,
-            );
             acts.label = Some("Storm".into());
             if clicked {
-                world.act_storm(at.x);
+                world.act_storm();
             }
         }
         Act::SeaLevel => {
@@ -496,39 +526,24 @@ pub(super) fn acts_panel(
                 });
 
                 // Tools, two to a row.
-                let pick = |acts: &mut ActsOfGod, t: Act| {
-                    let again = acts.tool == Some(t);
-                    acts.put_down();
-                    if !again {
-                        acts.tool = Some(t);
-                    }
-                };
                 section(ui, "Organisms");
                 tile_grid(ui, 2, TOOL_HEIGHT, &[Act::Move, Act::Kill], |ui, rect, &t| {
                     let r = tool_tile(ui, rect, t.label(), acts.tool == Some(t), |p, c, s, color| {
                         tool_icon(t, p, c, s, color)
                     });
                     if r.clicked() {
-                        pick(acts, t);
+                        acts.pick(t);
                     }
                 });
                 section(ui, "Disasters");
-                let disasters = [
-                    Act::Plague,
-                    Act::Upwelling,
-                    Act::Meteor,
-                    Act::RockWall,
-                    Act::HeatWave,
-                    Act::ColdSnap,
-                    Act::Storm,
-                    Act::SeaLevel,
-                ];
-                tile_grid(ui, 2, TOOL_HEIGHT, &disasters, |ui, rect, &t| {
+                tile_grid(ui, 2, TOOL_HEIGHT, &DISASTERS, |ui, rect, &t| {
                     let r = tool_tile(ui, rect, t.label(), acts.tool == Some(t), |p, c, s, color| {
                         tool_icon(t, p, c, s, color)
                     });
+                    let key = DISASTERS.iter().position(|&d| d == t).unwrap_or(0) + 1;
+                    let r = r.on_hover_text(format!("Ctrl+{key}"));
                     if r.clicked() {
-                        pick(acts, t);
+                        acts.pick(t);
                     }
                 });
 

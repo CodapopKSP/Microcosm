@@ -10,7 +10,7 @@ struct Background {
     sun: vec4<f32>,   // sun (0..1), surface temp, day phase, vent count
     vents: array<vec4<f32>, 16>, // x, y, strength, how far below it its chimney reaches
     effects: vec4<f32>, // impact-winter darkness, event count, map mode
-    air: vec4<f32>, // air oxygen, air CO2 (1 = today)
+    air: vec4<f32>, // air oxygen, air CO2 (1 = today), storm strength 0..1
     events: array<vec4<f32>, 8>, // x, width, kind (1 upwelling, 2 wall), param
     land: vec4<f32>,      // mountain outline: first sample x, spacing, sample count, on
     land_profile: array<vec4<f32>, 64>, // its height at each sample (4 per entry)
@@ -413,6 +413,94 @@ fn dust_pall(wp: vec2<f32>, time: f32) -> vec3<f32> {
 
 // The sky at `wp`, above a sea whose surface is at `sea`: by season and time of day, with the
 // sun, moon and stars, winter snow, impact dust and the tops of ice floes.
+// One layer of rain: thin streaks slanting with the wind, sized on screen (it's weather close
+// to the viewer). `cell`: spacing of the streaks' lanes and `len` their length, in pixels.
+fn rain_layer(p: vec2<f32>, time: f32, cell: f32, len: f32, speed: f32, density: f32, salt: u32) -> f32 {
+    // Falling, a drop drifts right (with the wind): it keeps to a slanted lane.
+    let x = p.x + 0.3 * p.y;
+    let lane = floor(x / cell);
+    let r = cell_hash(vec2<f32>(lane, 0.0), salt);
+    let along = p.y + time * speed * (0.85 + 0.3 * r) + r * 977.0;
+    let period = len * 4.0;
+    let drop = floor(along / period);
+    let v = fract(along / period) * period;
+    let on = select(0.0, 1.0, cell_hash(vec2<f32>(lane, drop), salt + 1u) < density);
+    let centre = (0.3 + 0.4 * cell_hash(vec2<f32>(lane, drop), salt + 2u)) * cell;
+    let across = 1.0 - smoothstep(0.35, 0.9, abs(x - lane * cell - centre));
+    let streak = smoothstep(0.0, len * 0.3, v) * (1.0 - smoothstep(len * 0.7, len, v));
+    return on * across * streak;
+}
+
+// A storm over the sky (`s`: its strength, 0..1): the sky turns grey, a dark cloud deck rolls
+// in with the wind, rain falls from under it to the sea and splashes on the surface, and now
+// and then lightning flickers in the clouds.
+fn storm_sky(sky_in: vec3<f32>, wp: vec2<f32>, sea: f32, px: f32, time: f32, s: f32) -> vec3<f32> {
+    var sky = sky_in;
+    let top = bg.world.y;
+    let day = clamp(bg.sun.x * 1.3, 0.0, 1.0);
+    let overcast = mix(vec3<f32>(0.025, 0.03, 0.04), vec3<f32>(0.36, 0.38, 0.41), day);
+    sky = mix(sky, overcast, s * 0.8);
+
+    // Lightning: now and then a flicker lights up the clouds around a spot.
+    let slot = floor(time / 1.7);
+    let t = time - slot * 1.7;
+    let strike = select(0.0, 1.0, hash21(vec2<f32>(slot, 3.7)) < 0.3 * s);
+    let flicker = exp(-t * 6.0) * (0.5 + 0.5 * step(0.5, fract(t * 11.0)));
+    let at = hash21(vec2<f32>(slot, 9.1)) * bg.world.x;
+    let flash = strike * flicker * exp(-abs(wp.x - at) / 2500.0);
+    sky += vec3<f32>(0.12, 0.13, 0.17) * flash * s;
+
+    // The cloud deck: a lumpy base that comes down as the storm builds, billows over it.
+    // (Worked out only near and above its lowest reach: it's costly.)
+    let centre = top + 1300.0 - 600.0 * s;
+    var under = 1.0;
+    if wp.y > centre - 480.0 {
+        let cp = vec2<f32>((wp.x - time * 50.0) * 0.0011, wp.y * 0.0016);
+        let warp = fbm(cp * 0.6 + vec2<f32>(0.0, time * 0.008));
+        let n = fbm(cp + vec2<f32>(warp * 1.6, 0.0));
+        let above = wp.y - (centre + (n - 0.5) * 450.0);
+        under = 1.0 - smoothstep(-250.0, 50.0, above);
+        let billow = fbm(cp * 3.5 + vec2<f32>(time * 0.01, 0.0));
+        // A ragged edge: lumps hanging below the base, and wisps torn off it.
+        let edge = above + (billow - 0.5) * 320.0;
+        let cover = smoothstep(-30.0, 40.0 + 6.0 * px, edge) * smoothstep(0.0, 0.35, s);
+        if cover > 0.0 {
+            // Dark, heavy undersides; the billows above catch what light gets through.
+            let dark = mix(vec3<f32>(0.01, 0.011, 0.015), vec3<f32>(0.075, 0.08, 0.09), day);
+            let light = mix(vec3<f32>(0.035, 0.038, 0.048), vec3<f32>(0.46, 0.47, 0.49), day);
+            let lift = smoothstep(0.0, 500.0, edge);
+            var cloud = mix(dark, light, clamp(lift * 0.55 + (billow - 0.35) * 0.9, 0.0, 1.0));
+            // Shadowed folds between the billows.
+            cloud *= 0.75 + 0.5 * fbm(cp * 8.0 - vec2<f32>(time * 0.02, 0.0));
+            cloud += vec3<f32>(0.55, 0.6, 0.75) * flash * (0.4 + 0.6 * billow);
+            sky = mix(sky, cloud, cover);
+        }
+    }
+
+    // Rain, from under the clouds down to the sea.
+    if wp.y > sea {
+        let p = wp / px;
+        let rain = rain_layer(p, time, 9.0, 26.0, 1300.0, 0.55 * s, 31u)
+            + 0.6 * rain_layer(p, time, 5.0, 12.0, 800.0, 0.5 * s, 47u);
+        let rain_col = mix(vec3<f32>(0.15, 0.16, 0.2), vec3<f32>(0.62, 0.66, 0.72), day);
+        sky = mix(sky, rain_col, clamp(rain * under, 0.0, 1.0) * 0.45);
+
+        // Splashes: little flicks up off the surface where drops land.
+        let h = (wp.y - sea) / px;
+        if h < 7.0 {
+            let lane = floor(p.x / 6.0);
+            let phase = time * 2.3 + cell_hash(vec2<f32>(lane, 0.0), 61u);
+            let life = fract(phase);
+            let on = select(0.0, 1.0, cell_hash(vec2<f32>(lane, floor(phase)), 67u) < 0.45 * s);
+            let tall = 6.0 * (1.0 - life / 0.2);
+            let thin = 1.0 - smoothstep(0.3, 0.9, abs(fract(p.x / 6.0) - 0.5) * 6.0);
+            let splash = on * step(life, 0.2) * thin * (1.0 - smoothstep(tall - 1.0, tall, h));
+            sky = mix(sky, rain_col * 1.2, splash * 0.6);
+        }
+    }
+    return sky;
+}
+
 fn sky_color(wp: vec2<f32>, sea: f32, px: f32, time: f32) -> vec3<f32> {
     let year = bg.sky.x;
     let ice = bg.sky.y;
@@ -504,6 +592,11 @@ fn sky_color(wp: vec2<f32>, sea: f32, px: f32, time: f32) -> vec3<f32> {
         sky += vec3<f32>(0.8, 0.83, 0.88) * snow * (0.3 + 0.7 * clamp(bg.sun.x * 2.0, 0.0, 1.0));
     }
 
+    let storm = bg.air.z;
+    if storm > 0.0 {
+        sky = storm_sky(sky, wp, sea, px, time, storm);
+    }
+
     // Impact winter: a churning brown-grey dust pall.
     let pall = dust_pall(wp, time);
     sky = mix(sky, pall, clamp(winter * 1.4, 0.0, 0.95));
@@ -550,7 +643,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
                 var land = rock_albedo(wp, px);
                 let daylight = 0.55 + 0.55 * clamp(bg.sun.x, 0.0, 1.0);
                 let crest = 1.0 - smoothstep(0.0, 30.0, ridge - wp.y);
-                land *= daylight * (1.0 + 0.4 * crest);
+                land *= daylight * (1.0 + 0.4 * crest) * (1.0 - 0.5 * bg.air.z);
                 land = mix(land, pall * 0.8, clamp(winter * 1.2, 0.0, 0.9));
                 sky = mix(sky, land, inside);
             }
@@ -632,7 +725,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let ray_x = wp.x * 0.0016 + sin(wp.x * 0.0005 + time * 0.05) * 2.0 + depth * 0.0003;
     let rays = pow(0.5 + 0.5 * sin(ray_x + time * 0.12), 6.0) * 0.6
         + pow(0.5 + 0.5 * sin(ray_x * 1.7 - time * 0.09 + 1.3), 8.0) * 0.4;
-    water += vec3<f32>(0.035, 0.07, 0.065) * rays * lin * exp(-max(depth, 0.0) / 350.0) * wet;
+    // (Hidden by storm clouds.)
+    water += vec3<f32>(0.035, 0.07, 0.065) * rays * lin * exp(-max(depth, 0.0) / 350.0) * wet
+        * (1.0 - 0.85 * bg.air.z);
 
     // Surface shimmer.
     let surf = exp(-max(depth, 0.0) / (6.0 * px + 4.0)) * wet;

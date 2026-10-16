@@ -64,8 +64,8 @@ cargo run --release -- --stream
 | N | Field notebook. In the inspector, "Record in Field Notebook" sketches the organism under its species; recording more of a species adds sketches side by side |
 | M | Chemistry map: oxygen, nutrients, toxin |
 | F5 | Quicksave (`quicksave.bin` in the saves folder; see Files and releases below). The world also autosaves every 10 minutes and on exit; the previous save is kept as `*.prev.bin` |
-| Ctrl+1–4 | Trigger a plague, upwelling, meteor, or rock wall right now |
-| Bolt button (toolbar) | Acts of God: move or kill organisms (one, or a dragged box), aim a plague, upwelling, meteor, rock wall, heat wave, cold snap or storm, lower the sea, or pour nutrients and other substances where you click. Esc puts a tool down |
+| Bolt button (toolbar) | Acts of God: move or kill organisms (one, or a dragged box), aim a plague, upwelling, meteor or rock wall, bring a heat wave, cold snap or storm over the whole sea, lower the sea, or pour nutrients and other substances where you click. Esc puts a tool down |
+| Ctrl+1–8 | Pick up an Acts of God disaster to aim, as if clicking its tile: plague, upwelling, meteor, rock wall, heat wave, cold snap, storm, sea level |
 
 ### Files and releases
 

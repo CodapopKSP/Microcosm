@@ -896,16 +896,20 @@ fn help(ui: &mut egui::Ui) {
         );
         help_row(ui, &[K("H"), Or, K("F1")], "This help");
 
-        help_section(ui, "Trigger an event", HELP_EVENTS);
-        help_row(ui, &[K("Ctrl"), Plus, K("1")], "Plague");
-        help_row(ui, &[K("Ctrl"), Plus, K("2")], "Upwelling");
-        help_row(ui, &[K("Ctrl"), Plus, K("3")], "Meteor");
-        help_row(ui, &[K("Ctrl"), Plus, K("4")], "Rock wall");
+        help_section(ui, "Acts of God", HELP_EVENTS);
         help_row(
             ui,
             &[Mouse("Bolt button")],
             "Acts of God: aim events, move or kill organisms, pour substances (Esc puts a tool down)",
         );
+        help_row(ui, &[K("Ctrl"), Plus, K("1")], "Aim a plague");
+        help_row(ui, &[K("Ctrl"), Plus, K("2")], "Aim an upwelling");
+        help_row(ui, &[K("Ctrl"), Plus, K("3")], "Aim a meteor");
+        help_row(ui, &[K("Ctrl"), Plus, K("4")], "Aim a rock wall");
+        help_row(ui, &[K("Ctrl"), Plus, K("5")], "Aim a heat wave");
+        help_row(ui, &[K("Ctrl"), Plus, K("6")], "Aim a cold snap");
+        help_row(ui, &[K("Ctrl"), Plus, K("7")], "Aim a storm");
+        help_row(ui, &[K("Ctrl"), Plus, K("8")], "Lower the sea");
     });
 
     help_section(ui, "Genome", HELP_GENOME);

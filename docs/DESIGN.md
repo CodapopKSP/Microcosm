@@ -353,4 +353,4 @@ Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Min
 
 - **Sexual reproduction**: whole-chromosome inheritance from each parent. Mating is only possible below a genetic-distance threshold, and color preference drives assortative mating. This gives real reproductive isolation. Ideally the capacity for sex itself evolves.
 - Part kinds that can be combined into new ones (a leg with a fin becomes a flipper), and body parts on carcasses that scavengers can eat separately.
-- Viewer interaction: chat commands wired to the existing event triggers (`World::trigger`, Ctrl+1–4 in the viewer).
+- Viewer interaction: chat commands wired to the existing event triggers (`World::trigger`, also `--trigger` on the command line).

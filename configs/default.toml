@@ -278,11 +278,9 @@ barrier_every = 30.0
 barrier_duration = 20.0      # hours at full height
 barrier_rise = 0.1           # hours to rise (and to sink)
 barrier_width = 200.0
-# Acts of God only (never random): heat waves and cold snaps, and storms.
+# Acts of God only (never random): heat waves and cold snaps, and storms, over the whole sea.
 temperature_shift = 6.0          # degrees C warmer or colder at the surface (less with depth)
-temperature_shift_width = 3000.0
 temperature_shift_duration = 1800.0  # seconds
-storm_width = 2500.0
 storm_depth = 500.0              # the storm's eddies fade out by this depth
 storm_speed = 30.0               # eddy speed at the surface (units/s)
 storm_eddy_scale = 250.0

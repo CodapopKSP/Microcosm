@@ -113,7 +113,7 @@ pub struct BackgroundUniform {
     /// impact-winter darkness (0..1), number of events, map mode (0 none, 1 oxygen,
     /// 2 nutrients, 3 toxin), 0
     pub effects: Vec4,
-    /// air oxygen, air CO₂ (1 = today), 0, 0
+    /// air oxygen, air CO₂ (1 = today), storm strength (0..1), 0
     pub air: Vec4,
     /// Active visible events: x, width, kind (1 upwelling, 2 wall), param
     /// (upwelling: remaining strength; wall: top y, negative while rising).
@@ -500,7 +500,7 @@ fn update_background(
             0.0,
         );
         let air = &world.env.atmosphere;
-        u.air = Vec4::new(air.oxygen, air.co2, 0.0, 0.0);
+        u.air = Vec4::new(air.oxygen, air.co2, world.env.storm, 0.0);
         u.sky = Vec4::new(
             clock.year_phase,
             surface_ice(clock, cfg),

@@ -198,24 +198,22 @@ impl World {
         self.apply_events(fx, time);
     }
 
-    /// Start a heat wave (`warmer`) or a cold snap around `x`.
-    pub fn act_temperature_shift(&mut self, x: f32, warmer: bool) {
+    /// Start a heat wave (`warmer`) or a cold snap, over the whole sea.
+    pub fn act_temperature_shift(&mut self, warmer: bool) {
         let time = self.time();
         let delta = self
             .happenings
-            .start_temperature_shift(x, warmer, time, &self.config);
+            .start_temperature_shift(warmer, time, &self.config);
         let (what, verb) = if warmer {
             ("A heat wave", "warms")
         } else {
             ("A cold snap", "chills")
         };
-        let pos = Vec2::new(x, self.config.world.height - 300.0);
-        self.log_at(
+        self.log(
             EventKind::Environment,
-            format!("{what} {verb} the water near x={x:.0} by up to {:.0} °C.", delta.abs()),
+            format!("{what} {verb} the sea by up to {:.0} °C at the surface.", delta.abs()),
             None,
             None,
-            Some(pos),
         );
     }
 
@@ -239,17 +237,15 @@ impl World {
         true
     }
 
-    /// Start a storm around `x`.
-    pub fn act_storm(&mut self, x: f32) {
+    /// Start a storm, over the whole sea.
+    pub fn act_storm(&mut self) {
         let time = self.time();
-        self.happenings.start_storm(x, time, &self.config);
-        let pos = Vec2::new(x, self.config.world.height - 300.0);
-        self.log_at(
+        self.happenings.start_storm(time, &self.config);
+        self.log(
             EventKind::Environment,
-            format!("A storm churns the sea near x={x:.0}."),
+            "A storm churns the sea.".into(),
             None,
             None,
-            Some(pos),
         );
     }
 
@@ -434,12 +430,12 @@ mod tests {
     }
 
     #[test]
-    fn heat_waves_and_cold_snaps_change_the_water_there() {
+    fn heat_waves_and_cold_snaps_change_the_whole_sea() {
         let mut w = world();
         let at = open_water(&w);
         let far = Vec2::new((at.x + w.config.world.width * 0.5) % w.config.world.width, at.y);
         let before = (w.env.temperature.sample(at), w.env.temperature.sample(far));
-        w.act_temperature_shift(at.x, true);
+        w.act_temperature_shift(true);
         // Let it build up (it takes 15% of its length), then let the water update.
         let duration = w.config.events.temperature_shift_duration;
         if let Some(WorldEvent::TemperatureShift { started, until, .. }) =
@@ -452,10 +448,10 @@ mod tests {
             w.step();
         }
         let after = (w.env.temperature.sample(at), w.env.temperature.sample(far));
-        assert!(after.0 > before.0 + 3.0, "warmer there: {before:?} -> {after:?}");
-        assert!((after.1 - before.1).abs() < 1.0, "not far away: {before:?} -> {after:?}");
+        assert!(after.0 > before.0 + 3.0, "warmer here: {before:?} -> {after:?}");
+        assert!(after.1 > before.1 + 3.0, "and far away: {before:?} -> {after:?}");
         assert!(w.call_off_event(w.happenings.active.len() - 1));
-        w.act_temperature_shift(at.x, false);
+        w.act_temperature_shift(false);
         assert!(matches!(w.happenings.active.last(),
             Some(WorldEvent::TemperatureShift { delta, .. }) if *delta < 0.0));
     }
@@ -467,7 +463,7 @@ mod tests {
         let x = open_water(&w).x;
         let surface = Vec2::new(x, h - 20.0);
         let before = w.env.nutrients.sample(surface);
-        w.act_storm(x);
+        w.act_storm();
         if let Some(WorldEvent::Storm { started, until, .. }) = w.happenings.active.last_mut() {
             *started -= 600.0;
             *until -= 600.0;
@@ -477,7 +473,7 @@ mod tests {
             surface,
             w.time() as f32,
             h,
-            &w.env.storms,
+            w.env.storm,
             &w.config.events,
             w.config.world.seed,
         );

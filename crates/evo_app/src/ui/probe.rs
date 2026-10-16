@@ -167,7 +167,7 @@ pub fn draw(ui: &mut egui::Ui, world: &World, pos: Vec2) {
                 pos,
                 world.time() as f32,
                 height,
-                &env.storms,
+                env.storm,
                 &cfg.events,
                 cfg.world.seed,
             );

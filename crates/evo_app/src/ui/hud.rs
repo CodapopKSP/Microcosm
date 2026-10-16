@@ -637,23 +637,23 @@ fn now_card(
                     Color32::from_rgb(200, 170, 130),
                     Some(Vec2::new(*x, built.min(h) - 300.0)),
                 ),
-                WorldEvent::TemperatureShift { x, delta, .. } => (
+                WorldEvent::TemperatureShift { delta, .. } => (
                     if *delta > 0.0 {
-                        format!("Heat wave at x={x:.0}")
+                        format!("Heat wave +{delta:.0} °C")
                     } else {
-                        format!("Cold snap at x={x:.0}")
+                        format!("Cold snap −{:.0} °C", -delta)
                     },
                     if *delta > 0.0 {
                         Color32::from_rgb(255, 150, 90)
                     } else {
                         Color32::from_rgb(140, 210, 250)
                     },
-                    Some(Vec2::new(*x, h - 400.0)),
+                    None,
                 ),
-                WorldEvent::Storm { x, .. } => (
-                    format!("Storm at x={x:.0}"),
+                WorldEvent::Storm { .. } => (
+                    "Storm".to_string(),
                     Color32::from_rgb(175, 185, 210),
-                    Some(Vec2::new(*x, h - 300.0)),
+                    None,
                 ),
                 WorldEvent::SeaLevel { .. } => (
                     format!(

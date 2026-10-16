@@ -291,13 +291,13 @@ pub struct Environment {
     /// Detritus cells in caves, with the share of each that's cave (built on first use).
     #[serde(skip)]
     cave_cells: Option<Vec<(u32, f32)>>,
-    /// Heat waves and cold snaps going on: (centre, width, °C change at the surface now).
-    /// Refreshed from the world's events every tick.
+    /// How much heat waves and cold snaps warm (or cool) the surface now (°C). Refreshed from
+    /// the world's events every tick.
     #[serde(skip)]
-    pub temperature_shifts: Vec<(f32, f32, f32)>,
-    /// Storms going on: (centre, width, strength 0..1). Refreshed every tick.
+    pub temperature_shift: f32,
+    /// How strong the storms are now (0..1). Refreshed every tick.
     #[serde(skip)]
-    pub storms: Vec<(f32, f32, f32)>,
+    pub storm: f32,
     /// The water's surface now (world y): the top of the world, unless the sea has fallen.
     /// Above it the fields' cells are air (marked solid, holding nothing).
     #[serde(skip)]
@@ -405,8 +405,8 @@ impl Environment {
             rng: Rng::new(config.world.seed ^ 0xE4E4_0001),
             since_temperature_update: f32::INFINITY,
             cave_cells: None,
-            temperature_shifts: Vec::new(),
-            storms: Vec::new(),
+            temperature_shift: 0.0,
+            storm: 0.0,
             sea_level: config.world.height,
         };
         // Start mid-morning, with vents already at various stages of life.
@@ -443,6 +443,7 @@ impl Environment {
         let time = tick as f64 * t.dt as f64 + start;
         let days = time / t.day_length as f64;
         let years = days / t.year_length as f64;
+        let shift = self.temperature_shift;
         let c = &mut self.clock;
         c.time = tick as f64 * t.dt as f64;
         c.day = days as u64;
@@ -459,7 +460,9 @@ impl Environment {
             * (1.0 + l.season_amplitude * season)
             * (l.night_level + (1.0 - l.night_level) * daylight);
         let temp = &config.temperature;
-        c.surface_temp = temp.surface + temp.season_amplitude * season + c.climate + c.greenhouse;
+        // (Heat waves and cold snaps warm or cool the whole surface, and the water below with it.)
+        c.surface_temp =
+            temp.surface + temp.season_amplitude * season + c.climate + c.greenhouse + shift;
     }
 
     fn new_vent(&mut self, config: &Config, terrain: &Terrain) -> Option<Vent> {
@@ -753,10 +756,10 @@ impl Environment {
     }
 
     /// Diffusion, exchange with the air, ventilation of deep water, and toxin breakdown.
-    /// Storms stir the upper water: in each column they reach, everything dissolved evens out
-    /// toward the column's average down to the storm's depth, bringing richer water up.
+    /// Storms stir the upper water: in each column, everything dissolved evens out toward the
+    /// column's average down to the storm's depth, bringing richer water up.
     fn stir(&mut self, dt: f32, config: &Config) {
-        if self.storms.is_empty() {
+        if self.storm <= 0.0 {
             return;
         }
         let ec = &config.events;
@@ -765,22 +768,13 @@ impl Environment {
         let rows = ((ec.storm_depth / cell).ceil() as usize).clamp(1, ny);
         let top = surface_row(&self.oxygen, self.sea_level);
         let rows = rows.min(top + 1);
-        let storms = self.storms.clone();
+        let blend = 1.0 - (-ec.storm_mixing * self.storm * dt).exp();
         let mut fields = vec![&mut self.oxygen, &mut self.co2, &mut self.nutrients, &mut self.minerals];
         if self.toxin_present {
             fields.push(&mut self.toxin);
         }
         for f in fields {
             for x in 0..nx {
-                let px = (x as f32 + 0.5) * cell;
-                let k: f32 = storms
-                    .iter()
-                    .map(|&(sx, w, s)| s * crate::events::across(sx, w, px))
-                    .fold(0.0, f32::max);
-                if k <= 0.0 {
-                    continue;
-                }
-                let blend = 1.0 - (-ec.storm_mixing * k * dt).exp();
                 let cells: Vec<usize> = (0..rows)
                     .map(|r| f.index(x, top - r))
                     .filter(|&i| !f.solid[i])
@@ -939,7 +933,6 @@ impl Environment {
             .map(|v| (v.pos, v.strength))
             .collect();
         let inv_r2 = 1.0 / (tc.vent_heat_radius * tc.vent_heat_radius);
-        let shifts = &self.temperature_shifts;
         self.temperature
             .data
             .par_chunks_mut(nx)
@@ -952,10 +945,6 @@ impl Environment {
                 for (x, t) in row.iter_mut().enumerate() {
                     let p = Vec2::new((x as f32 + 0.5) * cell, py);
                     let mut heat = 0.0;
-                    // Heat waves and cold snaps reach down as the seasons do.
-                    for &(sx, width, delta) in shifts {
-                        heat += delta * near_surface * crate::events::across(sx, width, p.x);
-                    }
                     for &(vp, s) in &vents {
                         let d2 = p.distance_squared(vp);
                         heat += tc.vent_heat * s * (-d2 * inv_r2).exp();

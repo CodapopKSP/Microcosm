@@ -1213,15 +1213,13 @@ pub struct EventsConfig {
     /// Hours to rise (and to sink again).
     pub barrier_rise: f32,
     pub barrier_width: f32,
-    /// Acts of God only (never random): a heat wave or cold snap warms or cools the water
-    /// around a point by this much at the surface (°C), less with depth, as the seasons do.
+    /// Acts of God only (never random): a heat wave or cold snap warms or cools the whole sea
+    /// by this much at the surface (°C), less with depth, as the seasons do.
     pub temperature_shift: f32,
-    /// How wide a heat wave or cold snap is, and how long it lasts (seconds).
-    pub temperature_shift_width: f32,
+    /// How long a heat wave or cold snap lasts (seconds).
     pub temperature_shift_duration: f32,
-    /// Acts of God only: a storm churns the upper water around a point with fast eddies.
-    pub storm_width: f32,
-    /// How deep the storm reaches, its eddies' top speed and size, and how long it lasts.
+    /// Acts of God only: a storm churns the whole sea's upper water with fast eddies. How deep
+    /// it reaches, its eddies' top speed and size, and how long it lasts.
     pub storm_depth: f32,
     pub storm_speed: f32,
     pub storm_eddy_scale: f32,
@@ -1257,9 +1255,7 @@ impl Default for EventsConfig {
             barrier_rise: 0.1,
             barrier_width: 200.0,
             temperature_shift: 6.0,
-            temperature_shift_width: 3000.0,
             temperature_shift_duration: 1800.0,
-            storm_width: 2500.0,
             storm_depth: 500.0,
             storm_speed: 30.0,
             storm_eddy_scale: 250.0,
