@@ -548,12 +548,10 @@ mod tests {
         for _ in 0..15 {
             w.step();
         }
-        match w.find(id) {
-            Some(o) => {
-                assert!(o.pos.y > w.sea_level(), "stranded on the rock");
-                assert!(o.hp < hp, "suffocating: {hp} -> {}", o.hp);
-            }
-            None => {} // already dead
+        // (Unless it's already dead.)
+        if let Some(o) = w.find(id) {
+            assert!(o.pos.y > w.sea_level(), "stranded on the rock");
+            assert!(o.hp < hp, "suffocating: {hp} -> {}", o.hp);
         }
     }
 

@@ -2434,7 +2434,7 @@ dependencies = [
 
 [[package]]
 name = "evo_app"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bevy",
  "bevy_egui",
@@ -2452,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "evo_core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "clap",
  "glam",

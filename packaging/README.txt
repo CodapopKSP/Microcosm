@@ -10,7 +10,8 @@ HOW TO RUN
            instead right-click the app and choose Open.)
   Linux:   run ./microcosm
 
-Press H in the game for the controls.
+Press H in the game for the controls. Documentation, on the main menu, explains
+how the world works ("Open as PDF" there opens it in your PDF viewer).
 
 WHERE YOUR FILES GO
 Saves, the maps you make in the map editor and the organisms you make in the
