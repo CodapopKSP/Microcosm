@@ -443,8 +443,14 @@ fn draw_menu(
     time: Res<Time<Real>>,
     mut styled: Local<bool>,
     mut quiet: ResMut<crate::music::MenuQuiet>,
+    adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?.clone();
+    // Drawing without a graphics card (a broken or half-updated driver): the game will crawl.
+    // (wgpu's DeviceType isn't re-exported by Bevy; its name is enough.)
+    let software = adapter
+        .filter(|a| format!("{:?}", a.device_type) == "Cpu")
+        .map(|a| a.name.clone());
     if !*styled {
         // Tooltips appear almost at once, as in the game.
         ctx.all_styles_mut(|style| {
@@ -471,7 +477,9 @@ fn draw_menu(
             }
             style_menu(ui);
             match menu.page {
-                Page::Splash => splash(ui, &mut menu, &launch, &mut start, &mut exit, t),
+                Page::Splash => {
+                    splash(ui, &mut menu, &launch, &mut start, &mut exit, software.as_deref(), t)
+                }
                 Page::NewWorld => new_world(ui, &ctx, &mut menu, &launch, &mut start),
                 Page::Load => load(ui, &mut menu, &mut start),
                 Page::Documentation => documentation(ui, &mut menu),
@@ -867,6 +875,7 @@ fn splash(
     launch: &Launch,
     start: &mut Option<World>,
     exit: &mut MessageWriter<AppExit>,
+    software: Option<&str>,
     t: f32,
 ) {
     ui.vertical_centered(|ui| {
@@ -878,7 +887,13 @@ fn splash(
                 .extra_letter_spacing(3.0)
                 .color(egui::Color32::from_rgb(150, 200, 200)),
         );
-        ui.add_space(52.0);
+        if let Some(name) = software {
+            ui.add_space(24.0);
+            software_warning(ui, name);
+            ui.add_space(24.0);
+        } else {
+            ui.add_space(52.0);
+        }
         let autosave = launch.0.save_dir.join("autosave.bin");
         if let Some(save) = menu.saves.iter().find(|s| s.path == autosave) {
             if big_button(ui, "Continue").clicked() {
@@ -925,6 +940,44 @@ fn splash(
             ui.colored_label(egui::Color32::from_rgb(240, 120, 110), e);
         }
     });
+}
+
+/// The warning shown when the game is drawn without a graphics card (`name`: what it's drawn
+/// with instead).
+fn software_warning(ui: &mut egui::Ui, name: &str) {
+    let warn = egui::Color32::from_rgb(240, 170, 90);
+    egui::Frame::new()
+        .fill(rgba(40, 22, 6, 0.85))
+        .stroke(egui::Stroke::new(1.5, warn))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(18, 12))
+        .show(ui, |ui| {
+            ui.set_max_width(560.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new("No graphics card in use")
+                        .size(18.0)
+                        .strong()
+                        .color(warn),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "The game is being drawn by the processor, so it will run very slowly. \
+                         This usually means the graphics driver is broken or was just updated: \
+                         restart the computer, or reinstall the driver.",
+                    )
+                    .size(14.0)
+                    .color(egui::Color32::from_rgb(235, 220, 200)),
+                );
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(format!("Drawing with: {name}"))
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(190, 170, 150)),
+                );
+            });
+        });
 }
 
 /// What a save holds, for its tile on the Load page.
