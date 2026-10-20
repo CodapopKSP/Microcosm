@@ -887,8 +887,13 @@ fn tree(
     for s in &established {
         children.entry(parent_of(s.id)).or_default().push(s.id);
     }
-    for list in children.values_mut() {
-        list.sort_by_key(|id| reg.get(*id).map(|s| s.founded).unwrap_or(0));
+    // Roots run oldest first; children run newest first, so each child's link down from its
+    // parent only passes rows founded later than it and never crosses another species' line.
+    for (parent, list) in children.iter_mut() {
+        list.sort_by_key(|id| (reg.get(*id).map(|s| s.founded).unwrap_or(0), *id));
+        if parent.is_some() {
+            list.reverse();
+        }
     }
     let kids = |id: u32| children.get(&Some(id)).map(Vec::as_slice).unwrap_or(&[]);
 

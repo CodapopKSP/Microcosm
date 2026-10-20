@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::MutationConfig;
+use crate::config::{MutationConfig, SpeciesConfig};
 use crate::parts::{self, PartKind};
 use crate::rng::Rng;
 
@@ -584,7 +584,7 @@ impl Genome {
     /// so one large jump in a single gene can't make a new species on its own. Color genes weigh
     /// `color_weight`. A part slot's type counts up to 0.5 (a new kind of part is a big step); its
     /// size and placement count only when both genomes actually have a part there.
-    pub fn distance(&self, other: &Genome, color_weight: f32, gene_cap: f32) -> f32 {
+    pub fn distance(&self, other: &Genome, sc: &SpeciesConfig) -> f32 {
         let mut sum = 0.0;
         let mut weight_total = 0.0;
         let byte_diff = |a: u8, b: u8| (a as i32 - b as i32).unsigned_abs() as f32 / 255.0;
@@ -617,17 +617,26 @@ impl Genome {
                         },
                     )
                 }
-                _ if i == gene::HUE => {
-                    // Hue is circular.
-                    let d = (self.0[i] as i32 - other.0[i] as i32).unsigned_abs();
-                    (color_weight, d.min(256 - d) as f32 / 128.0)
-                }
                 _ if (gene::HUE..=gene::PATTERN).contains(&i) => {
-                    (color_weight, byte_diff(self.0[i], other.0[i]))
+                    let d = if i == gene::HUE {
+                        // Hue is circular.
+                        let d = (self.0[i] as i32 - other.0[i] as i32).unsigned_abs();
+                        d.min(256 - d) as f32 / 128.0
+                    } else {
+                        byte_diff(self.0[i], other.0[i])
+                    };
+                    sum += (sc.color_weight * d).min(sc.color_cap);
+                    weight_total += sc.color_weight;
+                    continue;
+                }
+                _ if i == gene::SIZE => {
+                    sum += byte_diff(self.0[i], other.0[i]).min(sc.size_cap);
+                    weight_total += 1.0;
+                    continue;
                 }
                 _ => (1.0, byte_diff(self.0[i], other.0[i])),
             };
-            sum += w * d.min(gene_cap);
+            sum += w * d.min(sc.gene_cap);
             weight_total += w;
         }
         sum / weight_total
@@ -795,24 +804,55 @@ mod tests {
 
     #[test]
     fn distance_properties() {
+        let caps = |gene_cap: f32| SpeciesConfig {
+            color_weight: 0.25,
+            gene_cap,
+            color_cap: 10.0,
+            size_cap: 1.0,
+            ..Default::default()
+        };
         let a = Genome::parse(ANCESTOR).unwrap();
-        assert_eq!(a.distance(&a, 0.25, 1.0), 0.0);
+        assert_eq!(a.distance(&a, &caps(1.0)), 0.0);
         let mut b = a;
-        b.0[gene::SIZE] = 0xFF;
-        let d = a.distance(&b, 0.25, 1.0);
-        assert!(a.distance(&b, 0.25, 0.3) < d);
+        b.0[gene::LONGEVITY] = 0xFF;
+        let d = a.distance(&b, &caps(1.0));
+        assert!(a.distance(&b, &caps(0.3)) < d);
         assert!(d > 0.0 && d < 1.0);
-        assert_eq!(d, b.distance(&a, 0.25, 1.0));
+        assert_eq!(d, b.distance(&a, &caps(1.0)));
         // Hue wraps around.
         let mut c = a;
         c.0[gene::HUE] = a.0[gene::HUE].wrapping_add(250);
         let mut d2 = a;
         d2.0[gene::HUE] = a.0[gene::HUE].wrapping_add(6);
-        assert!((a.distance(&c, 1.0, 1.0) - a.distance(&d2, 1.0, 1.0)).abs() < 1e-6);
+        assert!((a.distance(&c, &caps(1.0)) - a.distance(&d2, &caps(1.0))).abs() < 1e-6);
         // Leftover bytes in empty part slots don't count.
         let mut e = a;
         e.0[parts::slot_offset(0) + 1] = 0xFF;
-        assert_eq!(a.distance(&e, 0.25, 1.0), 0.0);
+        assert_eq!(a.distance(&e, &caps(1.0)), 0.0);
+    }
+
+    #[test]
+    fn color_and_size_have_their_own_caps() {
+        let sc = SpeciesConfig::default();
+        let a = Genome::parse(ANCESTOR).unwrap();
+        let total = a.distance(&a, &sc);
+        assert_eq!(total, 0.0);
+        let weight_total = {
+            // Any one ordinary gene changed fully counts gene_cap / weight_total.
+            let mut b = a;
+            b.0[gene::LONGEVITY] = a.0[gene::LONGEVITY] ^ 0xFF;
+            let lb = (a.0[gene::LONGEVITY] as f32 - b.0[gene::LONGEVITY] as f32).abs() / 255.0;
+            lb.min(sc.gene_cap) / a.distance(&b, &sc)
+        };
+        // The opposite hue counts the colour cap.
+        let mut c = a;
+        c.0[gene::HUE] = a.0[gene::HUE].wrapping_add(128);
+        assert!((a.distance(&c, &sc) * weight_total - sc.color_cap).abs() < 1e-4);
+        // The largest size change counts the size cap.
+        let mut s = a;
+        s.0[gene::SIZE] = 0xFF;
+        let ds = (0xFF - a.0[gene::SIZE]) as f32 / 255.0;
+        assert!((a.distance(&s, &sc) * weight_total - ds.min(sc.size_cap)).abs() < 1e-4);
     }
 
     #[test]

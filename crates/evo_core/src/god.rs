@@ -10,6 +10,7 @@ use crate::events::EventEffects;
 use crate::stats::EventKind;
 use crate::genome::Genome;
 use crate::organism::{DeathCause, Organism};
+use crate::species::SpeciesRegistry;
 use crate::traits::Traits;
 
 /// How far a pour of a substance spreads (units), unless told otherwise: the smallest pour.
@@ -65,13 +66,14 @@ impl World {
     }
 
     /// The species a placed genome belongs to: the closest living one within the species
-    /// threshold, else a new root lineage of its own.
+    /// threshold (that it isn't a new kind of), else a new root lineage of its own.
     fn species_for(&mut self, genome: &Genome) -> u32 {
         let sc = &self.config.species;
         let closest = self
             .species
             .living()
-            .map(|s| (s.id, genome.distance(&s.founder, sc.color_weight, sc.gene_cap)))
+            .filter(|s| !SpeciesRegistry::new_kind(&s.founder, genome, &self.config))
+            .map(|s| (s.id, genome.distance(&s.founder, sc)))
             .min_by(|a, b| a.1.total_cmp(&b.1));
         match closest {
             Some((id, d)) if d <= sc.threshold => id,

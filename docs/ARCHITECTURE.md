@@ -25,7 +25,7 @@ The core has **no rendering dependencies**. Headless runs (tuning, benchmarks, l
 | `terrain.rs` | Procedural seafloor and rocks → solid mask + signed distance field (collisions, light blocking) |
 | `field.rs` | Generic scalar grid with diffusion, vertical advection, decay |
 | `grid.rs` | Multi-level spatial hash for neighbor queries across a wide range of body sizes |
-| `species.rs` | Species and genera: founding by genetic distance, names, populations, extinctions |
+| `species.rs` | Species and genera: founding by genetic distance, new part kinds and diet switches; names, populations, extinctions |
 | `stats.rs` | Time series samples, event log |
 | `map.rs` | Painted maps from the map editor (`configs/maps/<name>.map`): a rock mask, cave mask (dark water that sheds detritus), water level, permanent vents and vent spawn points |
 | `notebook.rs` | The field notebook: species the viewer recorded and their specimens' genomes (saved with the world, no effect on the simulation) |
@@ -69,7 +69,7 @@ The main techniques:
 | `editor.rs` | The map editor (`--editor`) |
 | `genome_editor.rs` | The genome editor (`--genome-editor`): every gene as a slider and hex value, part-slot pickers, the organism drawn live by the renderer in a small paused world, saved as presets (`paths.rs`) |
 | `paths.rs` | Where files live: the user data folder (saves, maps, organisms), the built-in config and maps |
-| `ui/` | egui: HUD (clock and speed, weather, life, round panel buttons), organism inspector (a card beside the toolbar with Overview / Body / Chemistry / Genome tabs), species list, charts, event ticker, field notebook (`notebook.rs`, with pencil sketches of organisms drawn part by part in `sketch.rs`, handwritten in the Kalam font from `assets/fonts`), stream overlay |
+| `ui/` | egui: HUD (clock and speed, weather, life, round panel buttons), organism inspector (a card beside the toolbar with Overview / Body / Chemistry / Genome tabs), species list, charts, event ticker, field notebook (`notebook.rs`, with pencil-and-watercolour sketches of organisms drawn part by part in `sketch.rs`, handwritten in the Kalam font from `assets/fonts`), stream overlay |
 
 The viewer interpolates organism positions between ticks, so motion stays smooth at any speed.
 

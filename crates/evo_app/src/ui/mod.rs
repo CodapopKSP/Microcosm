@@ -159,6 +159,7 @@ fn apply_stream_option(options: Res<crate::ViewerOptions>, mut ui: ResMut<UiStat
         ui.stream_overlay = true;
     }
     ui.show_charts = options.charts;
+    ui.show_notebook = options.notebook;
     ui.map_mode = match options.map.as_deref() {
         Some("oxygen") => MapMode::Oxygen,
         Some("co2") => MapMode::Co2,

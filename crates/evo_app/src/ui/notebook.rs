@@ -1,5 +1,6 @@
 //! The field notebook: a paper book of hand-written entries with pencil sketches of the
-//! specimens the viewer recorded. Page 1 is the contents; each species gets half a page.
+//! specimens the viewer recorded. The contents come first, over as many pages as they need;
+//! each species gets half a page.
 
 use std::sync::Arc;
 
@@ -23,6 +24,10 @@ const COVER: Color32 = Color32::from_rgb(72, 48, 34);
 const RED_PENCIL: Color32 = Color32::from_rgb(170, 60, 50);
 /// Distance between ruled lines.
 const LINE: f32 = 26.0;
+/// Where the contents' first row sits below the top of the writing area: under the title on
+/// the first page, under "Contents, continued" on the pages after it.
+const CONTENTS_TOP: f32 = 126.0;
+const CONTENTS_TOP_MORE: f32 = 74.0;
 
 const HAND: &str = "hand";
 const HAND_BOLD: &str = "hand_bold";
@@ -72,20 +77,52 @@ fn hand_bold(size: f32) -> FontId {
 
 #[derive(Default)]
 pub struct NotebookState {
-    /// Which two-page spread is open (0 = contents and the first entries).
+    /// Which two-page spread is open (0 = the start of the contents).
     pub spread: usize,
+    /// An entry to open to, once the pages are laid out.
+    goto: Option<usize>,
 }
 
 impl NotebookState {
     /// Open to the spread holding entry `index`.
     pub fn show_entry(&mut self, index: usize) {
-        self.spread = page_of(index) / 2;
+        self.goto = Some(index);
     }
 }
 
-/// Page of entry `index` (page 0 is the contents; two entries per page).
-fn page_of(index: usize) -> usize {
-    1 + index / 2
+/// Page of entry `index`, after `contents` pages of contents (two entries per page).
+fn page_of(index: usize, contents: usize) -> usize {
+    contents + index / 2
+}
+
+/// Contents rows that fit on a page whose writing area is `height` tall, starting `top` down.
+fn rows_from(top: f32, height: f32) -> usize {
+    ((height - LINE - top) / LINE).floor().max(0.0) as usize + 1
+}
+
+/// Pages the contents of `entries` entries take.
+fn contents_pages(entries: usize, height: f32) -> usize {
+    let first = rows_from(CONTENTS_TOP, height);
+    1 + entries
+        .saturating_sub(first)
+        .div_ceil(rows_from(CONTENTS_TOP_MORE, height))
+}
+
+/// The entries listed on contents page `page`.
+fn contents_rows(page: usize, entries: usize, height: f32) -> std::ops::Range<usize> {
+    let first = rows_from(CONTENTS_TOP, height);
+    let more = rows_from(CONTENTS_TOP_MORE, height);
+    let start = if page == 0 { 0 } else { first + (page - 1) * more };
+    let end = if page == 0 { first } else { start + more };
+    start.min(entries)..end.min(entries)
+}
+
+/// The writing area of a page: inside the margin line, clear of the page number.
+fn writing_area(page_rect: Rect, is_left: bool) -> Rect {
+    Rect::from_min_max(
+        page_rect.min + vec2(if is_left { 58.0 } else { 46.0 }, 22.0),
+        page_rect.max - vec2(if is_left { 24.0 } else { 34.0 }, 36.0),
+    )
 }
 
 /// Write `text` at `pos` (wrapped at `wrap`); returns the height used.
@@ -129,8 +166,14 @@ pub fn draw(
         (screen.height() - 120.0).clamp(420.0, 700.0),
     );
     let entries = &world.notebook.entries;
-    let pages = 1 + entries.len().div_ceil(2);
+    // The writing area is as tall on every page (the book's cover and paper take 14 + 58).
+    let height = size.y - 28.0 - 58.0;
+    let contents = contents_pages(entries.len(), height);
+    let pages = contents + entries.len().div_ceil(2);
     let spreads = pages.div_ceil(2).max(1);
+    if let Some(index) = state.goto.take() {
+        state.spread = page_of(index, contents) / 2;
+    }
     state.spread = state.spread.min(spreads - 1);
     let mut action = None;
 
@@ -167,14 +210,11 @@ pub fn draw(
                 if page >= pages {
                     continue;
                 }
-                let content = Rect::from_min_max(
-                    page_rect.min + vec2(if side == 0 { 58.0 } else { 46.0 }, 22.0),
-                    page_rect.max - vec2(if side == 0 { 24.0 } else { 34.0 }, 36.0),
-                );
-                if page == 0 {
-                    contents(ui, &painter, content, world, state);
+                let content = writing_area(page_rect, side == 0);
+                if page < contents {
+                    contents_page(ui, &painter, content, world, state, page);
                 } else {
-                    let first = (page - 1) * 2;
+                    let first = (page - contents) * 2;
                     let half = content.height() / 2.0;
                     for k in 0..2 {
                         let Some(entry) = entries.get(first + k) else {
@@ -327,14 +367,30 @@ fn paper(painter: &egui::Painter, rect: Rect, seed: u64, is_left: bool) {
     }
 }
 
-/// Page 1: the title and a list of the species recorded.
-fn contents(
+/// Page `page` of the contents: on the first, the title and the start of the list of species
+/// recorded; on the rest, the list carried on.
+fn contents_page(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
     r: Rect,
     world: &World,
     state: &mut NotebookState,
+    page: usize,
 ) {
+    let entries = &world.notebook.entries;
+    let contents = contents_pages(entries.len(), r.height());
+    if page > 0 {
+        write(
+            painter,
+            pos2(r.left(), r.top() + CONTENTS_TOP_MORE - LINE),
+            "Contents, continued",
+            hand_bold(20.0),
+            GRAPHITE,
+            r.width(),
+        );
+        contents_list(ui, painter, r, world, state, page, contents);
+        return;
+    }
     let mut pen = Pencil::new(painter, 3);
     let title = "Field Notebook";
     let font = hand_bold(38.0);
@@ -354,8 +410,7 @@ fn contents(
         GRAPHITE.gamma_multiply(0.85),
         r.width(),
     );
-    let entries = &world.notebook.entries;
-    let mut y = r.top() + 70.0 + LINE * 2.0 - 22.0;
+    let y = r.top() + CONTENTS_TOP - LINE;
     if entries.is_empty() {
         write(
             painter,
@@ -377,20 +432,25 @@ fn contents(
         GRAPHITE,
         r.width(),
     );
-    y += LINE;
-    for (i, e) in entries.iter().enumerate() {
-        if y > r.bottom() - LINE {
-            write(
-                painter,
-                pos2(r.left(), y),
-                "…",
-                hand(17.0),
-                GRAPHITE,
-                r.width(),
-            );
-            break;
-        }
-        let page = page_of(i) + 1;
+    contents_list(ui, painter, r, world, state, page, contents);
+}
+
+/// The rows of contents page `page`, each a link to its entry's page.
+fn contents_list(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    r: Rect,
+    world: &World,
+    state: &mut NotebookState,
+    page: usize,
+    contents: usize,
+) {
+    let entries = &world.notebook.entries;
+    let top = if page == 0 { CONTENTS_TOP } else { CONTENTS_TOP_MORE };
+    let mut y = r.top() + top;
+    for i in contents_rows(page, entries.len(), r.height()) {
+        let e = &entries[i];
+        let page = page_of(i, contents) + 1;
         let name = format!("{}.  {}", i + 1, e.name);
         let row = Rect::from_min_size(pos2(r.left(), y), vec2(r.width(), LINE - 2.0));
         let resp = ui.interact(row, ui.id().with(("contents", i)), Sense::click());
@@ -436,12 +496,23 @@ fn entry_page(
     let cfg = &world.config;
     let mut pen = Pencil::new(painter, entry.species as u64 * 31 + 5);
 
-    // Heading: number and name, underlined; when it was first recorded.
+    // Heading: number and name, underlined; when it was first recorded and how it's doing now,
+    // on the right.
+    let when = format!("first seen {}", format_game_date(entry.time, &cfg.time));
+    let ww = text_width(painter, &when, hand(13.5));
+    let status = match world.species.get(entry.species) {
+        Some(s) if s.extinct.is_some() => Some(("extinct".to_string(), RED_PENCIL)),
+        Some(s) => Some((format!("{} alive now", s.population), GRAPHITE)),
+        None => None,
+    };
+    let sw = status
+        .as_ref()
+        .map_or(0.0, |(text, _)| text_width(painter, text, hand(13.5)));
     let name = format!("{}.  {}", index + 1, entry.name);
-    // One line: a long name is written smaller.
-    let room = r.width() - 150.0;
+    // One line, clear of the notes on the right: a long name is written smaller.
+    let room = r.width() - ww.max(sw) - 14.0;
     let full = text_width(painter, &name, hand_bold(23.0));
-    let size = (23.0 * room / full.max(1.0)).clamp(14.0, 23.0);
+    let size = (23.0 * room / full.max(1.0)).clamp(12.0, 23.0);
     let name_font = hand_bold(size);
     let nw = text_width(painter, &name, name_font.clone());
     write(
@@ -453,31 +524,22 @@ fn entry_page(
         f32::INFINITY,
     );
     pen.line(&[r.min + vec2(0.0, 33.0), r.min + vec2(nw, 32.0)], 1.2, 0.7);
-    let when = format!("first seen {}", format_game_date(entry.time, &cfg.time));
-    let ww = text_width(painter, &when, hand(13.5));
     write(
         painter,
         pos2(r.right() - ww, r.top() + 6.0),
         &when,
         hand(13.5),
         GRAPHITE.gamma_multiply(0.75),
-        200.0,
+        f32::INFINITY,
     );
-    // How it's doing now.
-    let status = match world.species.get(entry.species) {
-        Some(s) if s.extinct.is_some() => Some(("extinct".to_string(), RED_PENCIL)),
-        Some(s) => Some((format!("{} alive now", s.population), GRAPHITE)),
-        None => None,
-    };
     if let Some((text, color)) = status {
-        let sw = text_width(painter, &text, hand(13.5));
         write(
             painter,
             pos2(r.right() - sw, r.top() + 22.0),
             &text,
             hand(13.5),
             color.gamma_multiply(0.85),
-            200.0,
+            f32::INFINITY,
         );
     }
 

@@ -168,6 +168,46 @@ pub fn diet_capabilities(genes: [f32; 4], penalty: f32) -> [f32; 4] {
     genes.map(|x| (x * (1.0 - penalty * (total - x))).max(0.0))
 }
 
+/// Effective feeding capabilities `[photo, chemo, scavenge, hunt]` from the diet genes (the
+/// same as `Traits::decode`, without decoding everything else).
+pub fn diet(genome: &Genome, config: &Config) -> [f32; 4] {
+    let gc = &config.genes;
+    let f = |i: usize| genome.frac(i);
+    let [photo, chemo, scavenge, hunt_raw] = diet_capabilities(
+        [
+            f(gene::PHOTO),
+            f(gene::CHEMO),
+            f(gene::SCAVENGE),
+            f(gene::HUNT),
+        ],
+        gc.generalist_penalty,
+    );
+    // Photosynthesis and scavenging also get in each other's way.
+    let k = gc.photo_scavenge_penalty;
+    let (photo, scavenge) = (
+        photo * (1.0 - k * f(gene::SCAVENGE)).max(0.0),
+        scavenge * (1.0 - k * f(gene::PHOTO)).max(0.0),
+    );
+    // Trace hunting genes from drift don't bite.
+    let hunt = if hunt_raw < config.feeding.min_hunt {
+        0.0
+    } else {
+        hunt_raw
+    };
+    [photo, chemo, scavenge, hunt]
+}
+
+/// The strongest of `[photo, chemo, scavenge, hunt]`, as an index (the first on a tie).
+pub fn main_diet(caps: [f32; 4]) -> usize {
+    let mut best = 0;
+    for i in 1..4 {
+        if caps[i] > caps[best] {
+            best = i;
+        }
+    }
+    best
+}
+
 /// HSV → sRGB with fixed value; hue in 0..1.
 pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     let h6 = (h.rem_euclid(1.0)) * 6.0;
@@ -414,27 +454,7 @@ impl Traits {
         let reserves = f(gene::RESERVES);
         let longevity = f(gene::LONGEVITY);
 
-        let [photo, chemo, scavenge, hunt_raw] = diet_capabilities(
-            [
-                f(gene::PHOTO),
-                f(gene::CHEMO),
-                f(gene::SCAVENGE),
-                f(gene::HUNT),
-            ],
-            gc.generalist_penalty,
-        );
-        // Photosynthesis and scavenging also get in each other's way.
-        let k = gc.photo_scavenge_penalty;
-        let (photo, scavenge) = (
-            photo * (1.0 - k * f(gene::SCAVENGE)).max(0.0),
-            scavenge * (1.0 - k * f(gene::PHOTO)).max(0.0),
-        );
-        // Trace hunting genes from drift don't bite.
-        let hunt = if hunt_raw < config.feeding.min_hunt {
-            0.0
-        } else {
-            hunt_raw
-        };
+        let [photo, chemo, scavenge, hunt] = diet(genome, config);
 
         let regen = f(gene::REGEN);
         let toughness = f(gene::TOUGHNESS);
@@ -658,14 +678,7 @@ impl Traits {
 
     /// Dominant diet as an index 0..4 (photo, chemo, scavenge, hunt).
     pub fn main_diet(&self) -> usize {
-        let caps = [self.photo, self.chemo, self.scavenge, self.hunt];
-        let mut best = 0;
-        for i in 1..4 {
-            if caps[i] > caps[best] {
-                best = i;
-            }
-        }
-        best
+        main_diet([self.photo, self.chemo, self.scavenge, self.hunt])
     }
 
 }

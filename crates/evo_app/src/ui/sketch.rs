@@ -1,7 +1,7 @@
 //! Pencil sketches of organisms for the field notebook. They trace the same shapes the game
 //! draws (`organism.wgsl`): the body's five-lobed membrane, its nucleus and organelles, the
-//! mouth, and each part kind's own outline, posed at rest. Graphite lines and hatching, with
-//! the colours (body, chloroplasts, granules) added in coloured pencil.
+//! mouth, and each part kind's own outline, posed at rest. Graphite lines and hatching over
+//! watercolour washes in the colours the game gives the body and each part.
 //!
 //! Every stroke is wobbled by a seeded random generator, so a sketch looks hand-drawn but
 //! stays exactly the same from frame to frame.
@@ -11,6 +11,7 @@ use evo_core::Traits;
 use evo_core::genome::Genome;
 use evo_core::parts::{self, BodyShape, Instance, PartKind};
 use evo_core::rng::Rng;
+use glam::Vec3;
 use std::f32::consts::{PI, TAU};
 
 /// Pencil graphite on paper.
@@ -28,6 +29,8 @@ pub struct Pencil<'a> {
     scale: f32,
     /// Darkness multiplier (fainter for older sketches).
     pub weight: f32,
+    /// The colour the part being drawn is washed in (`limb` and `fill` use it).
+    tint: Option<Color32>,
 }
 
 impl<'a> Pencil<'a> {
@@ -38,6 +41,7 @@ impl<'a> Pencil<'a> {
             origin: Pos2::ZERO,
             scale: 1.0,
             weight: 1.0,
+            tint: None,
         }
     }
 
@@ -148,6 +152,93 @@ impl<'a> Pencil<'a> {
         ));
     }
 
+    /// Paper fill, then a wash in the part's colour, over a body-local polygon.
+    fn fill(&mut self, pts: &[Vec2]) {
+        self.blank(pts);
+        if let Some(color) = self.tint {
+            self.wash_polygon(pts, color, 0.8);
+        }
+    }
+
+    fn wash_polygon(&mut self, pts: &[Vec2], color: Color32, strength: f32) {
+        let screen: Vec<Pos2> = pts.iter().map(|&p| self.to_screen(p)).collect();
+        let bounds = Rect::from_points(&screen);
+        self.wash(bounds, color, strength, &|p| {
+            if in_polygon(pts, p) { 1.0 } else { 0.0 }
+        });
+    }
+
+    /// A watercolour wash over `bounds` (screen), as much paint as `cover` says (body-local
+    /// point → 0..1): translucent, a little blotchy, darker where it pooled at the edges as it
+    /// dried, and drifting a pixel or so off the pencil line.
+    fn wash(&mut self, bounds: Rect, color: Color32, strength: f32, cover: &dyn Fn(Vec2) -> f32) {
+        let bounds = bounds.expand(2.0);
+        if !bounds.is_positive() {
+            return;
+        }
+        let cell = (bounds.width().max(bounds.height()) / 110.0).max(1.4);
+        let nx = (bounds.width() / cell).ceil() as usize + 2;
+        let ny = (bounds.height() / cell).ceil() as usize + 2;
+        let phase: [f32; 4] = std::array::from_fn(|_| self.rng.f32() * TAU);
+        let drift = 0.6 + 0.8 * self.rng.f32();
+        let grain_seed = self.rng.f32() * 100.0;
+        // Positions relative to the sketch, so the paint doesn't shimmer as the page scrolls.
+        let at = |i: usize, j: usize| bounds.min + vec2(i as f32, j as f32) * cell;
+        let mut paint = vec![0.0f32; nx * ny];
+        for j in 0..ny {
+            for i in 0..nx {
+                let rel = at(i, j) - self.origin;
+                let off = vec2((rel.y * 0.09 + phase[0]).sin(), (rel.x * 0.08 + phase[1]).sin());
+                let local = (rel + off * drift) / self.scale;
+                paint[j * nx + i] = cover(vec2(local.x, -local.y)).clamp(0.0, 1.0);
+            }
+        }
+        // Pigment pools at the edge: compare each point with its neighbourhood (a summed-area
+        // table gives the local average).
+        let mut sum = vec![0.0f32; (nx + 1) * (ny + 1)];
+        for j in 0..ny {
+            for i in 0..nx {
+                sum[(j + 1) * (nx + 1) + i + 1] = paint[j * nx + i] + sum[j * (nx + 1) + i + 1]
+                    + sum[(j + 1) * (nx + 1) + i]
+                    - sum[j * (nx + 1) + i];
+            }
+        }
+        let r = ((2.5 / cell).round() as usize).max(1);
+        let mut mesh = egui::Mesh::default();
+        for j in 0..ny {
+            for i in 0..nx {
+                let k = j * nx + i;
+                let (i0, i1) = (i.saturating_sub(r), (i + r + 1).min(nx));
+                let (j0, j1) = (j.saturating_sub(r), (j + r + 1).min(ny));
+                let total = sum[j1 * (nx + 1) + i1] - sum[j0 * (nx + 1) + i1]
+                    - sum[j1 * (nx + 1) + i0]
+                    + sum[j0 * (nx + 1) + i0];
+                let average = total / ((i1 - i0) * (j1 - j0)) as f32;
+                let edge = ((paint[k] - average) * 2.2).clamp(0.0, 1.0);
+                let rel = at(i, j) - self.origin;
+                let blotch = 0.85
+                    + 0.15 * (rel.x * 0.11 + phase[2]).sin() * (rel.y * 0.13 + phase[3]).sin()
+                    + 0.1 * (hash(i as f32 + grain_seed, j as f32) - 0.5);
+                let alpha = paint[k] * strength * self.weight * (0.7 * blotch + 0.5 * edge);
+                mesh.colored_vertex(at(i, j), color.gamma_multiply(alpha.clamp(0.0, 1.0)));
+            }
+        }
+        for j in 0..ny - 1 {
+            for i in 0..nx - 1 {
+                let k = j * nx + i;
+                let quad = [k, k + 1, k + nx, k + nx + 1];
+                if quad.iter().any(|&q| paint[q] > 0.0) {
+                    let [a, b, c, d] = quad.map(|q| q as u32);
+                    mesh.add_triangle(a, b, c);
+                    mesh.add_triangle(b, d, c);
+                }
+            }
+        }
+        if !mesh.indices.is_empty() {
+            self.painter.add(Shape::mesh(mesh));
+        }
+    }
+
     fn dot(&self, c: Vec2, r: f32, color: Color32) {
         self.painter
             .circle_filled(self.to_screen(c), (r * self.scale).max(0.7), color);
@@ -212,6 +303,9 @@ impl<'a> Pencil<'a> {
         if widest < 1.3 {
             let pts: Vec<Vec2> = mid.iter().map(|m| m.0).collect();
             let w = (widest * 2.0).clamp(line_w * 0.8, line_w * 1.6);
+            if let Some(color) = self.tint {
+                self.path_colored(&pts, w * 2.0, 0.6, color);
+            }
             self.path(&pts, w, darkness);
             return;
         }
@@ -231,6 +325,10 @@ impl<'a> Pencil<'a> {
         for i in 0..mid.len() - 1 {
             self.blank(&[a[i], a[i + 1], b[i + 1], b[i]]);
         }
+        if let Some(color) = self.tint {
+            let outline: Vec<Vec2> = a.iter().chain(b.iter().rev()).copied().collect();
+            self.wash_polygon(&outline, color, 0.8);
+        }
         self.path(&a, line_w, darkness);
         self.path(&b, line_w, darkness);
         // Close the end.
@@ -249,6 +347,93 @@ fn polar(angle: f32) -> Vec2 {
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Even-odd test: is `p` inside the polygon?
+fn in_polygon(pts: &[Vec2], p: Vec2) -> bool {
+    let mut inside = false;
+    let mut j = pts.len().wrapping_sub(1);
+    for i in 0..pts.len() {
+        let (a, b) = (pts[i], pts[j]);
+        if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+fn to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// A linear colour (as the shader works in) back to sRGB.
+fn srgb(c: Vec3) -> Color32 {
+    let encode = |c: f32| {
+        let c = c.clamp(0.0, 1.0);
+        let s = if c <= 0.0031308 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
+        (s * 255.0).round() as u8
+    };
+    Color32::from_rgb(encode(c.x), encode(c.y), encode(c.z))
+}
+
+/// The body colour, linear.
+fn base_linear(t: &Traits) -> Vec3 {
+    Vec3::from(t.color.map(to_linear))
+}
+
+/// Chlorophyll's colour: purple for sulfur photosynthesis through golden-brown to green for
+/// oxygen-releasing, as the game colours fronds.
+fn leaf_pigment(oxygenic: f32) -> Vec3 {
+    let purple = Vec3::new(0.5, 0.12, 0.48);
+    let golden = Vec3::new(0.58, 0.44, 0.1);
+    let green = Vec3::new(0.14, 0.58, 0.1);
+    if oxygenic < 0.5 {
+        purple.lerp(golden, oxygenic * 2.0)
+    } else {
+        golden.lerp(green, oxygenic * 2.0 - 1.0)
+    }
+}
+
+/// An eye's iris (the game picks it per eye from amber to blue).
+fn iris_color(eye_seed: f32) -> Vec3 {
+    Vec3::new(1.0, 0.62, 0.08).lerp(Vec3::new(0.15, 0.55, 1.0), (eye_seed * 3.7).fract())
+}
+
+/// A part's colour as the game shades it (`organism.wgsl`, mid-length and unlit).
+fn part_color(kind: PartKind, t: &Traits) -> Color32 {
+    let base = base_linear(t);
+    let v = Vec3::new;
+    srgb(match kind {
+        PartKind::Flagellum => base * 0.95 + Vec3::splat(0.09),
+        PartKind::Cilia => base * 0.7,
+        PartKind::Tentacle => base * 0.9,
+        PartKind::Frond => {
+            let pigment = leaf_pigment(t.oxygenic);
+            let faded = pigment.lerp(v(0.8, 0.82, 0.72), 0.45);
+            faded.lerp(pigment, smoothstep(0.0, 0.6, t.photo)).lerp(base, 0.08)
+        }
+        PartKind::Fin => base * 0.95 + Vec3::splat(0.03),
+        PartKind::Fluke => base * 0.95,
+        PartKind::Leg => base.lerp(v(0.35, 0.25, 0.15), 0.35) * 0.9,
+        PartKind::Holdfast => base.lerp(v(0.32, 0.22, 0.1), 0.55),
+        PartKind::Stalk => base * 0.8,
+        // The eye itself is coloured where it's drawn.
+        PartKind::Eye => base,
+        PartKind::Antenna => base.lerp(v(0.85, 0.75, 0.55), 0.3),
+        PartKind::Lure => base * 0.7,
+        PartKind::Spine => (base * 0.4).lerp(v(0.9, 0.85, 0.72), 0.7),
+        PartKind::Jaw => v(0.2, 0.11, 0.05).lerp(v(0.85, 0.7, 0.5), 0.25).lerp(base * 0.5, 0.2),
+        PartKind::Shell => (base * 0.45).lerp(v(0.55, 0.5, 0.4), 0.45),
+    })
 }
 
 fn hash(a: f32, b: f32) -> f32 {
@@ -431,8 +616,9 @@ pub fn draw_specimen(
             draw_part(&mut pen, inst, line_w, organism_seed, t);
         }
     }
+    pen.tint = None;
 
-    // The body: paper fill (hides part roots), colour, organelles, shading, outline.
+    // The body: paper fill (hides part roots), a wash, organelles, shading, outline.
     let outlines = body.outlines();
     for o in &outlines {
         pen.blank(o);
@@ -444,18 +630,9 @@ pub fn draw_specimen(
         pen.to_screen(vec2(shape.nose().max(hl) * 1.2, -hw * 1.3)),
     );
     let tint = super::color32(t.color);
-    let inside = |p: Vec2| body.inside(p);
-    // Coloured pencil wash of the body colour.
-    pen.hatch(
-        screen_bounds,
-        -0.35,
-        (scale * 0.08).clamp(2.0, 3.6),
-        tint,
-        0.6,
-        &|p| if inside(p) { 0.6 } else { 0.0 },
-    );
-    organelles(&mut pen, &body, t, organism_seed);
-    pattern(&mut pen, &body, t, line_w, screen_bounds, scale);
+    pen.wash(screen_bounds, tint, 0.85, &|p| if body.inside(p) { 1.0 } else { 0.0 });
+    organelles(&mut pen, &body, t, organism_seed, screen_bounds);
+    pattern(&mut pen, &body, t, line_w, screen_bounds);
     // Lit centre, darker rim (per bead), in graphite.
     let rim = |p: Vec2| -> f32 {
         let d = body.distance(p);
@@ -470,7 +647,7 @@ pub fn draw_specimen(
         0.8,
         (scale * 0.065).clamp(1.8, 3.2),
         GRAPHITE,
-        0.45,
+        0.3,
         &rim,
     );
     pen.hatch(
@@ -478,7 +655,7 @@ pub fn draw_specimen(
         -0.75,
         (scale * 0.08).clamp(2.2, 3.8),
         GRAPHITE,
-        0.3,
+        0.2,
         &|p| (rim(p) - 0.5).max(0.0),
     );
     nucleus(&mut pen, &body, organism_seed, line_w);
@@ -508,6 +685,7 @@ pub fn draw_specimen(
             draw_part(&mut pen, inst, line_w, organism_seed, t);
         }
     }
+    pen.tint = None;
 
     // One label per part kind, at the part's middle, pointing outward.
     let mut labels: Vec<(Pos2, Vec2, &'static str)> = Vec::new();
@@ -546,14 +724,13 @@ fn grid_dots(scale: f32, seed: f32, extent: Vec2) -> Vec<Vec2> {
 }
 
 /// Chloroplasts (green, or purple for sulfur photosynthesis), scavengers' granules, nitrogen
-/// fixers' pale cysts, and a chemotroph's glow, stippled in coloured pencil.
-fn organelles(pen: &mut Pencil, body: &Body, t: &Traits, seed: f32) {
+/// fixers' pale cysts, and a chemotroph's glow, in the game's colours.
+fn organelles(pen: &mut Pencil, body: &Body, t: &Traits, seed: f32, bounds: Rect) {
     let ext = vec2(body.shape.half_length, body.shape.half_width) * 1.1;
     let keep = |p: Vec2, limit: f32| body.distance(p) <= limit;
     if t.photo > 0.05 {
-        let green = Color32::from_rgb(40, 120, 30);
-        let purple = Color32::from_rgb(120, 30, 110);
-        let pigment = if t.oxygenic >= 0.5 { green } else { purple };
+        let pigment =
+            srgb(Vec3::new(0.4, 0.06, 0.36).lerp(Vec3::new(0.08, 0.45, 0.06), t.oxygenic));
         let alpha = (0.25 + 0.6 * t.photo).min(0.85) * pen.weight;
         for p in grid_dots(5.0, seed * 10.0, ext) {
             if keep(p, 0.85) {
@@ -569,7 +746,7 @@ fn organelles(pen: &mut Pencil, body: &Body, t: &Traits, seed: f32) {
         }
     }
     if t.scavenge > 0.05 {
-        let brown = Color32::from_rgb(95, 55, 20);
+        let brown = srgb(Vec3::new(0.25, 0.13, 0.04));
         let alpha = (0.3 + 0.6 * t.scavenge).min(0.85) * pen.weight;
         for p in grid_dots(7.0, seed * 5.0, ext) {
             if keep(p, 0.9) {
@@ -578,8 +755,12 @@ fn organelles(pen: &mut Pencil, body: &Body, t: &Traits, seed: f32) {
         }
     }
     if t.chemo > 0.05 {
-        // A glow from within: a few cyan rings around the centre.
+        // A glow from within: a soft cyan wash and a few rings around the centre.
         let cyan = Color32::from_rgb(40, 150, 170);
+        pen.wash(bounds, srgb(Vec3::new(0.15, 0.9, 1.0)), 0.7 * t.chemo.min(1.0), &|p| {
+            let d = body.norm(p).length();
+            if d <= 1.0 { (-d * d * 5.0).exp() } else { 0.0 }
+        });
         for k in 1..4 {
             let r = 0.12 * k as f32;
             let ring: Vec<Vec2> = (0..=20)
@@ -685,7 +866,9 @@ fn mouth(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32) {
             let x0 = body.shape.half_length * 0.75;
             let x1 = body.shape.half_length * (0.9 + len);
             let rr = r * body.shape.half_width;
-            pen.blank(&[vec2(x0, rr), vec2(x1, rr), vec2(x1, -rr), vec2(x0, -rr)]);
+            let tube = [vec2(x0, rr), vec2(x1, rr), vec2(x1, -rr), vec2(x0, -rr)];
+            pen.blank(&tube);
+            pen.wash_polygon(&tube, srgb(base_linear(t) * 1.35 + Vec3::splat(0.08)), 0.7);
             pen.path(&[vec2(x0, rr), vec2(x1, rr)], line_w, 0.9);
             pen.path(&[vec2(x0, -rr), vec2(x1, -rr)], line_w, 0.9);
             // Rings along the tube, and the opening.
@@ -737,7 +920,7 @@ fn in_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
 }
 
 /// Spots, stripes or rings, as the shader lays them out.
-fn pattern(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32, bounds: Rect, scale_px: f32) {
+fn pattern(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32, bounds: Rect) {
     let style = t.pattern >> 6;
     let scale = 2.0 + (t.pattern & 63) as f32 / 10.0;
     let ext = vec2(body.shape.half_length, body.shape.half_width) * 1.1;
@@ -753,21 +936,11 @@ fn pattern(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32, bounds: Rect,
         }
         2 => {
             // Bands across the body where sin(x · scale · 3) > 0 (darkest in the middle of
-            // each, soft at the edges, as the shader shades them), hatched in the darker
+            // each, soft at the edges, as the shader shades them), washed in the darker
             // colour; a light pencil line marks each band's edges, kept inside the outline.
             let f = scale * 3.0;
             let band = |x: f32| smoothstep(-0.2, 0.2, (x * f).sin());
-            // Cross-hatched, denser than the body's own shading, so the bands stand out.
-            for angle in [1.2, -1.1] {
-                pen.hatch(
-                    bounds,
-                    angle,
-                    (scale_px * 0.035).clamp(1.1, 2.0),
-                    dark,
-                    1.0,
-                    &|p| if body.inside(p) { band(p.x) } else { 0.0 },
-                );
-            }
+            pen.wash(bounds, dark, 1.0, &|p| if body.inside(p) { band(p.x) } else { 0.0 });
             let k0 = (-body.shape.half_length * f / PI).floor() as i32;
             let k1 = (body.shape.nose() * f / PI).ceil() as i32;
             for k in k0..=k1 {
@@ -812,6 +985,7 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
         + inst.index.min(100) as f32 * 1.9;
     let at = |a: f32, c: f32| base + d * (a * len) + n * (c * m * len);
     let samples = |k: usize| (0..=k).map(move |i| i as f32 / k as f32);
+    pen.tint = Some(part_color(inst.kind, t));
     match inst.kind {
         PartKind::Flagellum => {
             let amp = (0.08 + 0.08 * s) * 0.6;
@@ -841,7 +1015,7 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
         PartKind::Cilia => {
             // A band at the base with rows of short hairs.
             let spacing = 0.4 + (0.13 - 0.4) * s;
-            pen.blank(&[at(-0.08, w), at(0.16, w), at(0.16, -w), at(-0.08, -w)]);
+            pen.fill(&[at(-0.08, w), at(0.16, w), at(0.16, -w), at(-0.08, -w)]);
             pen.closed(
                 &[at(-0.08, w), at(0.16, w), at(0.16, -w), at(-0.08, -w)],
                 w_line * 0.6,
@@ -903,27 +1077,9 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 .map(|a| at(a, y(a) + half(a)))
                 .chain(samples(36).map(|a| 1.0 - a).map(|a| at(a, y(a) - half(a))))
                 .collect();
-            pen.blank(&leaf);
-            let pigment = if t.oxygenic >= 0.5 {
-                Color32::from_rgb(50, 125, 40)
-            } else {
-                Color32::from_rgb(120, 40, 110)
-            };
+            pen.fill(&leaf);
             pen.closed(&leaf, w_line, 0.85);
-            // Colour, then the midrib and veins.
-            let screen: Vec<Pos2> = leaf.iter().map(|&p| pen.to_screen(p)).collect();
-            let bounds = Rect::from_points(&screen);
-            let (base_s, dir_s, nrm_s) = (base, d, n * m);
-            pen.hatch(bounds, -0.5, 2.6, pigment, 0.55, &|p| {
-                let rel = p - base_s;
-                let a = rel.dot(dir_s) / len;
-                let c = rel.dot(nrm_s) / len;
-                if (0.0..=1.0).contains(&a) && (c - y(a)).abs() < half(a) {
-                    0.7
-                } else {
-                    0.0
-                }
-            });
+            // The midrib and veins.
             if s > 0.2 {
                 let rib: Vec<Vec2> = samples(10).map(|a| at(a * 0.95, y(a * 0.95))).collect();
                 pen.path(&rib, w_line * 0.6, 0.6);
@@ -944,7 +1100,12 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 }
             }
             if s > 0.8 {
-                pen.circle(at(0.14, y(0.14)), w * 0.55 * len, w_line * 0.7, 0.75);
+                // The gas bladder.
+                let c = at(0.14, y(0.14));
+                let r = w * 0.55 * len;
+                let ring: Vec<Vec2> = (0..16).map(|j| c + polar(j as f32 / 16.0 * TAU) * r).collect();
+                pen.wash_polygon(&ring, srgb(Vec3::new(0.75, 0.65, 0.3)), 0.9);
+                pen.circle(c, r, w_line * 0.7, 0.75);
             }
         }
         PartKind::Fin => {
@@ -969,7 +1130,7 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 let phi = -spread + 2.0 * spread * u;
                 point(phi, reach(phi))
             }));
-            pen.blank(&fan);
+            pen.fill(&fan);
             pen.closed(&fan, w_line, 0.85);
             if s > 0.25 {
                 for k in 0..=(rays as usize) {
@@ -1001,7 +1162,7 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                     to_world(p.x, p.y)
                 })
                 .collect();
-            pen.blank(&blade);
+            pen.fill(&blade);
             pen.closed(&blade, w_line, 0.9);
             pen.path(&[to_world(0.0, 0.22), to_world(0.5, 0.17)], w_line, 0.85);
             pen.path(&[to_world(0.0, -0.22), to_world(0.5, -0.17)], w_line, 0.85);
@@ -1068,7 +1229,7 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                         at(0.85 + 0.15 * th.cos(), w * 0.7 * th.sin())
                     })
                     .collect();
-                pen.blank(&disc);
+                pen.fill(&disc);
                 pen.closed(&disc, w_line, 0.85);
             }
             if s > 0.2 {
@@ -1120,7 +1281,7 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 pen.dot(
                     c,
                     r * 0.55,
-                    Color32::from_rgb(150, 60, 30).gamma_multiply(0.85 * pen.weight),
+                    srgb(Vec3::new(0.55, 0.05, 0.03)).gamma_multiply(0.85 * pen.weight),
                 );
                 pen.closed(&ring(r * 0.55), w_line * 0.6, 0.7);
                 return;
@@ -1134,6 +1295,9 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 pen.path(&cup, w_line * 1.4, 0.9);
                 return;
             }
+            // The iris, in the colour the game gives this eye.
+            let eye_seed = ((seed * 255.0) as u8) as f32 / 255.0 + inst.index as f32 * 0.37;
+            pen.wash_polygon(&ring(r * 0.62), srgb(iris_color(eye_seed)), 0.95);
             pen.closed(&ring(r * 0.62), w_line * 0.7, 0.7);
             if s > 0.77 {
                 // Striated iris and a rim.
@@ -1192,11 +1356,11 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
             pen.limb(&mid, w_line * 0.8, 0.85);
             let bulb = at(0.8, (sway + 0.1) * 0.64);
             let r = w * (0.55 + 0.45 * s) * len;
-            pen.blank(
-                &(0..16)
-                    .map(|j| bulb + polar(j as f32 / 16.0 * TAU) * r)
-                    .collect::<Vec<_>>(),
-            );
+            let disc: Vec<Vec2> = (0..16).map(|j| bulb + polar(j as f32 / 16.0 * TAU) * r).collect();
+            pen.blank(&disc);
+            // Its glowing bulb.
+            let glow = Vec3::new(0.35, 1.0, 0.85).lerp(base_linear(t), 0.25);
+            pen.wash_polygon(&disc, srgb(glow), 0.9);
             pen.circle(bulb, r, w_line, 0.9);
             // Its glow: short rays.
             for j in 0..10 {
@@ -1222,7 +1386,7 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 .map(|a| at(a, y(a) + hw(a)))
                 .chain(samples(20).map(|a| 1.0 - a).map(|a| at(a, y(a) - hw(a))))
                 .collect();
-            pen.blank(&outline);
+            pen.fill(&outline);
             pen.closed(&outline, w_line, 0.9);
             if s > 0.4 {
                 for k in 1..6 {
@@ -1243,7 +1407,7 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                 .map(|a| at(a, y(a) + hw(a)))
                 .chain(samples(20).map(|a| 1.0 - a).map(|a| at(a, y(a) - hw(a))))
                 .collect();
-            pen.blank(&outline);
+            pen.fill(&outline);
             pen.closed(&outline, w_line * 1.1, 0.95);
             if s > 0.3 {
                 let count = 3 + (s * 5.0).floor() as usize;
@@ -1273,22 +1437,7 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
                         .map(|c| at(-bend(c), c)),
                 )
                 .collect();
-            pen.blank(&plate);
-            let shell = Color32::from_rgb(140, 125, 100);
-            let screen: Vec<Pos2> = plate.iter().map(|&p| pen.to_screen(p)).collect();
-            let bounds = Rect::from_points(&screen);
-            let (base_s, dir_s, nrm_s) = (base, d, n * m);
-            pen.hatch(bounds, 0.3, 2.4, shell, 0.5, &|p| {
-                let rel = p - base_s;
-                let a = rel.dot(dir_s) / len;
-                let c = rel.dot(nrm_s) / len;
-                let ac = a + bend(c);
-                if (0.0..=1.0).contains(&ac) && c.abs() <= w {
-                    0.7
-                } else {
-                    0.0
-                }
-            });
+            pen.fill(&plate);
             pen.closed(&plate, w_line, 0.9);
             if s > 0.35 {
                 let lines = (2.0 + 4.0 * s) as usize;

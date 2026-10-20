@@ -602,18 +602,22 @@ Low mutation rates keep lineages coherent long enough to be recognized as specie
 
 ## Founding a species
 
-Every organism carries a species, inherited from its parent. When an offspring is born with a mutation, its genome is compared with the **founder genome** of its parent's species. If the difference exceeds the species threshold, the offspring founds a new species, which records its parent species and the time.
+Every organism carries a species, inherited from its parent. When an offspring is born with a mutation, its genome is compared with the **founder genome** of its parent's species. The offspring founds a new species, which records its parent species and the time, if any of these is true:
+
+- The difference between the genomes exceeds the species threshold (below).
+- It has a kind of part the founder didn't have. Losing a part doesn't count.
+- Its main diet is different from the founder's, and leads the founder's main diet by at least 0.1 (so a near-tie doesn't count). A diet switch also founds a new genus.
 
 The difference between two genomes is a weighted average of the differences of each gene, each measured from 0 to 1:
 
-- Each gene counts at most 0.3, so one large jump in a single gene can't make a new species.
-- Color genes weigh 0.25. Part size and place bytes weigh 0.3, and count only when both genomes have a part in that slot.
+- Each gene counts at most 0.3, so one large jump in a single gene can't make a new species. Size (B0) counts up to 0.5.
+- Color genes weigh 0.25, and each counts at most 0.15 after its weight. Part size and place bytes weigh 0.3, and count only when both genomes have a part in that slot.
 - A part type counts 0.5 if the kind differs, or a fraction of that if only the symmetry differs.
 - Every other gene weighs 1.
 
 The weights add up to 46.55. The species threshold is 0.035, so a new species needs a total weighted difference of about 1.6: for example six genes each changed by `4D` or more, or about twenty genes each changed by `14`.
 
-A new **genus** is founded the same way, at a threshold of 0.07 from the genus's founder.
+A new **genus** is founded the same way, at a threshold of 0.07 from the genus's founder, or when the main diet switches away from the genus founder's.
 
 ## Established species and extinction
 

@@ -1115,6 +1115,13 @@ pub struct SpeciesConfig {
     pub color_weight: f32,
     /// Most any single gene can add to genetic distance (as a fraction of its range).
     pub gene_cap: f32,
+    /// Most a color gene (hue, saturation, pattern) can add, after its weight.
+    pub color_cap: f32,
+    /// Most the size gene can add (in place of `gene_cap`).
+    pub size_cap: f32,
+    /// A newborn whose main diet differs from its founder's by at least this much (in the new
+    /// diet's lead over the old) founds a new species and genus, however close its genes.
+    pub diet_margin: f32,
     /// Living members needed before a species is named and listed.
     pub established: u32,
 }
@@ -1126,6 +1133,9 @@ impl Default for SpeciesConfig {
             genus_threshold: 0.07,
             color_weight: 0.25,
             gene_cap: 0.3,
+            color_cap: 0.15,
+            size_cap: 0.5,
+            diet_margin: 0.1,
             established: 20,
         }
     }

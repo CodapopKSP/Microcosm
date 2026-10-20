@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::genome::{Genome, drive, gene};
 use crate::parts::{self, PartKind};
 use crate::rng::{Rng, mix64};
-use crate::traits::Traits;
+use crate::traits::{self, Traits};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Species {
@@ -704,6 +704,22 @@ fn epithet_candidates(
     out
 }
 
+/// One bit per kind of part the genome has.
+fn part_kinds(genome: &Genome) -> u16 {
+    (0..parts::SLOTS)
+        .filter_map(|k| PartKind::from_code(genome.0[parts::slot_offset(k)]))
+        .fold(0, |bits, kind| bits | 1 << kind as u16)
+}
+
+/// Whether `genome`'s main diet differs from `founder`'s, leading the founder's main diet by at
+/// least `species.diet_margin` (so near-ties don't flicker between species).
+fn diet_switched(founder: &Genome, genome: &Genome, config: &Config) -> bool {
+    let was = traits::main_diet(traits::diet(founder, config));
+    let caps = traits::diet(genome, config);
+    let now = traits::main_diet(caps);
+    now != was && caps[now] - caps[was] >= config.species.diet_margin
+}
+
 const ROMAN: [&str; 10] = [
     "", " II", " III", " IV", " V", " VI", " VII", " VIII", " IX", " X",
 ];
@@ -856,20 +872,28 @@ impl SpeciesRegistry {
         let Some(parent) = self.species.get(&parent_species) else {
             return parent_species;
         };
-        if genome.distance(&parent.founder, sc.color_weight, sc.gene_cap) <= sc.threshold {
+        if genome.distance(&parent.founder, sc) <= sc.threshold
+            && !Self::new_kind(&parent.founder, genome, config)
+        {
             return parent_species;
         }
         let parent_genus = parent.genus;
         let genus = match self.genera.get(&parent_genus) {
             Some(g)
-                if genome.distance(&g.founder, sc.color_weight, sc.gene_cap)
-                    <= sc.genus_threshold =>
+                if genome.distance(&g.founder, sc) <= sc.genus_threshold
+                    && !diet_switched(&g.founder, genome, config) =>
             {
                 parent_genus
             }
             _ => self.new_genus(genome, Some(parent_genus), config),
         };
         self.insert_species(genome, genus, Some(parent_species), tick, config)
+    }
+
+    /// Whether `genome` is a different kind of organism from `founder` however close their
+    /// genes: it clearly eats a different way, or has a kind of part the founder didn't.
+    pub fn new_kind(founder: &Genome, genome: &Genome, config: &Config) -> bool {
+        part_kinds(genome) & !part_kinds(founder) != 0 || diet_switched(founder, genome, config)
     }
 
     pub fn on_birth(&mut self, species: u32, config: &Config, tick: u64) {
@@ -980,6 +1004,38 @@ mod tests {
         assert_eq!(s.parent, Some(0));
         assert!(!s.established);
         assert_ne!(s.name, reg.get(0).unwrap().name);
+    }
+
+    #[test]
+    fn a_new_part_kind_founds_a_species_but_losing_one_doesnt() {
+        let (config, g, mut reg) = setup();
+        let mut finned = g;
+        finned.0[parts::slot_offset(0)] = PartKind::Fin.code();
+        assert!(g.distance(&finned, &config.species) <= config.species.threshold);
+        let id = reg.classify(0, &finned, 10, &config);
+        assert_ne!(id, 0);
+        // Its descendants that lose the fin are still the finned species.
+        assert_eq!(reg.classify(id, &g, 11, &config), id);
+    }
+
+    #[test]
+    fn a_clear_diet_switch_founds_a_species_and_genus() {
+        let (config, g, mut reg) = setup();
+        let mut hunter = g;
+        hunter.0[gene::PHOTO] = 0x60;
+        hunter.0[gene::HUNT] = 0xC0;
+        assert!(g.distance(&hunter, &config.species) <= config.species.threshold);
+        assert_eq!(traits::main_diet(traits::diet(&hunter, &config)), 3);
+        let id = reg.classify(0, &hunter, 10, &config);
+        assert_ne!(id, 0);
+        assert_ne!(reg.get(id).unwrap().genus, reg.get(0).unwrap().genus);
+        // Barely ahead isn't a switch.
+        let mut tied = g;
+        tied.0[gene::PHOTO] = 0x80;
+        tied.0[gene::HUNT] = 0x84;
+        let caps = traits::diet(&tied, &config);
+        assert!(caps[3] > caps[0] && caps[3] - caps[0] < config.species.diet_margin);
+        assert_eq!(reg.classify(0, &tied, 10, &config), 0);
     }
 
     #[test]

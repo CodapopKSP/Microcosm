@@ -242,6 +242,10 @@ threshold = 0.035         # genetic distance from the founder that starts a new 
 genus_threshold = 0.07
 color_weight = 0.25
 gene_cap = 0.3           # most any single gene adds to distance (so one jump isn't a species)
+color_cap = 0.15         # most a color gene adds, after its weight
+size_cap = 0.5           # most the size gene adds
+diet_margin = 0.1        # a clear switch of main diet founds a new species and genus
+# (so does growing a kind of part the species' founder didn't have)
 established = 20         # members needed before a species is named and listed
 
 [population]

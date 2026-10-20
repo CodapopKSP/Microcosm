@@ -86,6 +86,9 @@ pub struct Args {
     /// Open the charts window on the family tree.
     #[arg(long)]
     pub tree: bool,
+    /// Open the field notebook at startup.
+    #[arg(long)]
+    pub notebook: bool,
     /// Follow a member of the first living species whose name contains this text.
     #[arg(long)]
     pub follow: Option<String>,
@@ -129,6 +132,7 @@ pub struct ViewerOptions {
     pub select: bool,
     pub charts: bool,
     pub tree: bool,
+    pub notebook: bool,
     pub follow: Option<String>,
     pub follow_zoom: f32,
     pub map: Option<String>,
@@ -152,7 +156,8 @@ fn main() {
         || args.select
         || args.probe.is_some()
         || args.charts
-        || args.tree;
+        || args.tree
+        || args.notebook;
     let world = direct.then(|| direct_world(&args));
     let start = if world.is_some() {
         AppState::Running
@@ -205,6 +210,7 @@ fn main() {
         select: args.select,
         charts: args.charts || args.tree,
         tree: args.tree,
+        notebook: args.notebook,
         follow: args.follow.clone(),
         follow_zoom: args.follow_zoom,
         map: args.map.clone(),
