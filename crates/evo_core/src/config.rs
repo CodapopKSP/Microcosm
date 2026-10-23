@@ -636,6 +636,9 @@ pub struct PartsConfig {
     pub base_sense: f32,
     /// Temperature tolerance (± °C) each full-size shell plate adds; smaller plates add less.
     pub shell_insulation: f32,
+    /// A part halfway from one kind to another does each job this much worse than its share
+    /// alone would (less nearer either end, none at the ends), so pure forms stay worth having.
+    pub form_penalty: f32,
     /// No longer used (eyes and antennae became one sense); still read from older saves.
     #[serde(skip_serializing, rename = "eye_range")]
     pub legacy_eye_range: Option<f32>,
@@ -665,6 +668,7 @@ impl Default for PartsConfig {
             contact_margin: 2.0,
             base_sense: 4.0,
             shell_insulation: 1.0,
+            form_penalty: 0.15,
             legacy_eye_range: None,
             legacy_smell_range: None,
             legacy_antenna_range: None,
@@ -1072,9 +1076,14 @@ pub struct MutationConfig {
     pub reroll: f32,
     /// Multiplier on the size of a mutation's step (±1, 2, 4 or 8 before scaling).
     pub step_scale: f32,
-    /// Part-type genes mutate this many times as often as other genes (type shifts and
-    /// symmetry changes are big steps).
+    /// Part-type genes mutate this many times as often as other genes (a symmetry change is a
+    /// big step).
     pub part_type_rate_multiplier: f32,
+    /// Part-form genes mutate this many times as often as other genes, so a part can turn into
+    /// a related kind within a long run.
+    pub form_rate_multiplier: f32,
+    /// Average step of a part-form mutation, in 64ths of the way to the related kind.
+    pub form_step: f32,
     /// Color genes mutate this many times as often (a fast "molecular clock", so lineages
     /// visibly diverge in color).
     pub color_rate_multiplier: f32,
@@ -1094,7 +1103,9 @@ impl Default for MutationConfig {
             rate: 0.03,
             reroll: 0.05,
             step_scale: 2.0,
-            part_type_rate_multiplier: 0.3,
+            part_type_rate_multiplier: 0.15,
+            form_rate_multiplier: 2.0,
+            form_step: 8.0,
             color_rate_multiplier: 3.0,
             part_duplicate: 0.003,
             part_delete: 0.004,
@@ -1175,7 +1186,7 @@ impl Default for PopulationConfig {
         Self {
             ancestor: "B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 \
                        N:80808080808080808000 \
-                       P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0"
+                       P:00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 R:FF00B0 T:80A0"
                 .into(),
             initial: 2000,
             spawn_min_depth: 0.0,

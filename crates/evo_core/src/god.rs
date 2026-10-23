@@ -336,7 +336,7 @@ mod tests {
         // A very different genome founds a lineage of its own.
         let other = crate::genome::Genome::parse(
             "B:207060300000 C:10C040 D:00FF0000 G:400080000000 H:2030 \
-             N:80808080808080808000 P:086010 000000 000000 000000 000000 000000 000000 000000 \
+             N:80808080808080808000 P:08601000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 \
              R:FF00B0 T:FFFF",
         )
         .unwrap();

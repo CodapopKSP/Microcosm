@@ -1,4 +1,4 @@
-//! The genome: 60 bytes in nine lettered chromosomes, one byte per gene.
+//! The genome: 68 bytes in nine lettered chromosomes, one byte per gene.
 //!
 //! See docs/DESIGN.md §2 for what each gene does, and `parts.rs` for the P chromosome.
 
@@ -8,7 +8,12 @@ use crate::config::{MutationConfig, SpeciesConfig};
 use crate::parts::{self, PartKind};
 use crate::rng::Rng;
 
-pub const GENOME_LEN: usize = 60;
+pub const GENOME_LEN: usize = 68;
+/// Genomes were 60 bytes before part slots gained their form byte; those still load.
+pub const OLD_GENOME_LEN: usize = 60;
+
+/// A set of genes (bit `i` = gene `i`), such as the ones a mutation changed.
+pub type GeneMask = u128;
 
 /// Byte offsets of every gene.
 pub mod gene {
@@ -36,13 +41,13 @@ pub mod gene {
     /// First of the nine drive genes (N0..N8).
     pub const DRIVES: usize = 21;
     pub const RESTLESSNESS: usize = 30;
-    /// First byte of the eight three-byte part slots (P chromosome).
+    /// First byte of the eight four-byte part slots (P chromosome).
     pub const PARTS: usize = 31;
-    pub const OFFSPRING_SIZE: usize = 55;
-    pub const BROOD: usize = 56;
-    pub const PATIENCE: usize = 57;
-    pub const TEMP_PREF: usize = 58;
-    pub const TEMP_TOL: usize = 59;
+    pub const OFFSPRING_SIZE: usize = 63;
+    pub const BROOD: usize = 64;
+    pub const PATIENCE: usize = 65;
+    pub const TEMP_PREF: usize = 66;
+    pub const TEMP_TOL: usize = 67;
 }
 
 /// Indices into the drive array (genes N0..N8).
@@ -72,6 +77,8 @@ pub enum GeneKind {
     PartSize,
     /// Part slot: attachment + angle.
     PartPlace,
+    /// Part slot: path to a related kind + how far along it.
+    PartForm,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -134,6 +141,13 @@ const fn pp(name: &'static str) -> GeneInfo {
     GeneInfo {
         name,
         kind: GeneKind::PartPlace,
+    }
+}
+
+const fn pf(name: &'static str) -> GeneInfo {
+    GeneInfo {
+        name,
+        kind: GeneKind::PartForm,
     }
 }
 
@@ -212,39 +226,47 @@ pub static CHROMOSOMES: [Chromosome; 9] = [
             pk("Part 1 type"),
             ps("Part 1 size"),
             pp("Part 1 place"),
+            pf("Part 1 form"),
             pk("Part 2 type"),
             ps("Part 2 size"),
             pp("Part 2 place"),
+            pf("Part 2 form"),
             pk("Part 3 type"),
             ps("Part 3 size"),
             pp("Part 3 place"),
+            pf("Part 3 form"),
             pk("Part 4 type"),
             ps("Part 4 size"),
             pp("Part 4 place"),
+            pf("Part 4 form"),
             pk("Part 5 type"),
             ps("Part 5 size"),
             pp("Part 5 place"),
+            pf("Part 5 form"),
             pk("Part 6 type"),
             ps("Part 6 size"),
             pp("Part 6 place"),
+            pf("Part 6 form"),
             pk("Part 7 type"),
             ps("Part 7 size"),
             pp("Part 7 place"),
+            pf("Part 7 form"),
             pk("Part 8 type"),
             ps("Part 8 size"),
             pp("Part 8 place"),
+            pf("Part 8 form"),
         ],
     },
     Chromosome {
         letter: 'R',
         name: "Reproduction",
-        start: 55,
+        start: 63,
         genes: &[g("Offspring size"), g("Brood size"), g("Patience")],
     },
     Chromosome {
         letter: 'T',
         name: "Temperature",
-        start: 58,
+        start: 66,
         genes: &[g("Preferred"), g("Tolerance")],
     },
 ];
@@ -266,6 +288,21 @@ pub fn gene_code(index: usize) -> String {
 pub fn gene_info(index: usize) -> GeneInfo {
     let c = chromosome_of(index);
     c.genes[index - c.start]
+}
+
+/// Where gene `index` of an old 60-byte genome is now: part slots grew from three bytes to
+/// four, which moved every slot after the first and the R and T chromosomes.
+pub fn from_old_index(index: usize) -> usize {
+    const OLD_SLOT: usize = 3;
+    const OLD_END: usize = gene::PARTS + OLD_SLOT * parts::SLOTS;
+    if index < gene::PARTS {
+        index
+    } else if index < OLD_END {
+        let k = index - gene::PARTS;
+        parts::slot_offset(k / OLD_SLOT) + k % OLD_SLOT
+    } else {
+        index + (parts::SLOT_BYTES - OLD_SLOT) * parts::SLOTS
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -300,22 +337,18 @@ impl<'de> Deserialize<'de> for Genome {
                 Genome::parse(v).map_err(E::custom)
             }
             fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Genome, E> {
-                let bytes: [u8; GENOME_LEN] = v
-                    .try_into()
-                    .map_err(|_| E::invalid_length(v.len(), &self))?;
-                Ok(Genome(bytes))
+                Genome::from_bytes(v).ok_or_else(|| E::invalid_length(v.len(), &self))
             }
             fn visit_seq<A: serde::de::SeqAccess<'de>>(
                 self,
                 mut seq: A,
             ) -> Result<Genome, A::Error> {
-                let mut bytes = [0u8; GENOME_LEN];
-                for (i, b) in bytes.iter_mut().enumerate() {
-                    *b = seq
-                        .next_element()?
-                        .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
+                let mut bytes = Vec::with_capacity(GENOME_LEN);
+                while let Some(b) = seq.next_element()? {
+                    bytes.push(b);
                 }
-                Ok(Genome(bytes))
+                Genome::from_bytes(&bytes)
+                    .ok_or_else(|| serde::de::Error::invalid_length(bytes.len(), &self))
             }
         }
         if d.is_human_readable() {
@@ -341,8 +374,8 @@ impl std::fmt::Display for Genome {
             }
             write!(f, "{}:", c.letter)?;
             for (k, b) in self.0[c.range()].iter().enumerate() {
-                // Part slots are grouped in threes for readability.
-                if c.letter == 'P' && k > 0 && k % 3 == 0 {
+                // Part slots are grouped in fours for readability.
+                if c.letter == 'P' && k > 0 && k % parts::SLOT_BYTES == 0 {
                     write!(f, " ")?;
                 }
                 write!(f, "{b:02X}")?;
@@ -353,8 +386,25 @@ impl std::fmt::Display for Genome {
 }
 
 impl Genome {
+    /// A genome from its raw bytes: the current length, or an old 60-byte genome, whose part
+    /// slots get a form byte of zero (each part wholly its own kind).
+    pub fn from_bytes(bytes: &[u8]) -> Option<Genome> {
+        if let Ok(bytes) = <[u8; GENOME_LEN]>::try_from(bytes) {
+            return Some(Genome(bytes));
+        }
+        if bytes.len() != OLD_GENOME_LEN {
+            return None;
+        }
+        let mut g = Genome::default();
+        for (i, &b) in bytes.iter().enumerate() {
+            g.0[from_old_index(i)] = b;
+        }
+        Some(g)
+    }
+
     /// Parse chromosome notation: `B:20A050200000 C:55C000 …`. Every chromosome must appear once;
-    /// spaces anywhere are ignored.
+    /// spaces anywhere are ignored. An old P chromosome (three bytes per part slot) is read
+    /// with each part wholly its own kind.
     pub fn parse(text: &str) -> Result<Genome, String> {
         let mut bytes = [0u8; GENOME_LEN];
         let mut seen = [false; CHROMOSOMES.len()];
@@ -365,8 +415,14 @@ impl Genome {
                       bytes: &mut [u8; GENOME_LEN],
                       pending: &mut Option<u8>|
          -> Result<(), String> {
-            if let Some((ci, data)) = current.take() {
+            if let Some((ci, mut data)) = current.take() {
                 let c = &CHROMOSOMES[ci];
+                if c.letter == 'P' && data.len() == 3 * parts::SLOTS {
+                    data = data
+                        .chunks(3)
+                        .flat_map(|slot| [slot[0], slot[1], slot[2], 0])
+                        .collect();
+                }
                 if pending.take().is_some() {
                     return Err(format!(
                         "chromosome {} has an odd number of hex digits",
@@ -448,26 +504,34 @@ impl Genome {
         ((self.0[index] as f32 - 128.0) / 127.0).clamp(-1.0, 1.0)
     }
 
-    /// Mutate in place; returns a bitmask of the genes that changed.
+    /// Mutate in place; returns the genes that changed.
     ///
-    /// Every gene can take a small step (or rarely a re-roll). Part-type genes instead shift to a
-    /// neighboring part type or change symmetry. Then, rarely, whole parts are duplicated into an
-    /// empty slot, deleted, or grown new from an empty slot's leftover (cryptic) bytes.
-    pub fn mutate(&mut self, rng: &mut Rng, cfg: &MutationConfig) -> u64 {
+    /// Every gene can take a small step (or rarely a re-roll). Part-type genes instead change
+    /// symmetry, and part-form genes walk the part toward a related kind. Then, rarely, whole
+    /// parts are duplicated into an empty slot, deleted, or grown new from an empty slot's
+    /// leftover (cryptic) bytes.
+    pub fn mutate(&mut self, rng: &mut Rng, cfg: &MutationConfig) -> GeneMask {
         let before = self.0;
         for i in 0..GENOME_LEN {
+            let kind = gene_info(i).kind;
             let rate = if (gene::HUE..=gene::PATTERN).contains(&i) {
                 cfg.rate * cfg.color_rate_multiplier
-            } else if gene_info(i).kind == GeneKind::PartKind {
+            } else if kind == GeneKind::PartKind {
                 cfg.rate * cfg.part_type_rate_multiplier
+            } else if kind == GeneKind::PartForm {
+                cfg.rate * cfg.form_rate_multiplier
             } else {
                 cfg.rate
             };
             if !rng.chance(rate) {
                 continue;
             }
-            if gene_info(i).kind == GeneKind::PartKind {
+            if kind == GeneKind::PartKind {
                 self.mutate_part_kind(i, rng);
+                continue;
+            }
+            if kind == GeneKind::PartForm {
+                self.mutate_part_form(i, rng, cfg);
                 continue;
             }
             let old = self.0[i];
@@ -492,7 +556,7 @@ impl Genome {
         }
         self.mutate_diet_shift(rng, cfg);
         self.mutate_structure(rng, cfg);
-        let mut mask = 0u64;
+        let mut mask: GeneMask = 0;
         for (i, (now, was)) in self.0.iter().zip(before).enumerate() {
             if *now != was {
                 mask |= 1 << i;
@@ -501,7 +565,8 @@ impl Genome {
         mask
     }
 
-    /// Shift a part to a neighboring type, or change its symmetry. Empty slots stay empty.
+    /// Change a part's symmetry. Empty slots stay empty. (A part's kind changes only by walking
+    /// its form to a related kind.)
     fn mutate_part_kind(&mut self, i: usize, rng: &mut Rng) {
         let byte = self.0[i];
         let kind = byte & 0x0F;
@@ -509,15 +574,43 @@ impl Genome {
             return;
         }
         let sym = (byte >> 4).min(5);
-        if rng.chance(0.5) {
-            // Neighboring types in the catalog are related forms (fin ↔ leg ↔ …).
-            let n = PartKind::ALL.len() as i32;
-            let shifted =
-                (kind as i32 - 1 + if rng.chance(0.5) { 1 } else { -1 }).rem_euclid(n) + 1;
-            self.0[i] = sym << 4 | shifted as u8;
+        let new_sym = (sym as i32 + if rng.chance(0.5) { 1 } else { -1 }).clamp(0, 5) as u8;
+        self.0[i] = new_sym << 4 | kind;
+    }
+
+    /// Walk a part along its path to a related kind (the form byte at `i`), a step either way.
+    /// Only a part that hasn't started changing picks a new path, so it never jumps from one
+    /// half-made form to another. Past the end of its path it becomes the other kind, wholly,
+    /// and its path then leads back.
+    fn mutate_part_form(&mut self, i: usize, rng: &mut Rng, cfg: &MutationConfig) {
+        let at = i - (parts::SLOT_BYTES - 1);
+        let Some(kind) = PartKind::from_code(self.0[at]) else {
+            return;
+        };
+        let path = self.0[i] >> 6;
+        let amount = (self.0[i] % parts::FORM_STEPS) as i32;
+        if amount == 0 && rng.chance(0.5) {
+            self.0[i] = (rng.below(4) as u8) << 6;
+            return;
+        }
+        let Some(other) = kind.path(path) else {
+            return;
+        };
+        let roll = rng.f32();
+        let scale = if roll < 0.4 {
+            0.5
+        } else if roll < 0.8 {
+            1.0
         } else {
-            let new_sym = (sym as i32 + if rng.chance(0.5) { 1 } else { -1 }).clamp(0, 5) as u8;
-            self.0[i] = new_sym << 4 | kind;
+            2.0
+        };
+        let step = ((cfg.form_step * scale).round() as i32).max(1);
+        let amount = amount + if rng.chance(0.5) { step } else { -step };
+        if amount >= parts::FORM_STEPS as i32 {
+            self.0[at] = self.0[at] & 0xF0 | other.code();
+            self.0[i] = other.path_to(kind).unwrap_or(0) << 6;
+        } else {
+            self.0[i] = path << 6 | amount.max(0) as u8;
         }
     }
 
@@ -554,7 +647,7 @@ impl Genome {
             // Copy a part into an empty slot; the copy is then free to diverge.
             let from = parts::slot_offset(occupied[rng.below(occupied.len() as u32) as usize]);
             let to = parts::slot_offset(empty[rng.below(empty.len() as u32) as usize]);
-            for b in 0..3 {
+            for b in 0..parts::SLOT_BYTES {
                 self.0[to + b] = self.0[from + b];
             }
             // Often the copy lands somewhere else on the body.
@@ -572,6 +665,8 @@ impl Genome {
             let sym = if rng.chance(0.5) { 1 } else { 0 };
             self.0[at] = sym << 4 | kind;
             self.0[at + 1] = self.0[at + 1].clamp(0x20, 0x60);
+            // It starts as wholly its own kind (the leftover path stays, unused until it grows).
+            self.0[at + 3] &= 0xC0;
             // A slot that never held a part has a zero placement (the head, pointing straight
             // forward), so it starts somewhere random; one that did may reuse where that part was.
             if self.0[at + 2] == 0 || rng.chance(0.5) {
@@ -582,8 +677,9 @@ impl Genome {
 
     /// Weighted mean per-gene difference, in `[0, 1]`. Each gene contributes at most `gene_cap`,
     /// so one large jump in a single gene can't make a new species on its own. Color genes weigh
-    /// `color_weight`. A part slot's type counts up to 0.5 (a new kind of part is a big step); its
-    /// size and placement count only when both genomes actually have a part there.
+    /// `color_weight`. A part slot's type and form count together, up to 0.5 (a new kind of part
+    /// is a big step, reached a little at a time as the form changes); its size and placement
+    /// count only when both genomes actually have a part there.
     pub fn distance(&self, other: &Genome, sc: &SpeciesConfig) -> f32 {
         let mut sum = 0.0;
         let mut weight_total = 0.0;
@@ -592,21 +688,24 @@ impl Genome {
             let (w, d) = match gene_info(i).kind {
                 GeneKind::PartKind => {
                     let (a, b) = (self.0[i], other.0[i]);
-                    let d = if a & 0x0F != b & 0x0F {
-                        1.0
-                    } else if a & 0x0F == 0 {
+                    let form = parts::SLOT_BYTES - 1;
+                    let kinds = slot_kinds(a, self.0[i + form])
+                        .difference(&slot_kinds(b, other.0[i + form]));
+                    let symmetry = if a & 0x0F == 0 || b & 0x0F == 0 {
                         0.0
                     } else {
                         ((a >> 4).min(5) as i32 - (b >> 4).min(5) as i32).unsigned_abs() as f32
                             / 5.0
                     };
                     // A new kind of part is a big change, so it isn't held to `gene_cap`.
-                    sum += d.min(0.5);
+                    sum += (0.5 * kinds + symmetry).min(0.5);
                     weight_total += 1.0;
                     continue;
                 }
+                // Counted with the type.
+                GeneKind::PartForm => continue,
                 GeneKind::PartSize | GeneKind::PartPlace => {
-                    let slot = parts::slot_offset((i - gene::PARTS) / 3);
+                    let slot = parts::slot_offset((i - gene::PARTS) / parts::SLOT_BYTES);
                     let both = self.0[slot] & 0x0F != 0 && other.0[slot] & 0x0F != 0;
                     (
                         0.3,
@@ -643,6 +742,64 @@ impl Genome {
     }
 }
 
+/// Saving a [`GeneMask`]: as 16 bytes. Saves from before the genome grew hold a 64-bit number
+/// numbering the old 60-byte genome; its genes are moved to where they are now.
+pub mod gene_mask_serde {
+    use super::{GeneMask, OLD_GENOME_LEN, from_old_index};
+
+    pub fn serialize<S: serde::Serializer>(mask: &GeneMask, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_bytes(&mask.to_le_bytes())
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<GeneMask, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = GeneMask;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a gene mask")
+            }
+            fn visit_u64<E: serde::de::Error>(self, old: u64) -> Result<GeneMask, E> {
+                Ok((0..OLD_GENOME_LEN)
+                    .filter(|&i| old & (1 << i) != 0)
+                    .fold(0, |mask, i| mask | 1 << from_old_index(i)))
+            }
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<GeneMask, E> {
+                let bytes: [u8; 16] = v.try_into().map_err(|_| E::invalid_length(v.len(), &self))?;
+                Ok(GeneMask::from_le_bytes(bytes))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// What a part slot holds, as shares of part kinds (kind code 0 = empty).
+struct SlotKinds([(u8, f32); 2]);
+
+fn slot_kinds(kind_byte: u8, form: u8) -> SlotKinds {
+    let code = kind_byte & 0x0F;
+    match PartKind::from_code(code).and_then(|k| parts::decode_form(k, form)) {
+        Some((other, t)) => SlotKinds([(code, 1.0 - t), (other.code(), t)]),
+        None => SlotKinds([(code, 1.0), (code, 0.0)]),
+    }
+}
+
+impl SlotKinds {
+    /// How different two slots are, from 0 (the same) to 1 (nothing in common): the share
+    /// of one that would have to change kind to match the other.
+    fn difference(&self, other: &SlotKinds) -> f32 {
+        let share = |s: &SlotKinds, code: u8| -> f32 {
+            s.0.iter().filter(|p| p.0 == code).map(|p| p.1).sum()
+        };
+        let mut codes: Vec<u8> = self.0.iter().chain(&other.0).map(|p| p.0).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        0.5 * codes
+            .into_iter()
+            .map(|c| (share(self, c) - share(other, c)).abs())
+            .sum::<f32>()
+    }
+}
+
 /// Distance between two colors given as (hue, saturation) gene bytes, in `[0, ~1.5]`.
 #[inline]
 pub fn color_distance(hue_a: u8, sat_a: u8, hue_b: u8, sat_b: u8) -> f32 {
@@ -656,7 +813,7 @@ mod tests {
     use super::*;
 
     const ANCESTOR: &str = "B:20A050200000 C:55C000 D:FF000000 G:80FF80000000 H:2030 N:80808080808080808000 \
-        P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0";
+        P:00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 R:FF00B0 T:80A0";
 
     #[test]
     fn chromosomes_cover_every_byte_once() {
@@ -685,7 +842,7 @@ mod tests {
         let g = Genome::parse(ANCESTOR).unwrap();
         let text = g.to_string();
         assert_eq!(Genome::parse(&text).unwrap(), g);
-        assert!(text.contains("P:000000 000000"), "{text}");
+        assert!(text.contains("P:00000000 00000000"), "{text}");
         assert_eq!(g.get(gene::SIZE), 0x20);
         assert_eq!(g.get(gene::PHOTO), 0xFF);
         assert_eq!(g.get(gene::OXYGENIC), 0xFF);
@@ -739,13 +896,82 @@ mod tests {
         let p = parts::decode_parts(&g);
         assert_eq!(p.len(), 2, "the part is duplicated");
         assert_eq!(p[0].kind, p[1].kind);
-        // Type shifts move to a neighbor in the catalog and never empty a slot.
+        // Type mutations change only the symmetry: never the kind, and never empty a slot.
         let mut shifted = g;
         let at = parts::slot_offset(p[0].slot);
         for _ in 0..200 {
             shifted.mutate_part_kind(at, &mut rng);
-            assert_ne!(shifted.0[at] & 0x0F, 0);
+            assert_eq!(shifted.0[at] & 0x0F, g.0[at] & 0x0F);
         }
+    }
+
+    #[test]
+    fn old_genomes_still_load() {
+        let old = "B:20A050200000 C:55C000 D:FF000000 G:80FF80000000 H:2030 N:80808080808080808000 \
+            P:0180C0 000000 000000 000000 000000 000000 000000 23FF10 R:FF00B0 T:80A0";
+        let g = Genome::parse(old).unwrap();
+        let p = parts::decode_parts(&g);
+        assert_eq!(p.len(), 2);
+        assert_eq!((p[0].kind, p[0].size, p[0].toward), (PartKind::Flagellum, 0x80 as f32 / 255.0, None));
+        assert_eq!((p[1].slot, p[1].kind), (7, PartKind::Tentacle));
+        assert_eq!(g.get(gene::TEMP_TOL), 0xA0);
+        // The raw bytes of an old save, as well as its text.
+        let mut bytes = [0u8; OLD_GENOME_LEN];
+        for i in 0..OLD_GENOME_LEN {
+            let at = from_old_index(i);
+            assert!(gene_info(at).kind != GeneKind::PartForm);
+            bytes[i] = g.0[at];
+        }
+        assert_eq!(Genome::from_bytes(&bytes), Some(g));
+        assert_eq!(Genome::from_bytes(&bytes[..59]), None);
+    }
+
+    #[test]
+    fn forms_walk_to_related_kinds_a_step_at_a_time() {
+        let cfg = MutationConfig::default();
+        let mut rng = Rng::new(11);
+        let mut g = Genome::parse(ANCESTOR).unwrap();
+        let at = parts::slot_offset(0);
+        g.0[at] = 0x10 | PartKind::Flagellum.code();
+        let form = at + parts::SLOT_BYTES - 1;
+        let mut became = std::collections::HashSet::new();
+        for _ in 0..20_000 {
+            let (kind, before) = (g.0[at], g.0[form]);
+            g.mutate_part_form(form, &mut rng, &cfg);
+            assert_eq!(g.0[at] >> 4, 1, "the symmetry stays");
+            if g.0[at] != kind {
+                // A new kind: wholly itself, with the way back as its path.
+                let (was, now) = (PartKind::from_code(kind).unwrap(), PartKind::from_code(g.0[at]).unwrap());
+                assert_eq!(was.path(before >> 6), Some(now));
+                assert_eq!(g.0[form], now.path_to(was).unwrap() << 6);
+                became.insert(now);
+            } else if before % parts::FORM_STEPS != 0 {
+                assert_eq!(g.0[form] >> 6, before >> 6, "a part partway along keeps its path");
+            }
+        }
+        assert!(became.contains(&PartKind::Tentacle) && became.contains(&PartKind::Cilia));
+        assert!(!became.contains(&PartKind::Spine), "never to an unrelated kind");
+    }
+
+    #[test]
+    fn a_changing_part_drifts_away_a_little_at_a_time() {
+        let sc = SpeciesConfig::default();
+        let mut base = Genome::parse(ANCESTOR).unwrap();
+        let at = parts::slot_offset(0);
+        base.0[at] = PartKind::Flagellum.code();
+        let mut last = 0.0;
+        for amount in 1..parts::FORM_STEPS {
+            let mut g = base;
+            g.0[at + 3] = amount; // path 0: toward a tentacle
+            let d = base.distance(&g, &sc);
+            assert!(d > last, "{amount}");
+            last = d;
+        }
+        // All the way along is as far as a tentacle (the old one-step jump).
+        let mut tentacle = base;
+        tentacle.0[at] = PartKind::Tentacle.code();
+        let full = base.distance(&tentacle, &sc);
+        assert!((full - last).abs() < full / 32.0, "{full} vs {last}");
     }
 
     #[test]

@@ -265,7 +265,7 @@ CHROMOSOMES = [
     ("G", "Chemistry", 6, "#fbe8b8", "#8a5e00"),
     ("H", "Health", 2, "#f6d3e0", "#a53863"),
     ("N", "Nature", 10, "#d6f0d6", "#006300"),
-    ("P", "Parts", 24, "#dedaf3", "#4a3aa7"),
+    ("P", "Parts", 32, "#dedaf3", "#4a3aa7"),
     ("R", "Reproduction", 3, "#f8d1d1", "#a83232"),
     ("T", "Temperature", 2, "#e4e3df", "#52514e"),
 ]
@@ -273,7 +273,7 @@ ANCESTOR = CFG["population"]["ancestor"]
 
 
 def genome_map():
-    """The 60 bytes of the ancestor's genome, grouped into chromosomes."""
+    """The 68 bytes of the ancestor's genome, grouped into chromosomes."""
     hexes = "".join(c for part in ANCESTOR.split() for c in part.split(":")[-1])
     values = [hexes[i:i + 2] for i in range(0, len(hexes), 2)]
     cell, gap, left, top = 22, 10, 10, 40
@@ -292,8 +292,8 @@ def genome_map():
                 body.append(f'<rect x="{cx + 1}" y="{y}" width="{cell - 2}" height="26" rx="3" '
                             f'fill="{fill}"/>')
                 body.append(text(cx + cell / 2, y + 17, values[index], 10.5, INK, family=MONO))
-                if letter == "P" and k % 3 == 0:
-                    body.append(text(cx + 1.5 * cell, y + 42, f"slot {k // 3 + 1}", 8.5, MUTED))
+                if letter == "P" and k % 4 == 0:
+                    body.append(text(cx + 2 * cell, y + 42, f"slot {k // 4 + 1}", 8.5, MUTED))
                 elif letter != "P":
                     body.append(text(cx + cell / 2, y + 40, f"{letter}{k}", 8, MUTED))
                 index += 1
@@ -303,7 +303,7 @@ def genome_map():
 
 
 def part_bytes():
-    """How the three bytes of a part slot are read."""
+    """How the four bytes of a part slot are read."""
     body = []
     bit = 22
     x0, y = 20, 46
@@ -341,7 +341,11 @@ def part_bytes():
         (3, "#fbe8b8", "where", ["where: 0–5 segment 1–6, 6 every", "segment, 7 tip of the previous part"]),
         (5, "#fbd9cb", "angle", ["angle: 0–31 around the attachment", "point (0 front, 8 left, 16 back)"]),
     ])
-    (OUT / "diagram-part-bytes.svg").write_text(svg(24 * bit + 110 + 2 * x0, 150, "".join(body)))
+    byte(x0 + 24 * bit + 90, "Form", [
+        (2, "#e4e3df", "path", ["path: 0–3, a related kind", "(or none) to change into"]),
+        (6, "#f6d3e0", "how far", ["how far: 0–63 of the way", "(0 = not changing)"]),
+    ])
+    (OUT / "diagram-part-bytes.svg").write_text(svg(32 * bit + 140 + 2 * x0, 150, "".join(body)))
 
 
 # Arrowheads are drawn as plain triangles: WeasyPrint misplaces SVG markers on lines that point
@@ -584,23 +588,30 @@ def nutrient_cycle():
     p.write_text(s)
 
 
-def part_ring():
-    """The part catalog in order: a type mutation moves one step around the ring."""
-    kinds = ["Flagellum", "Cilia band", "Tentacle", "Frond", "Fin", "Tail fluke", "Leg",
-             "Holdfast", "Stalk", "Eye", "Antenna", "Lure", "Spine", "Jaw", "Shell plate"]
-    cx, cy, R = 300, 175, 125
-    body = [f'<circle cx="{cx}" cy="{cy}" r="{R}" fill="none" stroke="{GRID}" stroke-width="2"/>']
-    for i, k in enumerate(kinds):
-        th = -math.pi / 2 + i / len(kinds) * 2 * math.pi
-        x, y = cx + R * math.cos(th), cy + R * math.sin(th)
-        body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="13" fill="#dedaf3"/>')
-        body.append(text(f"{x:.1f}", f"{y + 4:.1f}", f"{i + 1:X}", 11, "#4a3aa7", weight="bold", family=MONO))
-        lx, ly = cx + (R + 24) * math.cos(th), cy + (R + 24) * math.sin(th) + 4
-        anchor = "start" if math.cos(th) > 0.2 else "end" if math.cos(th) < -0.2 else "middle"
-        body.append(text(f"{lx:.1f}", f"{ly:.1f}", k, 10.5, INK, anchor=anchor))
-    body.append(text(cx, cy - 6, "kind nibble", 10, INK2))
-    body.append(text(cx, cy + 10, "1 – F", 12, INK, weight="bold", family=MONO))
-    (OUT / "diagram-part-ring.svg").write_text(svg(600, 350, "".join(body)))
+def part_paths():
+    """The paths between part kinds: a part can slowly change along any line, either way."""
+    motion, fins, armor = ("#dedaf3", "#4a3aa7"), ("#c9eedd", "#127a55"), ("#fbe8b8", "#8a5e00")
+    nodes = {
+        "Lure": (70, 50, motion), "Eye": (190, 50, motion), "Antenna": (310, 50, motion),
+        "Stalk": (430, 50, motion), "Tentacle": (310, 140, motion), "Flagellum": (430, 140, motion),
+        "Cilia band": (430, 230, fins), "Fin": (310, 230, fins), "Frond": (190, 230, fins),
+        "Tail fluke": (310, 320, fins), "Leg": (190, 320, fins), "Holdfast": (70, 320, fins),
+        "Jaw": (580, 50, armor), "Spine": (580, 140, armor), "Shell plate": (580, 230, armor),
+    }
+    links = [("Lure", "Eye"), ("Eye", "Antenna"), ("Antenna", "Stalk"), ("Antenna", "Tentacle"),
+             ("Tentacle", "Flagellum"), ("Flagellum", "Cilia band"), ("Cilia band", "Fin"),
+             ("Fin", "Frond"), ("Fin", "Tail fluke"), ("Fin", "Leg"), ("Leg", "Holdfast"),
+             ("Jaw", "Spine"), ("Spine", "Shell plate")]
+    body = []
+    for a, b in links:
+        (x1, y1, _), (x2, y2, _) = nodes[a], nodes[b]
+        body.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{MUTED}" '
+                    f'stroke-width="2"/>')
+    for name, (x, y, (fill, dark)) in nodes.items():
+        body.append(f'<rect x="{x - 48}" y="{y - 14}" width="96" height="28" rx="14" '
+                    f'fill="{fill}" stroke="{dark}" stroke-width="1"/>')
+        body.append(text(x, y + 4, name, 11, INK))
+    (OUT / "diagram-part-paths.svg").write_text(svg(650, 350, "".join(body)))
 
 
 def deep_ocean_map():
@@ -686,6 +697,6 @@ if __name__ == "__main__":
     feeding_reach()
     energy_flow()
     nutrient_cycle()
-    part_ring()
+    part_paths()
     export_png()
     print("figures written to", OUT)

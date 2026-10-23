@@ -915,7 +915,7 @@ fn help(ui: &mut egui::Ui) {
 
     help_section(ui, "Genome", HELP_GENOME);
     ui.label(
-        "Each organism's genome is 60 bytes in nine chromosomes. Every byte is one gene; \
+        "Each organism's genome is 68 bytes in nine chromosomes. Every byte is one gene; \
          the inspector shows each gene's value and what it does.",
     );
     ui.add_space(4.0);

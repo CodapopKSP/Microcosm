@@ -784,6 +784,8 @@ fn parts_section(ui: &mut egui::Ui, genome: &mut Genome) {
                             Some(p) => sym << 4 | p.code(),
                             None => 0,
                         };
+                        // A different kind starts wholly itself.
+                        genome.0[o + 3] = 0;
                         // A fresh part gets a middling size so it shows.
                         if kind.is_none() && genome.0[o + 1] == 0 {
                             genome.0[o + 1] = 0x80;
@@ -857,6 +859,54 @@ fn parts_section(ui: &mut egui::Ui, genome: &mut Genome) {
                         );
                         ui.end_row();
                         genome.0[o + 2] = where_ << 5 | angle;
+
+                        // Partway to a related kind.
+                        let form = genome.0[o + 3];
+                        let (mut path, mut amount) = (form >> 6, form % parts::FORM_STEPS);
+                        let mut toward = if amount > 0 { p.path(path) } else { None };
+                        ui.label("Changing into");
+                        egui::ComboBox::from_id_salt(("part_form", k))
+                            .width(150.0)
+                            .selected_text(
+                                toward
+                                    .map(|other| capitalized(other.name()))
+                                    .unwrap_or("Nothing".into()),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut toward, None, "Nothing");
+                                for other in p.paths().into_iter().flatten() {
+                                    ui.selectable_value(
+                                        &mut toward,
+                                        Some(other),
+                                        capitalized(other.name()),
+                                    )
+                                    .on_hover_text(other.role());
+                                }
+                            });
+                        ui.label("");
+                        ui.end_row();
+                        match toward {
+                            Some(other) => {
+                                path = p.path_to(other).unwrap_or(0);
+                                amount = amount.max(1);
+                                ui.label("How far");
+                                ui.add(
+                                    egui::Slider::new(&mut amount, 1..=parts::FORM_STEPS - 1)
+                                        .show_value(false),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{:.0}%",
+                                        amount as f32 * 100.0 / parts::FORM_STEPS as f32
+                                    ))
+                                    .size(12.5)
+                                    .color(MUTED),
+                                );
+                                ui.end_row();
+                            }
+                            None => amount = 0,
+                        }
+                        genome.0[o + 3] = path << 6 | amount;
                     });
             });
         ui.add_space(4.0);

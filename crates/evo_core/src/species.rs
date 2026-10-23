@@ -159,7 +159,9 @@ fn features(t: &Traits, genome: &Genome) -> Vec<Feature> {
         } else {
             1.0
         };
-        amount[p.kind as usize - 1] += p.count as f32 * repeats * p.size;
+        for (kind, share) in p.shares() {
+            amount[kind as usize - 1] += p.count as f32 * repeats * p.size * share;
+        }
     }
     let part = |k: PartKind| 1.0 - (-1.5 * amount[k as usize - 1]).exp();
     let mut diets = [t.photo, t.chemo, t.scavenge, t.hunt];
@@ -704,11 +706,12 @@ fn epithet_candidates(
     out
 }
 
-/// One bit per kind of part the genome has.
+/// One bit per kind of part the genome has (a part changing kind counts as the kind it's
+/// closer to).
 fn part_kinds(genome: &Genome) -> u16 {
-    (0..parts::SLOTS)
-        .filter_map(|k| PartKind::from_code(genome.0[parts::slot_offset(k)]))
-        .fold(0, |bits, kind| bits | 1 << kind as u16)
+    parts::decode_parts(genome)
+        .iter()
+        .fold(0, |bits, p| bits | 1 << p.main_kind() as u16)
 }
 
 /// Whether `genome`'s main diet differs from `founder`'s, leading the founder's main diet by at

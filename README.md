@@ -2,14 +2,14 @@
 
 A side-on ocean where life evolves on its own, built to be watched (for example, running on a stream for weeks). The world starts with a single kind of tiny floating green microbe with no body parts. Everything else has to evolve: flagella, fins, legs, tentacles, fronds, eyes, jaws, shells and the rest of the body plan; scavenging, predation and chemosynthesis at hydrothermal vents; breathing oxygen or fermenting, toxins, and large bodies. The water has real chemistry: photosynthesis releases oxygen, breathing and rotting use it, and nutrients cycle through bodies. Species get names, founders and family trees. They rise, spread, and go extinct.
 
-Every organism has a **60-byte genome in nine lettered chromosomes**, one byte per gene, readable by a human:
+Every organism has a **68-byte genome in nine lettered chromosomes**, one byte per gene, readable by a human:
 
 ```
 B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 N:80808080808080808000
-P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0
+P:00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 R:FF00B0 T:80A0
 ```
 
-Chromosome **P** holds up to eight body parts (type and symmetry, size, placement). Parts get copied, lost, and change into related kinds, so body plans evolve.
+Chromosome **P** holds up to eight body parts (type and symmetry, size, placement, form). Parts get copied and lost, and slowly turn into related kinds (a whip thickens into an arm, a leaf stiffens into a fin), working a little at every step, so body plans evolve.
 
 Click any organism to see what each gene does.
 
@@ -98,7 +98,7 @@ All tunable numbers live in [`configs/default.toml`](configs/default.toml), with
 
 Maps can also be painted in the **Map editor** (from the main menu, or `--editor`): paint rock, open water or cave with a round or square brush of any size (caves are open water that's dark and keeps filling with detritus and nutrients: a home for anaerobic scavengers), place permanent vents and vent spawn points (temporary vents only open there), draw named start areas (offered on the New world screen as places for life to start), set the water level (rock above it stands out as land) and the map's size, then name and save it. Saved maps (`configs/maps/<name>.map`) appear in the New world map list.
 
-Starting organisms can be built in the **Genome editor** (from the main menu, or `--genome-editor`; or "Edit in genome editor" next to the ancestor on the New world screen): every gene has a slider and a typed hex value with what it means, the eight part slots have pickers for the kind, symmetry, size, placement and angle, and the whole genome can be copied or pasted as text. The organism is drawn live by the game's own renderer, with the inspector's readout of its parts and abilities beside it. Undo/redo, a Mutate button, and New (start from a built-in preset) / Open (your saved organisms). Saved organisms appear under Preset on the New world screen, after the built-in ones.
+Starting organisms can be built in the **Genome editor** (from the main menu, or `--genome-editor`; or "Edit in genome editor" next to the ancestor on the New world screen): every gene has a slider and a typed hex value with what it means, the eight part slots have pickers for the kind, symmetry, size, placement and angle, and what each part is turning into and how far, and the whole genome can be copied or pasted as text. The organism is drawn live by the game's own renderer, with the inspector's readout of its parts and abilities beside it. Undo/redo, a Mutate button, and New (start from a built-in preset) / Open (your saved organisms). Saved organisms appear under Preset on the New world screen, after the built-in ones.
 
 The world's size and terrain live in map files in [`configs/maps/`](configs/maps/). The game ships with one map, **Deep Ocean** (`Deep Ocean.map`, painted in the editor). Maps you paint and save appear beside it. A config picks one with `[world] map = "Deep Ocean"`, and `--world-map NAME` overrides that. The map is the same for every world seed. A map can also be a `.toml` file naming a terrain generator and its settings (see `TerrainConfig`); without any map file the built-in generated ocean is used.
 

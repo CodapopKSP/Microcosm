@@ -2,9 +2,9 @@
 //! tabs for an overview (vitals, stats, diet), its body plan, its chemistry and its genome.
 
 use bevy_egui::egui::{self, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2, vec2};
-use evo_core::genome::{CHROMOSOMES, gene_code};
+use evo_core::genome::{CHROMOSOMES, gene_code, gene_info};
 use evo_core::parts::{self, BodyShape};
-use evo_core::traits::{describe_gene, format_game_duration};
+use evo_core::traits::{describe_gene, describe_slot, format_game_duration};
 use evo_core::{Organism, World};
 
 use super::hud::{self, ACCENT, CARD_FILL, MUTED, TEXT, round_button};
@@ -760,7 +760,6 @@ fn chemistry(ui: &mut egui::Ui, world: &World, o: &Organism) {
 }
 
 fn genome(ui: &mut egui::Ui, world: &World, o: &Organism) {
-    let t = &o.traits;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         let mutated = o.mutations.count_ones();
@@ -799,33 +798,57 @@ fn genome(ui: &mut egui::Ui, world: &World, o: &Organism) {
     });
 
     for c in &CHROMOSOMES {
-        // Part slots are three bytes each: group them, as the genome is written elsewhere.
-        let bytes: Vec<String> = if c.letter == 'P' {
-            c.range()
-                .collect::<Vec<_>>()
-                .chunks(3)
-                .map(|k| {
-                    k.iter()
-                        .map(|&i| format!("{:02X}", o.genome.0[i]))
-                        .collect::<String>()
-                })
-                .collect()
-        } else {
-            c.range()
-                .map(|i| format!("{:02X}", o.genome.0[i]))
-                .collect()
-        };
-        let bytes = bytes.join(" ");
-        let long = bytes.len() > 30;
+        let is_parts = c.letter == 'P';
+        // Part slots are several bytes each: group them, as the genome is written elsewhere.
+        let groups: Vec<String> = c
+            .range()
+            .collect::<Vec<_>>()
+            .chunks(if is_parts { parts::SLOT_BYTES } else { 1 })
+            .map(|k| {
+                k.iter()
+                    .map(|&i| format!("{:02X}", o.genome.0[i]))
+                    .collect::<String>()
+            })
+            .collect();
         let any_mutated = c.range().any(|i| o.mutations & (1 << i) != 0);
         let id = ui.make_persistent_id(("chromosome", c.letter));
         let mut state =
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
         ui.add_space(4.0);
+        let width = ui.available_width();
+        // The bytes go at the end of the name's row when they fit there; otherwise on lines of
+        // their own below it, broken between groups.
+        let row_font = FontId::monospace(11.5);
+        let line_font = FontId::monospace(10.5);
+        let glyph = |font: &FontId| {
+            ui.painter()
+                .layout_no_wrap("0".into(), font.clone(), TEXT)
+                .size()
+                .x
+        };
+        let name_w = ui
+            .painter()
+            .layout_no_wrap(c.name.into(), FontId::proportional(13.0), TEXT)
+            .size()
+            .x;
+        let joined = groups.join(" ");
+        let row_room = width - (30.0 + name_w + 14.0 + 22.0);
+        let lines: Vec<String> = if joined.len() as f32 * glyph(&row_font) <= row_room {
+            Vec::new()
+        } else {
+            // As few lines as fit, with the groups shared evenly between them.
+            let per_line = (((width - 12.0) / glyph(&line_font)) as usize).max(8);
+            let group_len = groups[0].len() + 1;
+            let fit = ((per_line + 1) / group_len).max(1);
+            let rows = groups.len().div_ceil(fit);
+            groups
+                .chunks(groups.len().div_ceil(rows))
+                .map(|g| g.join(" "))
+                .collect()
+        };
         let header = ui.horizontal(|ui| {
-            let height = if long { 38.0 } else { 24.0 };
-            let (r, resp) =
-                ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+            let height = 24.0 + 14.0 * lines.len() as f32;
+            let (r, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
             let p = ui.painter();
             let hovered = resp.hovered();
             p.rect_filled(
@@ -859,41 +882,26 @@ fn genome(ui: &mut egui::Ui, world: &World, o: &Organism) {
                 TEXT,
             );
             let byte_color = if any_mutated { MUTATED } else { MUTED };
-            if long {
-                // Too long for the name's row: on a line of its own below it.
-                p.text(
-                    Pos2::new(badge.left() + 2.0, row_y + 17.0),
-                    egui::Align2::LEFT_CENTER,
-                    &bytes,
-                    FontId::monospace(10.0),
-                    byte_color,
-                );
-            } else {
+            if lines.is_empty() {
                 p.text(
                     Pos2::new(r.right() - 22.0, row_y),
                     egui::Align2::RIGHT_CENTER,
-                    &bytes,
-                    FontId::monospace(11.5),
+                    &joined,
+                    row_font.clone(),
                     byte_color,
                 );
-            }
-            // Open/closed chevron.
-            let cx = Pos2::new(r.right() - 10.0, row_y);
-            let open = state.is_open();
-            let pts = if open {
-                vec![
-                    cx + vec2(-4.0, -2.0),
-                    cx + vec2(0.0, 2.5),
-                    cx + vec2(4.0, -2.0),
-                ]
             } else {
-                vec![
-                    cx + vec2(-2.0, -4.0),
-                    cx + vec2(2.5, 0.0),
-                    cx + vec2(-2.0, 4.0),
-                ]
-            };
-            p.add(egui::Shape::line(pts, Stroke::new(1.5, MUTED)));
+                for (n, line) in lines.iter().enumerate() {
+                    p.text(
+                        Pos2::new(badge.left() + 2.0, row_y + 17.0 + 14.0 * n as f32),
+                        egui::Align2::LEFT_CENTER,
+                        line,
+                        line_font.clone(),
+                        byte_color,
+                    );
+                }
+            }
+            chevron(p, Pos2::new(r.right() - 10.0, row_y), state.is_open());
             resp
         });
         crate::ui_sfx::silent(&header.inner);
@@ -901,65 +909,145 @@ fn genome(ui: &mut egui::Ui, world: &World, o: &Organism) {
             state.toggle(ui);
         }
         state.show_body_unindented(ui, |ui| {
-            // Each gene on two lines: its code, name, a bar and its value; then what it means
-            // underneath (descriptions can be long, so they get the card's whole width).
-            for (k, i) in c.range().enumerate() {
-                let info = c.genes[k];
-                let value = o.genome.0[i];
-                let mutated = o.mutations & (1 << i) != 0;
-                let color = if mutated { MUTATED } else { TEXT };
-                ui.add_space(3.0);
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [28.0, 16.0],
-                        egui::Label::new(
-                            RichText::new(gene_code(i))
-                                .monospace()
-                                .size(11.0)
-                                .color(MUTED),
-                        ),
-                    );
-                    ui.label(RichText::new(info.name).size(12.5).color(color));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(4.0);
-                        ui.label(
-                            RichText::new(format!("{value:02X}"))
-                                .monospace()
-                                .size(12.0)
-                                .color(color),
-                        );
-                        let (rect, _) = ui.allocate_exact_size(vec2(56.0, 6.0), Sense::hover());
-                        let painter = ui.painter();
-                        painter.rect_filled(rect, 3.0, TRACK);
-                        if info.signed() {
-                            let mid = rect.center().x;
-                            let v = o.genome.signed(i);
-                            let x = mid + v * rect.width() * 0.5;
-                            let r = Rect::from_min_max(
-                                egui::pos2(mid.min(x), rect.top()),
-                                egui::pos2(mid.max(x), rect.bottom()),
-                            );
-                            let c = if v >= 0.0 {
-                                Color32::from_rgb(110, 200, 130)
-                            } else {
-                                DANGER
-                            };
-                            painter.rect_filled(r, 3.0, c);
-                        } else {
-                            let mut r = rect;
-                            r.set_width(rect.width() * value as f32 / 255.0);
-                            painter.rect_filled(r, 3.0, ACCENT.gamma_multiply(0.75));
-                        }
-                    });
-                });
-                let desc = describe_gene(i, &o.genome, t, &world.config);
-                ui.horizontal(|ui| {
-                    // Lined up under the gene's name (after its code and the gap).
-                    ui.add_space(28.0 + ui.spacing().item_spacing.x);
-                    ui.add(egui::Label::new(RichText::new(desc).size(11.5).color(MUTED)).wrap());
-                });
+            if is_parts {
+                part_slots(ui, world, o);
+            } else {
+                for i in c.range() {
+                    gene_row(ui, world, o, i, gene_info(i).name);
+                }
             }
             ui.add_space(2.0);
         });
     }
+}
+
+/// An open/closed chevron.
+fn chevron(p: &egui::Painter, c: Pos2, open: bool) {
+    let pts = if open {
+        vec![c + vec2(-4.0, -2.0), c + vec2(0.0, 2.5), c + vec2(4.0, -2.0)]
+    } else {
+        vec![c + vec2(-2.0, -4.0), c + vec2(2.5, 0.0), c + vec2(-2.0, 4.0)]
+    };
+    p.add(egui::Shape::line(pts, Stroke::new(1.5, MUTED)));
+}
+
+/// The part slots, each folded to a line saying what it grows ("Pair of fins on segment 2");
+/// opened, its genes.
+fn part_slots(ui: &mut egui::Ui, world: &World, o: &Organism) {
+    for slot in 0..parts::SLOTS {
+        let first = parts::slot_offset(slot);
+        let genes = first..first + parts::SLOT_BYTES;
+        let mutated = genes.clone().any(|i| o.mutations & (1 << i) != 0);
+        let summary = describe_slot(&o.genome, slot);
+        let id = ui.make_persistent_id(("part slot", slot));
+        let mut state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        ui.add_space(3.0);
+        let color = if mutated {
+            MUTATED
+        } else if summary.is_some() {
+            TEXT
+        } else {
+            MUTED
+        };
+        let width = ui.available_width();
+        let text_x = 28.0 + ui.spacing().item_spacing.x;
+        let galley = ui.painter().layout(
+            summary.unwrap_or_else(|| "Empty".into()),
+            FontId::proportional(12.5),
+            color,
+            width - text_x - 22.0,
+        );
+        let height = galley.size().y.max(16.0) + 6.0;
+        let (r, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+        let p = ui.painter();
+        if resp.hovered() {
+            p.rect_filled(r, 6.0, Color32::from_rgba_unmultiplied(255, 255, 255, 10));
+        }
+        let first_line = r.top() + 3.0 + galley.rows.first().map_or(8.0, |row| row.height() * 0.5);
+        p.text(
+            Pos2::new(r.left(), first_line),
+            egui::Align2::LEFT_CENTER,
+            (slot + 1).to_string(),
+            FontId::monospace(11.0),
+            MUTED,
+        );
+        p.galley(Pos2::new(r.left() + text_x, r.top() + 3.0), galley, color);
+        chevron(p, Pos2::new(r.right() - 10.0, first_line), state.is_open());
+        crate::ui_sfx::silent(&resp);
+        if resp.clicked() {
+            state.toggle(ui);
+        }
+        state.show_body_unindented(ui, |ui| {
+            for i in genes {
+                // "Part 3 size" reads as just "Size" under its slot's line.
+                let name = gene_info(i).name;
+                let name = name.splitn(3, ' ').nth(2).unwrap_or(name);
+                let mut c = name.chars();
+                let name: String =
+                    c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default();
+                ui.indent(("part slot genes", slot), |ui| gene_row(ui, world, o, i, &name));
+            }
+            ui.add_space(2.0);
+        });
+    }
+}
+
+/// A gene on two lines: its code, name, a bar and its value; then what it means underneath
+/// (descriptions can be long, so they get the card's whole width).
+fn gene_row(ui: &mut egui::Ui, world: &World, o: &Organism, i: usize, name: &str) {
+    let info = gene_info(i);
+    let value = o.genome.0[i];
+    let mutated = o.mutations & (1 << i) != 0;
+    let color = if mutated { MUTATED } else { TEXT };
+    ui.add_space(3.0);
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [28.0, 16.0],
+            egui::Label::new(
+                RichText::new(gene_code(i))
+                    .monospace()
+                    .size(11.0)
+                    .color(MUTED),
+            ),
+        );
+        ui.label(RichText::new(name).size(12.5).color(color));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!("{value:02X}"))
+                    .monospace()
+                    .size(12.0)
+                    .color(color),
+            );
+            let (rect, _) = ui.allocate_exact_size(vec2(56.0, 6.0), Sense::hover());
+            let painter = ui.painter();
+            painter.rect_filled(rect, 3.0, TRACK);
+            if info.signed() {
+                let mid = rect.center().x;
+                let v = o.genome.signed(i);
+                let x = mid + v * rect.width() * 0.5;
+                let r = Rect::from_min_max(
+                    egui::pos2(mid.min(x), rect.top()),
+                    egui::pos2(mid.max(x), rect.bottom()),
+                );
+                let c = if v >= 0.0 {
+                    Color32::from_rgb(110, 200, 130)
+                } else {
+                    DANGER
+                };
+                painter.rect_filled(r, 3.0, c);
+            } else {
+                let mut r = rect;
+                r.set_width(rect.width() * value as f32 / 255.0);
+                painter.rect_filled(r, 3.0, ACCENT.gamma_multiply(0.75));
+            }
+        });
+    });
+    let desc = describe_gene(i, &o.genome, &o.traits, &world.config);
+    ui.horizontal(|ui| {
+        // Lined up under the gene's name (after its code and the gap).
+        ui.add_space(28.0 + ui.spacing().item_spacing.x);
+        ui.add(egui::Label::new(RichText::new(desc).size(11.5).color(MUTED)).wrap());
+    });
 }

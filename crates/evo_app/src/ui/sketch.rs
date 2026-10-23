@@ -548,7 +548,7 @@ fn extent(body: &BodyShape, instances: &[Instance], t: &Traits) -> Rect {
         let base = vec2(i.base.x, i.base.y);
         // How far each kind reaches sideways (in part lengths) as drawn.
         let w = i.width / i.length.max(1e-4) * 0.5;
-        let lat = match i.kind {
+        let lat = match i.main_kind() {
             PartKind::Tentacle => 0.4,
             PartKind::Flagellum => 0.12,
             PartKind::Fin => (w * 1.6).atan().sin() * 0.9 + 0.25,
@@ -612,7 +612,7 @@ pub fn draw_specimen(
 
     // Parts behind the body first, as the game draws them.
     for inst in &instances {
-        if !inst.kind.in_front() {
+        if !inst.main_kind().in_front() {
             draw_part(&mut pen, inst, line_w, organism_seed, t);
         }
     }
@@ -681,7 +681,7 @@ pub fn draw_specimen(
     }
 
     for inst in &instances {
-        if inst.kind.in_front() {
+        if inst.main_kind().in_front() {
             draw_part(&mut pen, inst, line_w, organism_seed, t);
         }
     }
@@ -690,14 +690,14 @@ pub fn draw_specimen(
     // One label per part kind, at the part's middle, pointing outward.
     let mut labels: Vec<(Pos2, Vec2, &'static str)> = Vec::new();
     for inst in &instances {
-        if labels.iter().any(|l| l.2 == inst.kind.name()) {
+        if labels.iter().any(|l| l.2 == inst.main_kind().name()) {
             continue;
         }
         let mid = vec2(inst.base.x, inst.base.y) + polar(inst.dir) * inst.length * 0.6;
         labels.push((
             pen.to_screen(mid),
             vec2(inst.dir.cos(), -inst.dir.sin()),
-            inst.kind.name(),
+            inst.main_kind().name(),
         ));
     }
     labels
@@ -970,8 +970,722 @@ fn pattern(pen: &mut Pencil, body: &Body, t: &Traits, line_w: f32, bounds: Rect)
     }
 }
 
-/// One part, traced from its shape in the game (at rest).
+/// Roughly how far a kind's shape reaches either side of its midline at `a` along it (in part
+/// lengths; w = the part's nominal half width, s = its size): its outline, which some of the
+/// in-between drawings morph from and to. As `kind_width` in `organism.wgsl`.
+fn kind_width(kind: PartKind, a: f32, w: f32, s: f32) -> f32 {
+    let x = a.clamp(0.0, 1.0);
+    match kind {
+        PartKind::Flagellum => w * (1.0 - 0.7 * x),
+        PartKind::Tentacle => w * (1.0 - 0.65 * x),
+        PartKind::Frond => (w * (PI * ((x - 0.08) / 0.92).clamp(0.0, 1.0)).sin().powf(0.7))
+            .max(if x <= 0.2 { w * 0.14 } else { 0.0 }),
+        PartKind::Fin => (x * w * 1.6).min((1.0 - x * x).max(0.0).sqrt()),
+        PartKind::Fluke => {
+            let blade = w * (1.0 - ((x - 0.55) / 0.45).powi(2)).max(0.0).sqrt();
+            blade.max(if x <= 0.5 { w * 0.22 * (1.0 - x * 0.5) } else { 0.0 })
+        }
+        PartKind::Holdfast => w * (0.28 + 0.67 * smoothstep(0.4, 1.0, x)),
+        PartKind::Stalk => w * (1.0 - 0.3 * x),
+        PartKind::Eye => w * (1.0 - (2.0 * x - 1.0).powi(2)).max(0.0).sqrt(),
+        PartKind::Antenna => w * (1.0 - 0.6 * x),
+        PartKind::Lure => {
+            let br = w * (0.55 + 0.45 * s);
+            let bulb = (br * br - (x - 0.8) * (x - 0.8)).max(0.0).sqrt();
+            bulb.max(if x <= 0.78 { w * 0.22 } else { 0.0 })
+        }
+        PartKind::Spine => w * (1.0 - x),
+        PartKind::Jaw => w * (1.0 - x.powf(1.4) * 0.85),
+        PartKind::Cilia | PartKind::Leg | PartKind::Shell => w,
+    }
+}
+
+/// One part, traced from its shape in the game (at rest). A part partway to another kind gets
+/// the drawing for that pair of kinds (`draw_link`), as the game gives it.
 fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Traits) {
+    match inst.toward {
+        Some((other, amount)) => {
+            let (lo, hi, along) = if inst.kind.code() < other.code() {
+                (inst.kind, other, amount)
+            } else {
+                (other, inst.kind, 1.0 - amount)
+            };
+            draw_link(pen, inst, lo, hi, along, w_line, seed, t);
+        }
+        None => draw_kind(pen, inst, inst.kind, w_line, seed, t),
+    }
+}
+
+/// Blend two colours in linear light.
+fn mix_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let lin = |c: Color32| {
+        Vec3::new(
+            to_linear(c.r() as f32 / 255.0),
+            to_linear(c.g() as f32 / 255.0),
+            to_linear(c.b() as f32 / 255.0),
+        )
+    };
+    srgb(lin(a).lerp(lin(b), t))
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn mixv(a: Vec2, b: Vec2, t: f32) -> Vec2 {
+    a + (b - a) * t
+}
+
+/// `k + 1` evenly spaced values from 0 to 1.
+fn samples(k: usize) -> impl Iterator<Item = f32> {
+    (0..=k).map(move |i| i as f32 / k as f32)
+}
+
+/// A part's drawing frame, the shader's: `a` along it (0 at the base, 1 at the tip) and `c`
+/// across it, both in part lengths; `w` is its nominal half width in part lengths.
+struct Frame {
+    base: Vec2,
+    d: Vec2,
+    n: Vec2,
+    len: f32,
+    m: f32,
+    w: f32,
+    s: f32,
+    phase: f32,
+}
+
+impl Frame {
+    fn new(inst: &Instance, seed: f32) -> Frame {
+        let d = polar(inst.dir);
+        Frame {
+            base: vec2(inst.base.x, inst.base.y),
+            d,
+            n: d.rot90(),
+            len: inst.length,
+            m: if inst.mirror < 0.0 { -1.0 } else { 1.0 },
+            w: inst.width / inst.length.max(1e-4) * 0.5,
+            s: inst.size,
+            phase: ((seed * 255.0) as u32 + inst.slot as u32 * 37) as f32 % 256.0 / 255.0 * 40.0
+                + inst.index.min(100) as f32 * 1.9,
+        }
+    }
+
+    fn at(&self, a: f32, c: f32) -> Vec2 {
+        self.base + self.d * (a * self.len) + self.n * (c * self.m * self.len)
+    }
+
+    fn at_v(&self, p: Vec2) -> Vec2 {
+        self.at(p.x, p.y)
+    }
+
+    /// A limb along `y(a)`, `hw(a)` either side, from `a0` to `a1`.
+    fn strand(
+        &self,
+        y: &dyn Fn(f32) -> f32,
+        hw: &dyn Fn(f32) -> f32,
+        a0: f32,
+        a1: f32,
+    ) -> Vec<(Vec2, f32)> {
+        samples(28)
+            .map(|u| lerp(a0, a1, u))
+            .map(|a| (self.at(a, y(a)), hw(a).max(0.0) * self.len))
+            .collect()
+    }
+
+    /// The outline of a blade along `y(a)`, `hw(a)` either side.
+    fn blade(&self, y: &dyn Fn(f32) -> f32, hw: &dyn Fn(f32) -> f32) -> Vec<Vec2> {
+        samples(36)
+            .map(|a| self.at(a, y(a) + hw(a)))
+            .chain(samples(36).map(|u| 1.0 - u).map(|a| self.at(a, y(a) - hw(a))))
+            .collect()
+    }
+}
+
+/// Where a kind's midline sits across the part at `a` along it, at rest (`kind_sway` in
+/// `organism.wgsl` at time zero).
+fn sway(kind: PartKind, a: f32, s: f32, phase: f32) -> f32 {
+    match kind {
+        PartKind::Flagellum => (0.08 + 0.08 * s) * 0.6 * (a * TAU * (1.0 + s) + phase).sin() * a,
+        PartKind::Tentacle => {
+            0.16 * (a * 3.0 + phase).sin() * a + (0.18 + 0.12 * phase.sin()) * a * a * a
+        }
+        PartKind::Frond => 0.07 * (phase + a * 2.0).sin() * a * a,
+        PartKind::Fin | PartKind::Fluke => 0.25 * phase.sin() * a,
+        PartKind::Stalk => 0.06 * phase.sin() * a * a,
+        PartKind::Antenna => (0.12 * phase.sin() + 0.18) * a * a,
+        PartKind::Lure => (0.15 * phase.sin() + 0.1) * a * a,
+        PartKind::Spine => 0.08 * smoothstep(0.5, 1.0, s) * a * a,
+        PartKind::Jaw => 0.12 * (PI * a).sin() - (0.18 + 0.12 * s) * a * a * a,
+        _ => 0.0,
+    }
+}
+
+/// An eye of radius `r` at `c` looking along `d`: eyespot, pit eye, lens eye or camera eye by
+/// its size `s`. `lit` (0..1) is how far light has spread out from its pupil, as it becomes a
+/// lure, washed in `glow`.
+#[allow(clippy::too_many_arguments)]
+fn draw_eye(
+    pen: &mut Pencil,
+    c: Vec2,
+    r: f32,
+    d: Vec2,
+    s: f32,
+    eye_seed: f32,
+    w_line: f32,
+    lit: f32,
+    glow: Color32,
+) {
+    let ring = |rad: f32| -> Vec<Vec2> {
+        (0..20)
+            .map(|j| c + polar(j as f32 / 20.0 * TAU) * rad)
+            .collect()
+    };
+    pen.blank(&ring(r));
+    if s < 0.25 {
+        pen.dot(
+            c,
+            r * 0.55,
+            srgb(Vec3::new(0.55, 0.05, 0.03)).gamma_multiply(0.85 * pen.weight),
+        );
+        pen.closed(&ring(r * 0.55), w_line * 0.6, 0.7);
+    } else {
+        pen.closed(&ring(r), w_line, 0.95);
+        if s < 0.5 {
+            // Pit eye: a dark cup opening outward.
+            let cup: Vec<Vec2> = samples(12)
+                .map(|u| c + polar(PI * 0.5 + u * PI) * r * 0.7)
+                .collect();
+            pen.path(&cup, w_line * 1.4, 0.9);
+        } else {
+            // The iris, in the colour the game gives this eye.
+            pen.wash_polygon(&ring(r * 0.62), srgb(iris_color(eye_seed)), 0.95);
+            pen.closed(&ring(r * 0.62), w_line * 0.7, 0.7);
+            if s > 0.77 {
+                // Striated iris and a rim.
+                for k in 0..12 {
+                    let a = k as f32 / 12.0 * TAU;
+                    pen.path(
+                        &[c + polar(a) * r * 0.32, c + polar(a) * r * 0.6],
+                        w_line * 0.35,
+                        0.4,
+                    );
+                }
+                pen.closed(&ring(r * 1.12), w_line * 0.5, 0.45);
+            }
+            if lit < 0.6 {
+                let pupil = c + d * r * 0.12;
+                pen.dot(pupil, r * 0.3, GRAPHITE.gamma_multiply(0.9 * pen.weight));
+                pen.dot(pupil + vec2(-r * 0.1, r * 0.12), r * 0.09, super::notebook::PAPER);
+            }
+        }
+    }
+    if lit > 0.02 {
+        // Light spreading out from the pupil until it fills the eye.
+        let centre = c + d * r * 0.2 * (1.0 - lit);
+        let disc: Vec<Vec2> = (0..20)
+            .map(|j| centre + polar(j as f32 / 20.0 * TAU) * r * lit)
+            .collect();
+        pen.blank(&disc);
+        pen.wash_polygon(&disc, glow, 0.9);
+        pen.closed(&disc, w_line * 0.7, 0.8);
+    }
+}
+
+/// A part `t` of the way from kind `lo` to the related kind `hi` (lo's code is the lower). Each
+/// pair has its own drawing, matching the game's: features grow, shrink, split, fuse and bend
+/// from one kind's into the other's.
+#[allow(clippy::too_many_arguments)]
+fn draw_link(
+    pen: &mut Pencil,
+    inst: &Instance,
+    lo: PartKind,
+    hi: PartKind,
+    t: f32,
+    w_line: f32,
+    seed: f32,
+    traits: &Traits,
+) {
+    use PartKind::*;
+    let f = Frame::new(inst, seed);
+    let (w, s, phase) = (f.w, f.s, f.phase);
+    let sw = |k: PartKind, a: f32| sway(k, a, s, phase);
+    pen.tint = Some(mix_color(part_color(lo, traits), part_color(hi, traits), t));
+    match (lo, hi) {
+        (Flagellum, Tentacle) => {
+            // The whip thickens into an arm: its hairs draw in, rings and suckers grow, a club
+            // swells at the tip and the basal body shrinks.
+            let y = |a: f32| lerp(sw(Flagellum, a), sw(Tentacle, a), t);
+            let club = |a: f32| {
+                w * 0.6
+                    * smoothstep(0.78, 0.92, a)
+                    * (1.0 - smoothstep(0.94, 1.0, a))
+                    * smoothstep(0.75, 0.95, s)
+                    * t
+            };
+            let hw = |a: f32| w * lerp(1.0 - 0.7 * a, 1.0 - 0.65 * a, t) + club(a);
+            pen.limb(&f.strand(&y, &hw, 0.0, 1.0), w_line, 0.85);
+            if s > 0.55 && t < 0.95 {
+                for a in samples(14).skip(2) {
+                    let p = f.at(a, y(a));
+                    let reach = hw(a) * (1.0 + 2.5 * (1.0 - t)) * f.len;
+                    pen.path(&[p - f.n * reach, p + f.n * reach], w_line * 0.4, 0.4);
+                }
+            }
+            if s > 0.3 && t > 0.05 {
+                for k in 1..14 {
+                    let a = k as f32 / 14.0;
+                    let h = hw(a) * t;
+                    pen.path(&[f.at(a, y(a) - h), f.at(a, y(a) + h)], w_line * 0.4, 0.35);
+                }
+            }
+            if s > 0.55 && t > 0.05 {
+                for k in 1..12 {
+                    let a = (k as f32 + 0.5) / 12.0;
+                    let c = f.at(a, y(a) - hw(a) * 0.45);
+                    pen.circle(c, hw(a) * 0.32 * t * f.len, w_line * 0.5, 0.55);
+                }
+            }
+            if s > 0.25 && t < 0.95 {
+                pen.circle(f.at(0.0, 0.0), w * 1.8 * (1.0 - t) * f.len, w_line * 0.7, 0.7);
+            }
+        }
+        (Flagellum, Cilia) => {
+            // The whip splits into a row of short hairs, spreading out from the middle as a band
+            // grows across its base.
+            let spacing = lerp(0.4, 0.13, s);
+            let span = w * t;
+            let thick = |a: f32| lerp(w.min(0.06) * (1.0 - 0.7 * a), 0.035 + 0.02 * s, t);
+            let beat = |a: f32| sw(Flagellum, a) * (1.0 - t);
+            if t > 0.05 {
+                let band = [
+                    f.at(-0.08, span),
+                    f.at(0.16 * t, span),
+                    f.at(0.16 * t, -span),
+                    f.at(-0.08, -span),
+                ];
+                pen.fill(&band);
+                pen.closed(&band, w_line * 0.6, 0.6);
+            }
+            let count = (span / spacing).floor() as i32;
+            for i in -count..=count {
+                let y0 = i as f32 * spacing;
+                let tilt = 0.35 * (-(i as f32) * 0.7 + phase).sin() * t;
+                let y = |a: f32| y0 + beat(a) + tilt * a * a;
+                pen.limb(&f.strand(&y, &thick, 0.0, 1.0), w_line * 0.7, 0.8);
+            }
+            if s > 0.55 && t < 0.9 {
+                for a in samples(14).skip(2) {
+                    let p = f.at(a, beat(a));
+                    let reach = thick(a) * (1.0 + 2.5 * (1.0 - t)) * f.len;
+                    pen.path(&[p - f.n * reach, p + f.n * reach], w_line * 0.4, 0.4);
+                }
+            }
+            if s > 0.25 && t < 0.95 {
+                pen.circle(f.at(0.0, 0.0), thick(0.0) * 1.8 * (1.0 - t) * f.len, w_line * 0.7, 0.7);
+            }
+        }
+        (Cilia, Fin) => {
+            // The hairs fan out into rays, and a web grows between them from the base out to a
+            // rounded rim.
+            let spread = (w * 1.6).atan();
+            let n = 3 + (s * 6.0).floor() as usize;
+            let flap = |a: f32| 0.25 * phase.sin() * a * t;
+            let rim = |phi: f32| 0.75 + 0.25 * (phi / spread * 1.3).cos();
+            let reach = lerp(0.16, 1.0, (t * 1.3).min(1.0));
+            let edge = lerp(w, reach * spread.tan(), t);
+            let base_pt = |side: f32| vec2(lerp(-0.08, 0.0, t), side * w * (1.0 - t));
+            let cap = |u: f32| {
+                let phi = spread * u;
+                let fan = polar(phi) * reach * rim(phi);
+                mixv(vec2(reach, u * edge), fan, t)
+            };
+            let mut web = vec![f.at_v(base_pt(-1.0))];
+            web.extend(samples(20).map(|u| {
+                let p = cap(u * 2.0 - 1.0);
+                f.at(p.x, p.y + flap(p.x))
+            }));
+            web.push(f.at_v(base_pt(1.0)));
+            pen.fill(&web);
+            pen.closed(&web, w_line * lerp(0.6, 1.0, t), 0.8);
+            for k in 0..n {
+                let across = k as f32 / (n - 1) as f32 * 2.0 - 1.0;
+                let phi = spread * across;
+                let end = lerp(1.0, rim(phi) * phi.cos() * 0.97, t);
+                let tilt = 0.35 * (-(k as f32) * 0.7 + phase).sin() * (1.0 - t);
+                let ray: Vec<Vec2> = samples(8)
+                    .map(|u| u * end)
+                    .map(|a| f.at(a, lerp(across * w, a * phi.tan(), t) + tilt * a * a + flap(a)))
+                    .collect();
+                pen.path(&ray, w_line * 0.6, 0.75);
+            }
+        }
+        (Frond, Fin) => {
+            // The leaf stiffens into a paddle: it widens toward the tip, its edge smooths, its
+            // veins swing round into rays and the gas bladder shrinks away.
+            let y = |a: f32| lerp(sw(Frond, a), sw(Fin, a), t);
+            let leaf = |a: f32| {
+                kind_width(Frond, a, w, s)
+                    * (1.0 - 0.15 * smoothstep(0.65, 0.85, s) * (a * 45.0).sin().abs() * (1.0 - t))
+            };
+            let hw = |a: f32| lerp(leaf(a), kind_width(Fin, a, w, s), t);
+            let outline = f.blade(&y, &hw);
+            pen.fill(&outline);
+            pen.closed(&outline, w_line, 0.85);
+            let spread = (w * 1.6).atan();
+            if s > 0.2 && t < 0.9 {
+                let rib: Vec<Vec2> = samples(10)
+                    .map(|u| u * 0.95 * (1.0 - t))
+                    .map(|a| f.at(a, y(a)))
+                    .collect();
+                pen.path(&rib, w_line * 0.6, 0.6);
+            }
+            if s > 0.35 {
+                for k in 1..8 {
+                    let a = k as f32 / 9.0;
+                    for sign in [1.0f32, -1.0] {
+                        let phi = sign * spread * k as f32 / 8.0;
+                        let ray_end = polar(phi) * 0.95;
+                        let start = mixv(vec2(a, y(a)), vec2(0.0, 0.0), t);
+                        let vein = vec2(a + 0.08, y(a + 0.08) + sign * hw(a + 0.08) * 0.85);
+                        let tip = mixv(vein, ray_end, t);
+                        pen.path(&[f.at_v(start), f.at_v(tip)], w_line * 0.45, 0.5);
+                    }
+                }
+            }
+            if s > 0.8 && t < 0.95 {
+                let c = f.at(0.14, y(0.14));
+                let r = w * 0.55 * (1.0 - t) * f.len;
+                let ring: Vec<Vec2> = (0..16).map(|j| c + polar(j as f32 / 16.0 * TAU) * r).collect();
+                pen.wash_polygon(&ring, srgb(Vec3::new(0.75, 0.65, 0.3)), 0.9);
+                pen.circle(c, r, w_line * 0.7, 0.75);
+            }
+        }
+        (Fin, Leg) | (Leg, Holdfast) => {
+            // Fin → leg: the paddle's middle ray thickens into a limb that bends at new joints
+            // while the web shrinks back along it. Leg → holdfast: the limb straightens and
+            // shortens into a stem, and roots grow out from its end.
+            let to_leg = lo == Fin;
+            let bend = if to_leg { t } else { 1.0 - t };
+            let nseg = 1 + (s * 2.99).floor() as usize;
+            let seglen = if to_leg { 1.0 } else { lerp(1.0, 0.45, t) } / nseg as f32;
+            let mut pts = vec![vec2(0.0, 0.0)];
+            let mut ang: f32 = -0.25 * bend;
+            for k in 0..nseg {
+                if k == 1 {
+                    ang += 0.7 * bend;
+                }
+                if k == 2 {
+                    ang -= 1.1 * bend;
+                }
+                let p = pts[k] + polar(ang) * seglen;
+                pts.push(p);
+            }
+            let end = pts[nseg];
+            if to_leg && t < 0.95 {
+                // The web, either side of the limb, as wide as the fin there.
+                let point = |u: f32| {
+                    let k = ((u * nseg as f32) as usize).min(nseg - 1);
+                    let local = u * nseg as f32 - k as f32;
+                    let (a, b) = (pts[k], pts[k + 1]);
+                    (mixv(a, b, local), (b - a).normalized().rot90())
+                };
+                let web: Vec<Vec2> = samples(24)
+                    .map(|u| (u, 1.0))
+                    .chain(samples(24).map(|u| (1.0 - u, -1.0)))
+                    .map(|(u, side)| {
+                        let (p, normal) = point(u);
+                        f.at_v(p + normal * side * kind_width(Fin, u, w, s) * (1.0 - t))
+                    })
+                    .collect();
+                pen.tint = Some(part_color(Fin, traits));
+                pen.fill(&web);
+                pen.closed(&web, w_line * 0.8, 0.75);
+                if s > 0.25 {
+                    for j in [-0.66f32, -0.33, 0.33, 0.66] {
+                        let ray: Vec<Vec2> = samples(12)
+                            .map(|u| {
+                                let (p, normal) = point(u * 0.95);
+                                f.at_v(p + normal * j * kind_width(Fin, u * 0.95, w, s) * (1.0 - t))
+                            })
+                            .collect();
+                        pen.path(&ray, w_line * 0.45, 0.5);
+                    }
+                }
+            }
+            let thick = |k: usize| {
+                let leg = 1.0 - 0.35 * k as f32 / nseg as f32;
+                w * if to_leg { lerp(0.12, leg, t) } else { lerp(leg, 0.28, t) }
+            };
+            let limb: Vec<(Vec2, f32)> =
+                pts.iter().enumerate().map(|(k, &p)| (f.at_v(p), thick(k) * f.len)).collect();
+            pen.tint = Some(mix_color(part_color(lo, traits), part_color(hi, traits), t));
+            pen.limb(&limb, w_line, 0.9);
+            if s > 0.35 && bend > 0.05 {
+                for &j in &pts[1..nseg] {
+                    pen.circle(f.at_v(j), w * 1.15 * bend * f.len, w_line * 0.6, 0.7);
+                }
+            }
+            if s > 0.65 && bend > 0.05 {
+                for side in [-1.0f32, 1.0] {
+                    let tip = end + polar(ang + side * 0.6) * 0.14 * bend;
+                    pen.path(&[f.at_v(end), f.at_v(tip)], w_line * 1.1, 0.9);
+                }
+            }
+            if !to_leg && t > 0.05 {
+                pen.tint = Some(part_color(Holdfast, traits));
+                if s > 0.2 {
+                    let roots = 2 + (s * 5.0).floor() as usize;
+                    for k in 0..roots {
+                        let r = (k as f32 + 0.5) / roots as f32 * 2.0 - 1.0;
+                        let mid = vec2(0.68, r * w * 0.45 + 0.05 * (k as f32 * 2.3 + seed * 9.0).sin());
+                        let tip = vec2(0.97, r * w * 0.95);
+                        let grow = (t * 3.0).min(1.0);
+                        pen.limb(
+                            &[
+                                (f.at_v(end), w * 0.2 * grow * f.len),
+                                (f.at_v(mixv(end, mid, t)), w * 0.14 * grow * f.len),
+                                (f.at_v(mixv(end, tip, t)), w * 0.06 * grow * f.len),
+                            ],
+                            w_line * 0.8,
+                            0.8,
+                        );
+                    }
+                }
+                if s < 0.5 {
+                    let disc: Vec<Vec2> = samples(20)
+                        .map(|u| u * TAU)
+                        .map(|th| f.at(0.85 + 0.15 * t * th.cos(), w * 0.7 * t * th.sin()))
+                        .collect();
+                    pen.fill(&disc);
+                    pen.closed(&disc, w_line, 0.85);
+                }
+            }
+        }
+        (Fin, Fluke) => {
+            // The paddle's base narrows into a stalk, its blade rounds out, and a notch opens at
+            // its tip, forking it into a crescent.
+            let y = |a: f32| lerp(sw(Fin, a), sw(Fluke, a), t);
+            let hw = |a: f32| lerp(kind_width(Fin, a, w, s), kind_width(Fluke, a, w, s), t);
+            let fork = smoothstep(0.3, 0.8, s);
+            let notch_c = vec2(1.08 + 0.4 * (1.0 - t), 0.0);
+            let notch_r = vec2(0.12 + 0.35 * fork, (0.2 + 0.45 * fork) * w);
+            let outline: Vec<Vec2> = samples(36)
+                .map(|a| (a, 1.0))
+                .chain(samples(36).map(|u| (1.0 - u, -1.0)))
+                .map(|(a, side)| {
+                    let mut p = vec2(a, side * hw(a));
+                    let rel = (p - notch_c) / notch_r;
+                    if rel.length() < 1.0 {
+                        p = notch_c + rel.normalized() * notch_r;
+                    }
+                    f.at(p.x, p.y + y(p.x))
+                })
+                .collect();
+            pen.fill(&outline);
+            pen.closed(&outline, w_line, 0.9);
+            if s > 0.25 {
+                let spread = (w * 1.6).atan();
+                for k in -1..=1 {
+                    let across = k as f32 / 3.0;
+                    let fin_end = polar(spread * across * 3.0 / 2.0) * 0.9;
+                    let start = mixv(vec2(0.0, 0.0), vec2(0.55, across * 0.5 * w), t);
+                    let tip = mixv(fin_end, vec2(0.92, across * w), t);
+                    pen.path(
+                        &[f.at(start.x, start.y + y(start.x)), f.at(tip.x, tip.y + y(tip.x))],
+                        w_line * 0.45,
+                        0.5,
+                    );
+                }
+            }
+        }
+        (Tentacle, Antenna) | (Stalk, Antenna) => {
+            // Tentacle → antenna: the arm thins into a feeler, its rings tighten into joints,
+            // its suckers and club shrink and a feathery plume grows. Stalk → antenna: the stem
+            // thins, its rings become joints, and a plume grows.
+            let from_arm = lo == Tentacle;
+            let y = |a: f32| lerp(sw(lo, a), sw(Antenna, a), t);
+            let club = |a: f32| {
+                if from_arm {
+                    w * 0.6
+                        * smoothstep(0.78, 0.92, a)
+                        * (1.0 - smoothstep(0.94, 1.0, a))
+                        * smoothstep(0.75, 0.95, s)
+                        * (1.0 - t)
+                } else {
+                    0.0
+                }
+            };
+            let taper = if from_arm { 0.65 } else { 0.3 };
+            let hw = |a: f32| w * lerp(1.0 - taper * a, 1.0 - 0.6 * a, t) + club(a);
+            pen.limb(&f.strand(&y, &hw, 0.0, 1.0), w_line * lerp(1.0, 0.8, t), 0.85);
+            if s > 0.3 {
+                let count = lerp(if from_arm { 14.0 } else { 10.0 }, 10.0, t).round() as usize;
+                for k in 1..count {
+                    let a = k as f32 / count as f32;
+                    let h = hw(a) * lerp(1.0, 1.6, t);
+                    pen.path(&[f.at(a, y(a) - h), f.at(a, y(a) + h)], w_line * 0.4, 0.4);
+                }
+            }
+            if from_arm && s > 0.55 && t < 0.95 {
+                for k in 1..12 {
+                    let a = (k as f32 + 0.5) / 12.0;
+                    let c = f.at(a, y(a) - hw(a) * 0.45);
+                    pen.circle(c, hw(a) * 0.32 * (1.0 - t) * f.len, w_line * 0.5, 0.55);
+                }
+            }
+            if s > 0.65 && t > 0.05 {
+                for k in 3..16 {
+                    let a = k as f32 / 16.0;
+                    for sign in [1.0f32, -1.0] {
+                        pen.path(
+                            &[f.at(a, y(a)), f.at(a + 0.05 * t, y(a) + sign * 0.12 * t)],
+                            w_line * 0.35,
+                            0.45,
+                        );
+                    }
+                }
+            }
+        }
+        (Eye, Antenna) => {
+            // A feeler grows out from under the eye, carrying it out on its tip and shrinking it.
+            let r = (w * (1.0 - t).sqrt()).min(0.5);
+            let tip = 1.0 - r;
+            let y = |a: f32| sw(Antenna, a) * t;
+            if t > 0.03 {
+                let hw = |a: f32| w * (1.0 - 0.6 * a) * lerp(0.25, 1.0, t);
+                pen.tint = Some(part_color(Antenna, traits));
+                pen.limb(&f.strand(&y, &hw, 0.0, tip), w_line * 0.8, 0.85);
+                if s > 0.65 {
+                    for k in 3..16 {
+                        let a = k as f32 / 16.0 * tip;
+                        for sign in [1.0f32, -1.0] {
+                            pen.path(
+                                &[f.at(a, y(a)), f.at(a + 0.05 * t, y(a) + sign * 0.12 * t)],
+                                w_line * 0.35,
+                                0.45,
+                            );
+                        }
+                    }
+                }
+            }
+            if r > 0.02 {
+                let eye_seed = ((seed * 255.0) as u8) as f32 / 255.0 + inst.index as f32 * 0.37;
+                let c = f.at(tip, y(tip));
+                draw_eye(pen, c, r * f.len, f.d, s, eye_seed, w_line, 0.0, GRAPHITE);
+            }
+        }
+        (Eye, Lure) => {
+            // The eye rises on a stalk that grows beneath it, shrinking into a bulb, while light
+            // spreads out from its pupil until it glows.
+            let rise = 0.15 * phase.sin() + 0.1;
+            let cx = lerp(0.5, 0.8, t);
+            let r = (w * lerp(1.0, 0.55 + 0.45 * s, t)).min(0.5);
+            if t > 0.03 {
+                let y = |a: f32| rise * a * a * t;
+                let hw = |_: f32| w * 0.22 * t;
+                pen.tint = Some(part_color(Lure, traits));
+                pen.limb(&f.strand(&y, &hw, 0.0, cx), w_line * 0.8, 0.85);
+            }
+            let c = f.at(cx, rise * 0.64 * t);
+            let glow = srgb(Vec3::new(0.35, 1.0, 0.85).lerp(base_linear(traits), 0.25));
+            let eye_seed = ((seed * 255.0) as u8) as f32 / 255.0 + inst.index as f32 * 0.37;
+            draw_eye(pen, c, r * f.len, f.d, s, eye_seed, w_line, t, glow);
+            if t > 0.3 {
+                for j in 0..10 {
+                    let a = j as f32 / 10.0 * TAU + 0.2;
+                    let rr = r * f.len;
+                    pen.path(
+                        &[c + polar(a) * rr * 1.5, c + polar(a) * rr * (1.5 + (0.5 + s) * t)],
+                        w_line * 0.45,
+                        0.4,
+                    );
+                }
+            }
+        }
+        (Spine, Jaw) => {
+            // The thorn bows out and hooks in, its barbs shrink away and teeth grow along its
+            // inner edge.
+            let y = |a: f32| lerp(sw(Spine, a), sw(Jaw, a), t);
+            let barbs = smoothstep(0.75, 0.9, s) * (1.0 - t);
+            let spine_hw = |a: f32| {
+                let barb = barbs * (1.0 - (a * 5.0).fract() * 3.0).max(0.0) * if a >= 0.25 { 1.0 } else { 0.0 };
+                w * (1.0 - a) + w * 0.5 * barb * (1.0 - a)
+            };
+            let hw = |a: f32| lerp(spine_hw(a), w * (1.0 - a.powf(1.4) * 0.85), t);
+            let outline = f.blade(&y, &hw);
+            pen.fill(&outline);
+            pen.closed(&outline, w_line * lerp(1.0, 1.1, t), 0.92);
+            if s > 0.4 && t < 0.95 {
+                for k in 1..6 {
+                    let a = (k as f32 + 0.5) / 6.0;
+                    let h = hw(a) * (1.0 - t);
+                    pen.path(&[f.at(a, y(a) - h), f.at(a, y(a) + h)], w_line * 0.5, 0.5);
+                }
+            }
+            if s > 0.3 && t > 0.05 {
+                let count = 3 + (s * 5.0).floor() as usize;
+                for k in 0..count {
+                    let a = 0.15 + 0.8 * (k as f32 + 0.5) / count as f32;
+                    let h = w * (0.3 + 0.3 * s) * t;
+                    let inner = y(a) - hw(a);
+                    let half = 0.4 / count as f32;
+                    pen.path(
+                        &[f.at(a - half, inner), f.at(a, inner - h), f.at(a + half, inner)],
+                        w_line * 0.6,
+                        0.75,
+                    );
+                }
+            }
+        }
+        (Spine, Shell) => {
+            // The thorn flattens out sideways and curves into a plate, its bands spreading into
+            // growth lines.
+            let rb = 1.0 / (0.08 + 0.25 * s);
+            let bend = |c: f32| c * c / (2.0 * rb) * t;
+            let y = |u: f32| sw(Spine, u) * (1.0 - t);
+            let half = |u: f32| w * lerp(1.0 - u, 1.0, t);
+            let side = |u: f32, sign: f32| {
+                let c = sign * half(u) + y(u);
+                f.at(u - bend(c), c)
+            };
+            let across = |u: f32, k: usize| -> Vec<Vec2> {
+                samples(k)
+                    .map(|v| {
+                        let c = lerp(-half(u), half(u), v) + y(u);
+                        f.at(u - bend(c), c)
+                    })
+                    .collect()
+            };
+            let plate: Vec<Vec2> = samples(20)
+                .map(|u| side(u, 1.0))
+                .chain(across(1.0, 10).into_iter().rev())
+                .chain(samples(20).map(|u| side(1.0 - u, -1.0)))
+                .chain(across(0.0, 10))
+                .collect();
+            pen.fill(&plate);
+            pen.closed(&plate, w_line, 0.9);
+            if s > lerp(0.4, 0.35, t) {
+                let lines = lerp(6.0, 2.0 + 4.0 * s, t).round().max(2.0) as usize;
+                for k in 1..lines {
+                    let u = k as f32 / lines as f32;
+                    pen.path(&across(u, 10), w_line * 0.45, 0.45);
+                }
+            }
+            if s > 0.7 && t > 0.05 {
+                let mut c = -w + 0.33;
+                while c < w {
+                    pen.circle(f.at(0.75 - bend(c), c), 0.1 * t * f.len, w_line * 0.5, 0.6);
+                    c += 0.67;
+                }
+            }
+        }
+        // Not a link (the paths in `parts.rs` and these must match): draw the nearer kind.
+        _ => draw_kind(pen, inst, if t < 0.5 { lo } else { hi }, w_line, seed, traits),
+    }
+}
+
+/// One kind's shape for a part, washed in its colour.
+fn draw_kind(pen: &mut Pencil, inst: &Instance, kind: PartKind, w_line: f32, seed: f32, t: &Traits) {
     let base = vec2(inst.base.x, inst.base.y);
     let d = polar(inst.dir);
     let n = d.rot90();
@@ -984,9 +1698,8 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
     let phase = ((seed * 255.0) as u32 + inst.slot as u32 * 37) as f32 % 256.0 / 255.0 * 40.0
         + inst.index.min(100) as f32 * 1.9;
     let at = |a: f32, c: f32| base + d * (a * len) + n * (c * m * len);
-    let samples = |k: usize| (0..=k).map(move |i| i as f32 / k as f32);
-    pen.tint = Some(part_color(inst.kind, t));
-    match inst.kind {
+    pen.tint = Some(part_color(kind, t));
+    match kind {
         PartKind::Flagellum => {
             let amp = (0.08 + 0.08 * s) * 0.6;
             let mid: Vec<(Vec2, f32)> = samples(28)
@@ -1269,55 +1982,8 @@ fn draw_part(pen: &mut Pencil, inst: &Instance, w_line: f32, seed: f32, t: &Trai
         }
         PartKind::Eye => {
             // Eyespot -> pit eye -> lens eye -> camera eye, as it grows.
-            let c = at(0.5, 0.0);
-            let r = 0.5 * len;
-            let ring = |rad: f32| -> Vec<Vec2> {
-                (0..20)
-                    .map(|j| c + polar(j as f32 / 20.0 * TAU) * rad)
-                    .collect()
-            };
-            pen.blank(&ring(r));
-            if s < 0.25 {
-                pen.dot(
-                    c,
-                    r * 0.55,
-                    srgb(Vec3::new(0.55, 0.05, 0.03)).gamma_multiply(0.85 * pen.weight),
-                );
-                pen.closed(&ring(r * 0.55), w_line * 0.6, 0.7);
-                return;
-            }
-            pen.closed(&ring(r), w_line, 0.95);
-            if s < 0.5 {
-                // Pit eye: a dark cup opening outward.
-                let cup: Vec<Vec2> = samples(12)
-                    .map(|u| c + polar(PI * 0.5 + u * PI) * r * 0.7)
-                    .collect();
-                pen.path(&cup, w_line * 1.4, 0.9);
-                return;
-            }
-            // The iris, in the colour the game gives this eye.
             let eye_seed = ((seed * 255.0) as u8) as f32 / 255.0 + inst.index as f32 * 0.37;
-            pen.wash_polygon(&ring(r * 0.62), srgb(iris_color(eye_seed)), 0.95);
-            pen.closed(&ring(r * 0.62), w_line * 0.7, 0.7);
-            if s > 0.77 {
-                // Striated iris and a rim.
-                for k in 0..12 {
-                    let a = k as f32 / 12.0 * TAU;
-                    pen.path(
-                        &[c + polar(a) * r * 0.32, c + polar(a) * r * 0.6],
-                        w_line * 0.35,
-                        0.4,
-                    );
-                }
-                pen.closed(&ring(r * 1.12), w_line * 0.5, 0.45);
-            }
-            let pupil = c + d * r * 0.12;
-            pen.dot(pupil, r * 0.3, GRAPHITE.gamma_multiply(0.9 * pen.weight));
-            pen.dot(
-                pupil + vec2(-r * 0.1, r * 0.12),
-                r * 0.09,
-                super::notebook::PAPER,
-            );
+            draw_eye(pen, at(0.5, 0.0), 0.5 * len, d, s, eye_seed, w_line, 0.0, GRAPHITE);
         }
         PartKind::Antenna => {
             // A feeler: segmented, then feathery.

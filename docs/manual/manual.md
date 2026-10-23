@@ -126,14 +126,14 @@ Toxin carries the color of the organisms that made it. Organisms whose hue match
 
 ## Structure
 
-A genome is 60 bytes. **Each byte is one gene**, and each gene means one thing. The bytes are grouped into nine chromosomes, each named by a letter. Genomes are written in hexadecimal, two digits per byte (`00` to `FF`, or 0 to 255):
+A genome is 68 bytes. **Each byte is one gene**, and each gene means one thing. The bytes are grouped into nine chromosomes, each named by a letter. Genomes are written in hexadecimal, two digits per byte (`00` to `FF`, or 0 to 255):
 
 ```
 B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 N:80808080808080808000
-P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0
+P:00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 R:FF00B0 T:80A0
 ```
 
-![The ancestor's genome: 60 bytes in nine chromosomes. Genes are numbered within their chromosome: B0 is the first byte of B, N9 the last byte of N.](figures/diagram-genome.svg)
+![The ancestor's genome: 68 bytes in nine chromosomes. Genes are numbered within their chromosome: B0 is the first byte of B, N9 the last byte of N.](figures/diagram-genome.svg)
 
 | Chromosome | Genes | Controls |
 |---|---|---|
@@ -143,7 +143,7 @@ P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0
 | **G** Chemistry | 6 | Breathing, oxygen release, nutrients, toxin |
 | **H** Health | 2 | Healing and toughness |
 | **N** Nature | 10 | Behavior: nine drives and restlessness |
-| **P** Parts | 24 | Up to eight body parts, three bytes each |
+| **P** Parts | 32 | Up to eight body parts, four bytes each |
 | **R** Reproduction | 3 | Offspring size, brood size, when to breed |
 | **T** Temperature | 2 | Preferred temperature and tolerance |
 
@@ -228,7 +228,7 @@ Drives are signed: `80` is indifferent, and they reach full strength at `C0` (to
 
 ### P — Parts
 
-Eight slots of three bytes each. See *Body Plans*.
+Eight slots of four bytes each. See *Body Plans*.
 
 ### R — Reproduction
 
@@ -276,9 +276,9 @@ Every body is an ellipse with a front. Its **mouth** is at the front of the head
 
 ## Part slots
 
-Chromosome P holds eight part slots of three bytes each: **type**, **size** and **place**. A slot whose type has kind 0 is empty.
+Chromosome P holds eight part slots of four bytes each: **type**, **size**, **place** and **form**. A slot whose type has kind 0 is empty.
 
-![The three bytes of a part slot.](figures/diagram-part-bytes.svg)
+![The four bytes of a part slot.](figures/diagram-part-bytes.svg)
 
 **Type.** The low four bits pick the kind of part (1 to 15, listed in the catalog below). The high four bits set its symmetry: 0 is a single part, 1 a mirrored pair, 2 to 5 a ring of 3 to 6 copies spaced evenly around the body.
 
@@ -290,7 +290,25 @@ Chromosome P holds eight part slots of three bytes each: **type**, **size** and 
 
 ![Placement angles around a body facing right. 0 is straight ahead, 16 straight back. A mirrored pair at angle a also has a copy at −a; a ring spreads its copies evenly starting from a.](figures/diagram-placement.svg)
 
+**Form.** The top two bits pick a path to a related kind of part, and the low six bits say how far along it the part has changed, from 0 (not at all) to 63 (almost all the way). See *Parts that change kind* below.
+
 Symmetry and repetition multiply a part. A mirrored pair of legs on every segment of a four-segment body is eight legs. Parts placed on the previous part build trees: an eye on a stalk, fronds on tentacles, a tentacle on every copy of a ring of stalks. An organism can carry at most 48 part instances.
+
+## Parts that change kind
+
+A part can slowly turn into a related kind, and every step on the way works a little. A whip thickens into a grasping arm, a leaf stiffens into a paddle, a light-sensing eye starts to glow. Biologists call this *exaptation*: a structure that evolved for one job taken up for another.
+
+![Parts changing kind, from not at all (left) to almost all the way (right): a flagellum into a tentacle, a cilia band into a fin, an eye into a lure, spines into shell plates.](figures/strip-forms.png)
+
+Each kind is related to one to four others:
+
+![The paths between part kinds. A part can change along any line, in either direction.](figures/diagram-part-paths.svg)
+
+The form byte's path bits pick one of four paths. Each line in the diagram is one path setting at both of its ends, and a kind's unused settings lead nowhere. So a kind with few relatives is as hard to leave as it is to reach. Left to chance alone, every kind would end up equally common, however many kinds can turn into it.
+
+A part partway along does both kinds' jobs, by its share of each, a little worse than that: 15% worse halfway, less nearer either end, and not at all at the ends (`form_penalty`). A part 40% of the way from flagellum to tentacle pushes with 60% of a flagellum's strength and grips with 40% of a tentacle's, each a little weaker. Its length, width, mass, upkeep and drag are in between too. Every pair of related kinds has its own in-between look: a flagellum's hairs draw in as it thickens and grows rings and suckers, cilia fan out and grow a web into a fin, a leaf's veins swing round into a fin's rays, an eye rises on a stalk as light spreads from its pupil, a spine flattens and curves into a shell plate.
+
+A part counts as the kind it's closer to: for drawing it in front of or behind the body, counting eyes and antennae, and species (see *Species*).
 
 ## The part catalog
 
@@ -584,15 +602,14 @@ Each offspring's genome is copied from its parent's, then changed at random:
 | Change | Chance | What happens |
 |---|---|---|
 | Point mutation | 3% per gene (9% for the three color genes) | 5% of these re-roll the gene to a random value. The rest step it by ±2 (50%), ±4 (25%), ±8 (12.5%) or ±16 (12.5%). Values stop at `00` and `FF`. |
-| Part type | 0.9% per occupied slot | Half the time the part becomes the neighboring kind in the catalog; otherwise its symmetry goes up or down by one step |
+| Part type | 0.45% per occupied slot | Its symmetry goes up or down by one step. The kind never jumps. |
+| Part form | 6% per occupied slot | The part moves about an eighth of the way along its path, toward the other kind or back (4, 8 or 16 of the 64 steps). Past the end, it becomes the other kind, and its path then leads back. A part that hasn't started changing may pick a new path instead (half of these mutations). |
 | Part duplication | 0.3% per offspring | A part is copied into an empty slot. Half the time the copy gets a new random placement. |
 | Part deletion | 0.4% per offspring | A part is lost. Only its type byte is cleared; its size and place bytes stay behind. |
 | New part | 0.5% per offspring | A random kind grows in an empty slot (half the time as a pair), at size `20`–`60`, using the slot's leftover bytes |
 | Diet shift | 0.5% per offspring | 30–60% of one diet gene's value moves to another diet gene in one step |
 
 About a quarter of the ancestor's offspring are exact copies of it.
-
-![The order of the part catalog. A type mutation moves a part one step around the ring: a fin can become a frond or a tail fluke, an eye a stalk or an antenna, a shell plate a jaw or a flagellum.](figures/diagram-part-ring.svg)
 
 Low mutation rates keep lineages coherent long enough to be recognized as species. Deleted parts and unused genes keep changing quietly; a later mutation can bring them back into use.
 
@@ -605,14 +622,14 @@ Low mutation rates keep lineages coherent long enough to be recognized as specie
 Every organism carries a species, inherited from its parent. When an offspring is born with a mutation, its genome is compared with the **founder genome** of its parent's species. The offspring founds a new species, which records its parent species and the time, if any of these is true:
 
 - The difference between the genomes exceeds the species threshold (below).
-- It has a kind of part the founder didn't have. Losing a part doesn't count.
+- It has a kind of part the founder didn't have. Losing a part doesn't count, and a part that's changing counts as the kind it's closer to.
 - Its main diet is different from the founder's, and leads the founder's main diet by at least 0.1 (so a near-tie doesn't count). A diet switch also founds a new genus.
 
 The difference between two genomes is a weighted average of the differences of each gene, each measured from 0 to 1:
 
 - Each gene counts at most 0.3, so one large jump in a single gene can't make a new species. Size (B0) counts up to 0.5.
 - Color genes weigh 0.25, and each counts at most 0.15 after its weight. Part size and place bytes weigh 0.3, and count only when both genomes have a part in that slot.
-- A part type counts 0.5 if the kind differs, or a fraction of that if only the symmetry differs.
+- A part type counts 0.5 if the kind differs, or a fraction of that if only the symmetry differs. A part partway to another kind counts that share of the 0.5, so the difference grows a little at a time as the part changes.
 - Every other gene weighs 1.
 
 The weights add up to 46.55. The species threshold is 0.035, so a new species needs a total weighted difference of about 1.6: for example six genes each changed by `4D` or more, or about twenty genes each changed by `14`.
@@ -664,7 +681,7 @@ Clicking an organism opens the inspector and follows it. Its four tabs show:
 - **Overview**: vitals (energy, HP, age), what it is doing now, and its diet.
 - **Body**: its shape, each part in plain language, and the abilities they add up to.
 - **Chemistry**: how it breathes, what it takes from and gives to the water, and the water around it.
-- **Genome**: every gene with its value and meaning.
+- **Genome**: every gene with its value and meaning. The Parts chromosome opens to one line per part slot, saying what the slot grows ("Pair of fins on segment 2"); open a slot to see its four genes.
 
 "Record in Field Notebook" sketches the organism under its species in the field notebook (key N).
 

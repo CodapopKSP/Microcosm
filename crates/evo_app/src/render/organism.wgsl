@@ -15,12 +15,12 @@ struct Vertex {
     // fx:   quad half / radius, radius in px, kind, age
     @location(2) shape: vec4<f32>,
     @location(3) tint: vec4<f32>,   // linear rgb
-    @location(4) body: vec4<f32>,   // body: elongation, segments/6, jaws, pattern; part: kind, size, mirror|index, seed
+    @location(4) body: vec4<f32>,   // body: elongation, segments/6, jaws, pattern; part: kind|toward<<4, size, mirror|index, seed
     @location(5) diet: vec4<f32>,   // photo, chemo, scavenge, hunt (carcass: consumed)
     @location(6) state: vec4<f32>,  // energy, health, flags, maturity
     @location(7) motion: vec4<f32>, // moving, walking, eating flash, hurt flash
     @location(8) chem: vec4<f32>,   // oxygenic, toxin, fixation, lure
-    @location(9) wound: vec4<f32>,  // direction of the last bite (body-relative angle / 2π)
+    @location(9) wound: vec4<f32>,  // direction of the last bite (body-relative angle / 2π); part: how far toward
 };
 
 struct VertexOutput {
@@ -205,11 +205,92 @@ fn eye_art(e: vec2<f32>, level: f32, seed: f32, time: f32, aa_e: f32) -> vec4<f3
     return vec4<f32>(col, a);
 }
 
-// A body part. Every kind has its own look, and grows more elaborate with its size.
-fn part(in: VertexOutput) -> vec4<f32> {
+// What a part's sway depends on.
+struct Sway {
+    s: f32,
+    time: f32,
+    phase: f32,
+    activity: f32,
+    grip: f32,
+    arch: f32,
+    gape: f32,
+};
+
+// Where a kind's midline sits across the part at `a` along it (in part lengths): the curve its
+// look is drawn around. (`midline` in render/mod.rs repeats the swaying ones; keep them in step.)
+fn kind_sway(kind: u32, a: f32, v: Sway) -> f32 {
+    if kind == 1u {
+        let amp = (0.08 + 0.08 * v.s) * (0.4 + 0.6 * min(1.0, v.activity * 2.0 + 0.3));
+        return amp * sin(a * TAU * (1.0 + v.s) - v.time * (6.0 + 16.0 * v.activity) + v.phase) * a;
+    } else if kind == 3u {
+        let sway = 0.16 * sin(a * 3.0 - v.time * 1.6 + v.phase) * a;
+        let curl = (0.18 + 0.12 * sin(v.time * 0.45 + v.phase)) * a * a * a;
+        let hook = -v.arch * 0.6 * smoothstep(0.75, 1.0, a);
+        let held = v.arch * sin(PI * clamp(a, 0.0, 1.0)) + hook + 0.03 * sin(v.time * 5.0 + v.phase) * a;
+        return mix(sway + curl, held, v.grip);
+    } else if kind == 4u {
+        return 0.07 * sin(v.time * 0.8 + v.phase + a * 2.0) * a * a;
+    } else if kind == 5u {
+        return 0.25 * sin(v.time * (2.5 + 7.0 * v.activity) + v.phase) * a;
+    } else if kind == 6u {
+        return 0.25 * sin(v.time * (2.0 + 6.0 * v.activity) + v.phase) * a;
+    } else if kind == 9u {
+        return 0.06 * sin(v.time * 0.7 + v.phase) * a * a;
+    } else if kind == 11u {
+        return (0.12 * sin(v.time * 2.2 + v.phase) + 0.18) * a * a;
+    } else if kind == 12u {
+        return (0.15 * sin(v.time * 0.9 + v.phase) + 0.1) * a * a;
+    } else if kind == 13u {
+        return 0.08 * smoothstep(0.5, 1.0, v.s) * a * a;
+    } else if kind == 14u {
+        return (0.12 + v.gape) * sin(PI * a) - (0.18 + 0.12 * v.s) * a * a * a;
+    }
+    return 0.0;
+}
+
+// Roughly how far a kind's look reaches either side of its midline at `a` along it (in part
+// lengths; w = the part's nominal half width, s = its size): its outline, which some of the
+// in-between art morphs from and to.
+fn kind_width(kind: u32, a: f32, w: f32, s: f32) -> f32 {
+    let x = clamp(a, 0.0, 1.0);
+    if kind == 1u {
+        return w * (1.0 - 0.7 * x);
+    } else if kind == 3u {
+        return w * (1.0 - 0.65 * x);
+    } else if kind == 4u {
+        return max(w * pow(sin(PI * clamp((x - 0.08) / 0.92, 0.0, 1.0)), 0.7), w * 0.14 * step(x, 0.2));
+    } else if kind == 5u {
+        // A fan: wider out to its rounded rim.
+        return min(x * w * 1.6, sqrt(max(0.0, 1.0 - x * x)));
+    } else if kind == 6u {
+        let blade = w * sqrt(max(0.0, 1.0 - pow((x - 0.55) / 0.45, 2.0)));
+        return max(w * 0.22 * (1.0 - x * 0.5) * step(x, 0.5), blade);
+    } else if kind == 8u {
+        return w * mix(0.28, 0.95, smoothstep(0.4, 1.0, x));
+    } else if kind == 9u {
+        return w * (1.0 - 0.3 * x);
+    } else if kind == 10u {
+        return w * sqrt(max(0.0, 1.0 - pow(2.0 * x - 1.0, 2.0)));
+    } else if kind == 11u {
+        return w * (1.0 - 0.6 * x);
+    } else if kind == 12u {
+        let br = w * (0.55 + 0.45 * s);
+        let bulb = sqrt(max(0.0, br * br - (x - 0.8) * (x - 0.8)));
+        return max(w * 0.22 * step(x, 0.78), bulb);
+    } else if kind == 13u {
+        return w * (1.0 - x);
+    } else if kind == 14u {
+        return w * (1.0 - pow(x, 1.4) * 0.85);
+    }
+    // Cilia bands, legs and shell plates: about their nominal width all along.
+    return w;
+}
+
+// One kind's look for a body part: colour and coverage. Every kind has its own look, and grows
+// more elaborate with its size.
+fn part_look(in: VertexOutput, kind: u32) -> vec4<f32> {
     let flags = u32(in.state.z * 255.0 + 0.5);
     let dead = (flags & FLAG_DEAD) != 0u;
-    let kind = u32(in.body.x * 255.0 + 0.5);
     let s = in.body.y;
     let mi = u32(in.body.z * 255.0 + 0.5);
     let mirror = select(1.0, -1.0, (mi & 1u) == 1u);
@@ -217,8 +298,6 @@ fn part(in: VertexOutput) -> vec4<f32> {
     let seed = in.body.w;
     let lp = in.uv * in.shape.xy;
     let a = lp.x + 0.5;               // 0 at the base, 1 at the tip
-    let c = lp.y * mirror;            // across (mirrored copies curl the other way)
-    let q = vec2<f32>(a, c);
     let w = in.shape.z;               // nominal half width
     let len_px = in.shape.w;
     let aa = 1.0 / max(len_px, 0.5); // about one pixel
@@ -227,6 +306,10 @@ fn part(in: VertexOutput) -> vec4<f32> {
     let walking = select(in.motion.y, 0.0, dead);
     let eating = in.motion.z;
     let phase = seed * 40.0 + index * 1.9;
+    let gape = eating * abs(sin(time * 14.0 + index)) * 0.2;
+    let sway = Sway(s, time, phase, activity, in.chem.z, (in.chem.w * 2.0 - 1.0) * 0.75, gape);
+    let c = lp.y * mirror;            // across (mirrored copies curl the other way)
+    let q = vec2<f32>(a, c);
     let base = in.tint.rgb;
     let inside = step(0.0, a) * step(a, 1.0);
     // Fine detail only once there are enough pixels to show it.
@@ -236,8 +319,7 @@ fn part(in: VertexOutput) -> vec4<f32> {
 
     if kind == 1u {
         // Flagellum: a beating whip; bigger ones get a basal body, then a fringe of fine hairs.
-        let amp = (0.08 + 0.08 * s) * (0.4 + 0.6 * min(1.0, activity * 2.0 + 0.3));
-        let y = amp * sin(a * TAU * (1.0 + s) - time * (6.0 + 16.0 * activity) + phase) * a;
+        let y = kind_sway(kind, a, sway);
         let hw = w * (1.0 - 0.7 * a) + aa * 0.4;
         let dist = abs(c - y);
         alpha = fill(dist, hw, aa) * inside;
@@ -270,13 +352,7 @@ fn part(in: VertexOutput) -> vec4<f32> {
         // Tentacle: a swaying, curling arm; ringed when larger, then suckers and a clubbed tip.
         // Holding something, it arches out to it (the quad already points at it) and its tip
         // hooks around it.
-        let grip = in.chem.z;
-        let arch = (in.chem.w * 2.0 - 1.0) * 0.75;
-        let sway = 0.16 * sin(a * 3.0 - time * 1.6 + phase) * a;
-        let curl = (0.18 + 0.12 * sin(time * 0.45 + phase)) * a * a * a;
-        let hook = -arch * 0.6 * smoothstep(0.75, 1.0, a);
-        let held = arch * sin(PI * clamp(a, 0.0, 1.0)) + hook + 0.03 * sin(time * 5.0 + phase) * a;
-        let y = mix(sway + curl, held, grip);
+        let y = kind_sway(kind, a, sway);
         var hw = w * (1.0 - 0.65 * a);
         hw += w * 0.6 * smoothstep(0.78, 0.92, a) * (1.0 - smoothstep(0.94, 1.0, a)) * smoothstep(0.75, 0.95, s);
         let dist = abs(c - y);
@@ -292,7 +368,7 @@ fn part(in: VertexOutput) -> vec4<f32> {
     } else if kind == 4u {
         // Frond: a leafy blade (green, or purple for sulfur-based photosynthesis); veins, a
         // serrated edge and a gas bladder as it grows.
-        let y = 0.07 * sin(time * 0.8 + phase + a * 2.0) * a * a;
+        let y = kind_sway(kind, a, sway);
         var hw = w * pow(sin(PI * clamp((a - 0.08) / 0.92, 0.0, 1.0)), 0.7);
         hw *= 1.0 - 0.15 * smoothstep(0.65, 0.85, s) * abs(sin(a * 45.0));
         hw = max(hw, w * 0.14 * step(a, 0.2));
@@ -322,8 +398,7 @@ fn part(in: VertexOutput) -> vec4<f32> {
         alpha = max(alpha, bladder);
     } else if kind == 5u {
         // Fin: a fan-shaped membrane that flaps; rays appear, then a scalloped edge between them.
-        let flap = 0.25 * sin(time * (2.5 + 7.0 * activity) + phase);
-        let fq = vec2<f32>(a, c - flap * a);
+        let fq = vec2<f32>(a, c - kind_sway(kind, a, sway));
         let spread = atan(w * 1.6);
         let phi = atan2(fq.y, max(fq.x, 1e-4));
         let rho = length(fq);
@@ -339,8 +414,7 @@ fn part(in: VertexOutput) -> vec4<f32> {
         alpha = membrane * (0.7 + 0.3 * ray);
     } else if kind == 6u {
         // Tail fluke: a paddle that forks into a crescent as it grows.
-        let beat = 0.25 * sin(time * (2.0 + 6.0 * activity) + phase);
-        let cc = (c - beat * a) / max(w, 1e-3);
+        let cc = (c - kind_sway(kind, a, sway)) / max(w, 1e-3);
         let aw = aa / max(w, 1e-3);
         let fork = smoothstep(0.3, 0.8, s);
         let stalk = fill(abs(cc), 0.22 * (1.0 - a * 0.5), aw) * step(0.0, a) * step(a, 0.5);
@@ -416,7 +490,7 @@ fn part(in: VertexOutput) -> vec4<f32> {
         col = mix(base, vec3<f32>(0.32, 0.22, 0.1), 0.55) * (0.85 + 0.15 * hash21(floor(q * 20.0) + seed));
     } else if kind == 9u {
         // Stalk: a slender stem, ringed when larger.
-        let y = 0.06 * sin(time * 0.7 + phase) * a * a;
+        let y = kind_sway(kind, a, sway);
         let hw = w * (1.0 - 0.3 * a);
         let dist = abs(c - y);
         alpha = fill(dist, hw + aa * 0.3, aa) * inside;
@@ -431,7 +505,7 @@ fn part(in: VertexOutput) -> vec4<f32> {
         alpha = eye.a;
     } else if kind == 11u {
         // Antenna: a twitching feeler; segmented, then feathery.
-        let y = (0.12 * sin(time * 2.2 + phase) + 0.18) * a * a;
+        let y = kind_sway(kind, a, sway);
         let hw = w * (1.0 - 0.6 * a);
         let dist = abs(c - y);
         alpha = fill(dist, hw + aa * 0.4, aa) * inside;
@@ -447,10 +521,9 @@ fn part(in: VertexOutput) -> vec4<f32> {
         }
     } else if kind == 12u {
         // Lure: a stalk with a glowing bulb; brighter and larger as it grows.
-        let sway = 0.15 * sin(time * 0.9 + phase);
-        let y = (sway + 0.1) * a * a;
+        let y = kind_sway(kind, a, sway);
         let stem = fill(abs(c - y), w * 0.22 + aa * 0.3, aa) * step(0.0, a) * step(a, 0.78);
-        let bulb_c = vec2<f32>(0.8, (sway + 0.1) * 0.64);
+        let bulb_c = vec2<f32>(0.8, kind_sway(kind, 0.8, sway));
         let br = w * (0.55 + 0.45 * s);
         let bd = length(q - bulb_c);
         let bulb = fill(bd, br, aa);
@@ -467,7 +540,7 @@ fn part(in: VertexOutput) -> vec4<f32> {
         }
     } else if kind == 13u {
         // Spine: a thorn, then banded, then a barbed spike.
-        let y = 0.08 * smoothstep(0.5, 1.0, s) * a * a;
+        let y = kind_sway(kind, a, sway);
         let barb = smoothstep(0.75, 0.9, s) * max(0.0, 1.0 - fract(a * 5.0) * 3.0) * step(0.25, a);
         let hw = w * (1.0 - a) + w * 0.5 * barb * (1.0 - a);
         alpha = fill(abs(c - y), hw + aa * 0.3, aa) * inside;
@@ -477,8 +550,7 @@ fn part(in: VertexOutput) -> vec4<f32> {
     } else if kind == 14u {
         // Jaw: a chitin mandible that bows out and hooks in, snapping while eating; serrated
         // along its inner edge once it's large enough.
-        let gape = eating * abs(sin(time * 14.0 + index)) * 0.2;
-        let y = (0.12 + gape) * sin(PI * a) - (0.18 + 0.12 * s) * a * a * a;
+        let y = kind_sway(kind, a, sway);
         let hw = w * (1.0 - pow(a, 1.4) * 0.85);
         let dist = c - y;
         alpha = fill(abs(dist), hw + aa * 0.3, aa) * inside;
@@ -507,6 +579,625 @@ fn part(in: VertexOutput) -> vec4<f32> {
         col += vec3<f32>(0.12) * smoothstep(0.7, 1.0, ac);
         alpha *= mix(0.75, 1.0, smoothstep(0.0, 0.4, s));
     }
+
+    return vec4<f32>(col, alpha);
+}
+
+// ---- Parts changing kind ----
+//
+// A part partway along a path to a related kind (see `PartKind::paths`) has art of its own for
+// that pair of kinds, drawn continuously in how far along it is (t: 0 = the lower-numbered
+// kind, 1 = the other): features grow, shrink, split, fuse and bend into the other kind's,
+// rather than one kind fading into the other.
+
+// What a part's look is drawn from.
+struct PartIn {
+    a: f32,        // along the part: 0 at the base, 1 at the tip (in part lengths)
+    c: f32,        // across it (mirrored copies curl the other way)
+    w: f32,        // nominal half width
+    s: f32,        // size
+    aa: f32,       // about one pixel
+    detail: f32,   // fine detail only once there are enough pixels to show it
+    time: f32,
+    activity: f32,
+    walking: f32,
+    phase: f32,
+    seed: f32,
+    index: f32,
+    base: vec3<f32>,
+    oxygenic: f32,
+    photo: f32,
+    dead: bool,
+    uv: vec2<f32>,
+    sway: Sway,
+};
+
+fn part_in(in: VertexOutput) -> PartIn {
+    let flags = u32(in.state.z * 255.0 + 0.5);
+    let dead = (flags & FLAG_DEAD) != 0u;
+    let mi = u32(in.body.z * 255.0 + 0.5);
+    let mirror = select(1.0, -1.0, (mi & 1u) == 1u);
+    let index = f32(mi >> 1u);
+    let lp = in.uv * in.shape.xy;
+    let time = select(params.x, 0.0, dead);
+    let activity = select(in.motion.x, 0.0, dead);
+    let phase = in.body.w * 40.0 + index * 1.9;
+    let gape = in.motion.z * abs(sin(time * 14.0 + index)) * 0.2;
+    var p: PartIn;
+    p.a = lp.x + 0.5;
+    p.c = lp.y * mirror;
+    p.w = in.shape.z;
+    p.s = in.body.y;
+    p.aa = 1.0 / max(in.shape.w, 0.5);
+    p.detail = smoothstep(6.0, 16.0, in.shape.w);
+    p.time = time;
+    p.activity = activity;
+    p.walking = select(in.motion.y, 0.0, dead);
+    p.phase = phase;
+    p.seed = in.body.w;
+    p.index = index;
+    p.base = in.tint.rgb;
+    p.oxygenic = in.chem.x;
+    p.photo = in.diet.x;
+    p.dead = dead;
+    p.uv = in.uv;
+    p.sway = Sway(in.body.y, time, phase, activity, in.chem.z, (in.chem.w * 2.0 - 1.0) * 0.75, gape);
+    return p;
+}
+
+// Inside the part's length, softly at the tip.
+fn along(p: PartIn) -> f32 {
+    return step(0.0, p.a) * (1.0 - smoothstep(1.0 - p.aa, 1.0 + p.aa, p.a));
+}
+
+// A frond's leaf colour (as the frond look colours it).
+fn leaf_pigment(p: PartIn) -> vec3<f32> {
+    let purple = vec3<f32>(0.5, 0.12, 0.48);
+    let golden = vec3<f32>(0.58, 0.44, 0.1);
+    let green = vec3<f32>(0.14, 0.58, 0.1);
+    let pigment = select(
+        mix(golden, green, p.oxygenic * 2.0 - 1.0),
+        mix(purple, golden, p.oxygenic * 2.0),
+        p.oxygenic < 0.5,
+    );
+    let faded = mix(pigment, vec3<f32>(0.8, 0.82, 0.72), 0.45);
+    return mix(mix(faded, pigment, smoothstep(0.0, 0.6, p.photo)), p.base, 0.08);
+}
+
+// Lines where fract(u) is near 0.
+fn lines_at(u: f32, width: f32) -> f32 {
+    let f = fract(u);
+    return 1.0 - smoothstep(0.0, width, min(f, 1.0 - f));
+}
+
+// Flagellum → tentacle: the whip thickens into an arm. Its fringe of hairs draws in, grooves
+// deepen into rings, suckers bud and grow, a club swells at the tip and the basal body shrinks.
+fn flagellum_to_tentacle(p: PartIn, t: f32) -> vec4<f32> {
+    let a = p.a;
+    let c = p.c;
+    let w = p.w;
+    let s = p.s;
+    let aa = p.aa;
+    let y = mix(kind_sway(1u, a, p.sway), kind_sway(3u, a, p.sway), t);
+    let ringed = smoothstep(0.3, 0.45, s) * p.detail;
+    let ring = 1.0 - smoothstep(0.08, 0.2, abs(fract(a * 14.0) - 0.5));
+    var hw = w * mix(1.0 - 0.7 * a, 1.0 - 0.65 * a, t);
+    hw *= 1.0 - 0.12 * ring * ringed * t;
+    hw += w * 0.6 * smoothstep(0.78, 0.92, a) * (1.0 - smoothstep(0.94, 1.0, a))
+        * smoothstep(0.75, 0.95, s) * t;
+    let dist = abs(c - y);
+    let inside = along(p);
+    var alpha = fill(dist, hw + aa * 0.4, aa) * inside;
+    let whip = mix(p.base * 0.8 + vec3<f32>(0.06), p.base * 1.1 + vec3<f32>(0.12), a);
+    let arm = p.base * mix(1.1, 0.7, dist / max(hw, 1e-3)) * (1.0 - 0.3 * ring * ringed);
+    var col = mix(whip, arm, t);
+    let reach = hw * (1.0 + 2.5 * (1.0 - t));
+    let hairs = step(fract(a * 30.0 + p.phase), 0.22) * step(dist, reach + aa) * inside
+        * step(0.12, a) * smoothstep(0.55, 0.75, s) * p.detail;
+    col = mix(col, p.base * 1.3 + vec3<f32>(0.2), hairs * (1.0 - alpha));
+    alpha = max(alpha, hairs * 0.55);
+    if s > 0.55 {
+        let ai = (floor(a * 12.0) + 0.5) / 12.0;
+        let sucker = fill(length(vec2<f32>(a - ai, c - (y - hw * 0.45))), hw * 0.32 * t, aa)
+            * step(0.1, a);
+        col = mix(col, vec3<f32>(0.95, 0.8, 0.75), sucker * smoothstep(0.55, 0.7, s) * p.detail * alpha);
+    }
+    let basal = fill(length(vec2<f32>(a, c)), w * 1.8 * (1.0 - t), aa) * smoothstep(0.25, 0.4, s);
+    col = mix(col, p.base * 0.55, basal);
+    alpha = max(alpha, basal);
+    return vec4<f32>(col, alpha);
+}
+
+// Flagellum → cilia band: the whip splits into a row of short hairs, side by side, spreading
+// out from the middle as a band grows across its base; the whip's beat becomes their ripple.
+fn flagellum_to_cilia(p: PartIn, t: f32) -> vec4<f32> {
+    let a = p.a;
+    let c = p.c;
+    let s = p.s;
+    let aa = p.aa;
+    let spacing = mix(0.4, 0.13, s);
+    let span = p.w * t;
+    // Each strand stays about a whip's thickness, however wide the band grows.
+    let thick = mix(min(p.w, 0.06) * (1.0 - 0.7 * a), 0.035 + 0.02 * s, t) + aa * 0.3;
+    let inside = step(0.0, a) * step(a, 1.0);
+    let beat = kind_sway(1u, a, p.sway) * (1.0 - t);
+    var hairs = 0.0;
+    let i0 = round(c / spacing);
+    for (var k = -2; k <= 2; k++) {
+        let i = i0 + f32(k);
+        let y0 = i * spacing;
+        if abs(y0) > span + 1e-4 && i != 0.0 {
+            continue;
+        }
+        let tilt = 0.35 * sin(p.time * 12.0 * (0.4 + p.activity) - i * 0.7 + p.phase) * a * a * t;
+        hairs = max(hairs, fill(abs(c - y0 - beat - tilt), thick, aa) * inside);
+    }
+    let band = fill(abs(c), span, aa) * step(-0.08, a) * (1.0 - smoothstep(0.1 * t, 0.16 * t + aa, a))
+        * step(0.001, t);
+    let whip = mix(p.base * 0.8 + vec3<f32>(0.06), p.base * 1.1 + vec3<f32>(0.12), a);
+    let hair = p.base * 0.9 + vec3<f32>(0.3, 0.3, 0.25);
+    var col = mix(p.base * 0.7, mix(whip, hair, t), hairs);
+    var alpha = max(band, hairs * mix(1.0, 0.9, t));
+    // The whip's own fringe of fine hairs draws in as it splits.
+    let dist = abs(c - beat);
+    let fringe = step(fract(a * 30.0 + p.phase), 0.22) * step(dist, thick * (1.0 + 2.5 * (1.0 - t)) + aa)
+        * inside * step(0.12, a) * smoothstep(0.55, 0.75, s) * p.detail;
+    col = mix(col, p.base * 1.3 + vec3<f32>(0.2), fringe * (1.0 - alpha));
+    alpha = max(alpha, fringe * 0.55);
+    let basal = fill(length(vec2<f32>(a, c)), thick * 1.8 * (1.0 - t), aa) * smoothstep(0.25, 0.4, s);
+    col = mix(col, p.base * 0.55, basal);
+    return vec4<f32>(col, max(alpha, basal));
+}
+
+// Cilia band → fin: the hairs fan out into rays, and a web grows between them from the base out.
+fn cilia_to_fin(p: PartIn, t: f32) -> vec4<f32> {
+    let a = p.a;
+    let s = p.s;
+    let aa = p.aa;
+    let w = p.w;
+    let c = p.c - 0.25 * sin(p.time * (2.5 + 7.0 * p.activity) + p.phase) * a * t;
+    let spread = atan(w * 1.6);
+    let n = 3.0 + floor(s * 6.0);
+    // The fin's rim: rays and web end at a rounded edge (straight across for the band's hairs).
+    let rho = length(vec2<f32>(a, c));
+    let rim = 0.75 + 0.25 * cos(atan2(c, max(a, 1e-4)) / spread * 1.3);
+    let out = mix(a, rho / rim, t);
+    let inside = step(0.0, a) * (1.0 - smoothstep(1.0 - aa, 1.0 + aa, out));
+    var rays = 0.0;
+    for (var k = 0; k < 9; k++) {
+        if f32(k) >= n {
+            break;
+        }
+        let across = f32(k) / (n - 1.0) * 2.0 - 1.0;
+        let y = mix(across * w, a * tan(spread * across), t);
+        let tilt = 0.35 * sin(p.time * 12.0 * (0.4 + p.activity) - f32(k) * 0.7 + p.phase) * a * a
+            * (1.0 - t);
+        rays = max(rays, fill(abs(c - y - tilt), mix(0.035 + 0.02 * s, 0.015, t) + aa * 0.3, aa));
+    }
+    rays *= inside;
+    let edge = mix(w, a * tan(spread), t);
+    // The web grows out from the base, reaching the rim by the time it's a fin.
+    let reach = mix(0.16, 1.0, min(1.0, t * 1.3));
+    let web = fill(abs(c), edge, aa) * step(mix(-0.08, 0.0, t), a) * (1.0 - smoothstep(reach - aa, reach + aa, out));
+    let hair_col = mix(p.base * 0.7, p.base * 0.9 + vec3<f32>(0.3, 0.3, 0.25), rays);
+    let fin_col = mix(p.base * 0.85, p.base * 1.3 + vec3<f32>(0.12), rays);
+    let col = mix(hair_col, fin_col, t);
+    let alpha = max(web * mix(1.0, 0.7 + 0.3 * rays, t), rays * mix(0.9, 1.0, t));
+    return vec4<f32>(col, alpha);
+}
+
+// Frond → fin: the leaf stiffens into a paddle. Its outline widens toward the tip, its serrated
+// edge smooths, its veins swing round into rays and the gas bladder shrinks away.
+fn frond_to_fin(p: PartIn, t: f32) -> vec4<f32> {
+    let a = p.a;
+    let s = p.s;
+    let aa = p.aa;
+    let w = p.w;
+    let c = p.c - mix(kind_sway(4u, a, p.sway), kind_sway(5u, a, p.sway), t);
+    var hw = mix(kind_width(4u, a, w, s), kind_width(5u, a, w, s), t);
+    hw *= 1.0 - 0.15 * smoothstep(0.65, 0.85, s) * abs(sin(a * 45.0)) * (1.0 - t);
+    let dist = abs(c);
+    var alpha = fill(dist, hw + aa * 0.3, aa) * step(0.0, a) * step(a, 1.0);
+    let n = 2.0 + floor(s * 6.0);
+    let vein = a * 9.0 - dist / max(w, 1e-3) * 1.2;
+    let ray = (c / max(hw, 1e-3) * 0.5 + 0.5) * n;
+    let line = lines_at(mix(vein, ray, t), mix(0.08, 0.06, t)) * smoothstep(0.3, 0.45, s) * p.detail;
+    var leaf = leaf_pigment(p) * mix(1.15, 0.8, dist / max(hw, 1e-3));
+    leaf = mix(leaf, leaf * 0.6, fill(dist, (0.015 + aa * 0.5) * (1.0 - t), aa) * smoothstep(0.2, 0.35, s));
+    leaf *= 1.0 - 0.25 * line;
+    let fin = mix(p.base * 0.85, p.base * 1.3 + vec3<f32>(0.12), line);
+    var col = mix(leaf, fin, t);
+    alpha *= mix(1.0, 0.7 + 0.3 * line, t);
+    let bladder = fill(length(vec2<f32>(a - 0.14, c)), w * 0.55 * (1.0 - t), aa) * smoothstep(0.8, 0.92, s);
+    col = mix(col, vec3<f32>(0.75, 0.65, 0.3), bladder);
+    alpha = max(alpha, bladder);
+    return vec4<f32>(col, alpha);
+}
+
+// Fin → leg: the paddle's middle ray thickens into a limb that gains joints and bends at them,
+// while the web shrinks back along it; knobs and a claw grow as it becomes a leg.
+fn fin_to_leg(p: PartIn, t: f32) -> vec4<f32> {
+    let s = p.s;
+    let aa = p.aa;
+    let w = p.w;
+    let q = vec2<f32>(p.a, p.c - 0.25 * sin(p.time * (2.5 + 7.0 * p.activity) + p.phase) * p.a * (1.0 - t));
+    let nseg = 1u + u32(floor(s * 2.99));
+    let step_t = p.time * 7.0 + p.phase;
+    var p0 = vec2<f32>(0.0, 0.0);
+    var ang = (-0.25 + 0.25 * sin(step_t + 0.6) * p.walking) * t;
+    let seglen = 1.0 / f32(nseg);
+    var limb = 1e3;
+    var middle = 1e3;
+    var at = 0.0;
+    var joints = 1e3;
+    for (var k = 0u; k < 3u; k++) {
+        if k >= nseg {
+            break;
+        }
+        if k == 1u {
+            ang += (0.7 + 0.25 * sin(step_t) * p.walking) * t;
+            joints = min(joints, length(q - p0) - w * 1.2);
+        }
+        if k == 2u {
+            ang -= (1.1 + 0.25 * sin(step_t + 1.2) * p.walking) * t;
+            joints = min(joints, length(q - p0) - w * 1.1);
+        }
+        let p1 = p0 + vec2<f32>(cos(ang), sin(ang)) * seglen;
+        let h = seg(q, p0, p1);
+        let thick = w * mix(0.12, 1.0 - 0.35 * (f32(k) + h.y) / f32(nseg), t);
+        if h.x < middle {
+            middle = h.x;
+            at = (f32(k) + h.y) / f32(nseg);
+        }
+        limb = min(limb, h.x - thick);
+        p0 = p1;
+    }
+    let claw_w = smoothstep(0.65, 0.8, s) * t;
+    if claw_w > 0.0 {
+        for (var k = 0; k < 2; k++) {
+            let side = select(-1.0, 1.0, k == 1);
+            let tip = p0 + vec2<f32>(cos(ang + side * 0.6), sin(ang + side * 0.6)) * 0.14;
+            limb = min(limb, seg(q, p0, tip).x - w * 0.35 * claw_w);
+        }
+    }
+    let knob = smoothstep(0.35, 0.5, s) * t;
+    limb = min(limb, mix(1e3, joints, knob));
+    let bone = 1.0 - smoothstep(-aa, aa, limb);
+    // The web, either side of the limb, as wide as the fin's outline there, shrinking.
+    let web_w = kind_width(5u, at, w, s) * (1.0 - t);
+    let web = fill(middle, web_w, aa) * step(0.0, q.x);
+    let n = 2.0 + floor(s * 6.0);
+    let ray = lines_at(middle / max(web_w, 1e-3) * n * 0.5, 0.1) * smoothstep(0.25, 0.4, s) * p.detail;
+    let web_col = mix(p.base * 0.85, p.base * 1.3 + vec3<f32>(0.12), ray);
+    let chitin = mix(p.base, vec3<f32>(0.35, 0.25, 0.15), 0.35 * t);
+    var bone_col = mix(p.base * 1.2 + vec3<f32>(0.1), chitin * mix(1.1, 0.7, clamp(-limb / max(w, 1e-3), 0.0, 1.0)), t);
+    bone_col = mix(bone_col, chitin * 0.5, (1.0 - smoothstep(-aa, aa * 2.0, joints)) * knob * 0.6);
+    let col = mix(web_col, bone_col, bone);
+    return vec4<f32>(col, max(bone, web * (0.7 + 0.3 * ray)));
+}
+
+// Fin → tail fluke: the paddle's base narrows into a stalk, its blade rounds out, and a notch
+// opens at its tip, forking it into a crescent.
+fn fin_to_fluke(p: PartIn, t: f32) -> vec4<f32> {
+    let a = p.a;
+    let s = p.s;
+    let aa = p.aa;
+    let w = p.w;
+    let c = p.c - mix(kind_sway(5u, a, p.sway), kind_sway(6u, a, p.sway), t);
+    let hw = mix(kind_width(5u, a, w, s), kind_width(6u, a, w, s), t);
+    var alpha = fill(abs(c), hw + aa * 0.3, aa) * step(0.0, a) * step(a, 1.05);
+    let cc = c / max(w, 1e-3);
+    let fork = smoothstep(0.3, 0.8, s);
+    let notch = length(vec2<f32>((a - 1.08 - 0.4 * (1.0 - t)) / (0.12 + 0.35 * fork), cc / (0.2 + 0.45 * fork)));
+    alpha *= smoothstep(1.0 - aa * 3.0, 1.0 + aa * 3.0, notch);
+    let n = 2.0 + floor(s * 6.0);
+    let line = lines_at(mix((c / max(hw, 1e-3) * 0.5 + 0.5) * n, cc * 3.0, t), 0.1)
+        * mix(smoothstep(0.25, 0.4, s), fork * step(0.5, a), t) * p.detail;
+    let fin = mix(p.base * 0.85, p.base * 1.3 + vec3<f32>(0.12), line);
+    let fluke = p.base * mix(1.1, 0.75, abs(cc)) * (1.0 - 0.2 * line);
+    alpha *= mix(0.7 + 0.3 * line, 1.0, t);
+    return vec4<f32>(mix(fin, fluke, t), alpha);
+}
+
+// Leg → holdfast: the limb straightens and shortens into a stem, its knobs and claw shrink, and
+// roots grow out from its end (or, on a small one, a sucker disc).
+fn leg_to_holdfast(p: PartIn, t: f32) -> vec4<f32> {
+    let s = p.s;
+    let aa = p.aa;
+    let w = p.w;
+    let q = vec2<f32>(p.a, p.c);
+    let nseg = 1u + u32(floor(s * 2.99));
+    let step_t = p.time * 7.0 + p.phase;
+    let bend = 1.0 - t;
+    var p0 = vec2<f32>(0.0, 0.0);
+    var ang = (-0.25 + 0.25 * sin(step_t + 0.6) * p.walking) * bend;
+    let seglen = mix(1.0, 0.45, t) / f32(nseg);
+    var dist = 1e3;
+    var joints = 1e3;
+    for (var k = 0u; k < 3u; k++) {
+        if k >= nseg {
+            break;
+        }
+        if k == 1u {
+            ang += (0.7 + 0.25 * sin(step_t) * p.walking) * bend;
+            joints = min(joints, length(q - p0) - w * 1.2);
+        }
+        if k == 2u {
+            ang -= (1.1 + 0.25 * sin(step_t + 1.2) * p.walking) * bend;
+            joints = min(joints, length(q - p0) - w * 1.1);
+        }
+        let p1 = p0 + vec2<f32>(cos(ang), sin(ang)) * seglen;
+        let h = seg(q, p0, p1);
+        let thick = w * mix(1.0 - 0.35 * (f32(k) + h.y) / f32(nseg), 0.28, t);
+        dist = min(dist, h.x - thick);
+        p0 = p1;
+    }
+    let claw_w = smoothstep(0.65, 0.8, s) * bend;
+    if claw_w > 0.0 {
+        for (var k = 0; k < 2; k++) {
+            let side = select(-1.0, 1.0, k == 1);
+            let tip = p0 + vec2<f32>(cos(ang + side * 0.6), sin(ang + side * 0.6)) * 0.14;
+            dist = min(dist, seg(q, p0, tip).x - w * 0.35 * claw_w);
+        }
+    }
+    let knob = smoothstep(0.35, 0.5, s) * bend;
+    dist = min(dist, mix(1e3, joints, knob));
+    let limb = 1.0 - smoothstep(-aa, aa, dist);
+    // Roots, growing out from the end of the limb to where a holdfast's reach.
+    let n = 2 + i32(floor(s * 5.0));
+    var roots = 0.0;
+    for (var k = 0; k < 7; k++) {
+        if k >= n {
+            break;
+        }
+        let r = (f32(k) + 0.5) / f32(n) * 2.0 - 1.0;
+        let tip = p0 + (vec2<f32>(0.97, r * w * 0.95) - p0) * t;
+        let mid = p0 + (vec2<f32>(0.68, r * w * 0.45 + 0.05 * sin(f32(k) * 2.3 + p.seed * 9.0)) - p0) * t;
+        let h1 = seg(q, p0, mid);
+        let h2 = seg(q, mid, tip);
+        let at = select(0.5 + 0.5 * h2.y, 0.5 * h1.y, h1.x < h2.x);
+        roots = max(roots, fill(min(h1.x, h2.x), w * 0.2 * (1.0 - 0.6 * at) * min(1.0, t * 3.0) + aa * 0.3, aa));
+    }
+    roots *= smoothstep(0.2, 0.35, s) * step(0.001, t);
+    let disc = fill(length(vec2<f32>((p.a - 0.85) / 0.15, p.c / max(w * 0.7 * t, 1e-3))), 1.0, aa * 6.0)
+        * (1.0 - smoothstep(0.3, 0.5, s)) * step(0.001, t);
+    let chitin = mix(p.base, vec3<f32>(0.35, 0.25, 0.15), 0.35);
+    let leg_col = chitin * mix(1.1, 0.7, clamp(-dist / max(w, 1e-3), 0.0, 1.0));
+    let root_col = mix(p.base, vec3<f32>(0.32, 0.22, 0.1), 0.55) * (0.85 + 0.15 * hash21(floor(q * 20.0) + p.seed));
+    var col = mix(leg_col, root_col, t);
+    col = mix(col, chitin * 0.5, (1.0 - smoothstep(-aa, aa * 2.0, joints)) * knob * 0.6);
+    col = mix(col, root_col, max(roots, disc) * (1.0 - limb));
+    return vec4<f32>(col, max(limb, max(roots, disc)));
+}
+
+// The feathery plume of a large antenna, its hairs `reach` long.
+fn plume(p: PartIn, dist: f32, reach: f32) -> f32 {
+    let f = fract(p.a * 16.0 - dist / 0.12);
+    return step(f, 0.15) * step(dist, reach) * step(0.15, p.a) * step(p.a, 1.0)
+        * smoothstep(0.65, 0.8, p.s) * p.detail;
+}
+
+const FEELER: vec3<f32> = vec3<f32>(0.85, 0.75, 0.55);
+const PLUME: vec3<f32> = vec3<f32>(0.9, 0.85, 0.7);
+
+// Tentacle → antenna: the arm thins into a feeler. Its rings tighten into joints, its suckers and
+// club shrink away, and a feathery plume grows along it.
+fn tentacle_to_antenna(p: PartIn, t: f32) -> vec4<f32> {
+    let a = p.a;
+    let c = p.c;
+    let w = p.w;
+    let s = p.s;
+    let aa = p.aa;
+    let y = mix(kind_sway(3u, a, p.sway), kind_sway(11u, a, p.sway), t);
+    let club = w * 0.6 * smoothstep(0.78, 0.92, a) * (1.0 - smoothstep(0.94, 1.0, a))
+        * smoothstep(0.75, 0.95, s) * (1.0 - t);
+    let hw = w * mix(1.0 - 0.65 * a, 1.0 - 0.6 * a, t) + club;
+    let dist = abs(c - y);
+    var alpha = fill(dist, hw + aa * 0.35, aa) * along(p);
+    let ring = 1.0 - smoothstep(0.08, 0.2, abs(fract(a * mix(14.0, 10.0, t)) - 0.5));
+    let marks = mix(smoothstep(0.3, 0.45, s), smoothstep(0.35, 0.5, s), t) * p.detail * 0.3;
+    var col = mix(p.base * mix(1.1, 0.7, dist / max(hw, 1e-3)), mix(p.base, FEELER, 0.3), t);
+    col *= 1.0 - marks * ring;
+    if s > 0.55 {
+        let ai = (floor(a * 12.0) + 0.5) / 12.0;
+        let sucker = fill(length(vec2<f32>(a - ai, c - (y - hw * 0.45))), hw * 0.32 * (1.0 - t), aa)
+            * step(0.1, a);
+        col = mix(col, vec3<f32>(0.95, 0.8, 0.75), sucker * smoothstep(0.55, 0.7, s) * p.detail * alpha);
+    }
+    let hair = plume(p, dist, 0.12 * t);
+    col = mix(col, PLUME, hair * (1.0 - alpha));
+    alpha = max(alpha, hair * 0.7);
+    return vec4<f32>(col, alpha);
+}
+
+// Stalk → antenna: the stem thins and starts to twitch, its rings turn into joints and a
+// feathery plume grows along it.
+fn stalk_to_antenna(p: PartIn, t: f32) -> vec4<f32> {
+    let a = p.a;
+    let w = p.w;
+    let s = p.s;
+    let aa = p.aa;
+    let y = mix(kind_sway(9u, a, p.sway), kind_sway(11u, a, p.sway), t);
+    let hw = w * mix(1.0 - 0.3 * a, 1.0 - 0.6 * a, t);
+    let dist = abs(p.c - y);
+    var alpha = fill(dist, hw + aa * mix(0.3, 0.4, t), aa) * step(0.0, a) * step(a, 1.0);
+    let ring = 1.0 - smoothstep(0.1, 0.2, abs(fract(a * 10.0) - 0.5));
+    let marks = mix(0.25 * smoothstep(0.45, 0.6, s), 0.3 * smoothstep(0.35, 0.5, s), t) * p.detail;
+    var col = mix(p.base * mix(0.95, 0.65, dist / max(hw, 1e-3)), mix(p.base, FEELER, 0.3), t);
+    col *= 1.0 - marks * ring;
+    let hair = plume(p, dist, 0.12 * t);
+    col = mix(col, PLUME, hair * (1.0 - alpha));
+    alpha = max(alpha, hair * 0.7);
+    return vec4<f32>(col, alpha);
+}
+
+// Eye → antenna: a feeler grows out from under the eye, carrying it outward and shrinking it as
+// it goes, until only the feeler is left.
+fn eye_to_antenna(p: PartIn, t: f32) -> vec4<f32> {
+    let a = p.a;
+    let w = p.w;
+    let aa = p.aa;
+    let q = vec2<f32>(a, p.c);
+    let y = kind_sway(11u, a, p.sway) * t;
+    let hw = w * (1.0 - 0.6 * a) * mix(0.25, 1.0, t);
+    let dist = abs(p.c - y);
+    let feeler = fill(dist, hw + aa * 0.4, aa) * step(0.0, a) * (1.0 - smoothstep(1.0 - aa, 1.0 + aa, a));
+    var col = mix(p.base, FEELER, 0.3);
+    var alpha = feeler;
+    let hair = plume(p, dist, 0.12 * t);
+    col = mix(col, PLUME, hair * (1.0 - alpha));
+    alpha = max(alpha, hair * 0.7);
+    // The eye rides on the feeler's tip, shrinking as the feeler grows.
+    let radius = min(0.5, w * sqrt(1.0 - t)) + 1e-4;
+    let tip = 1.0 - radius;
+    let centre = vec2<f32>(tip, kind_sway(11u, tip, p.sway) * t);
+    let eye = eye_art((q - centre) / radius, p.s, p.seed + p.index * 0.37, p.time, aa / radius);
+    col = mix(col, eye.rgb, eye.a);
+    alpha = max(alpha, eye.a);
+    return vec4<f32>(col, alpha);
+}
+
+// Eye → lure: the eye rises on a stalk that grows beneath it, shrinking into a bulb, while light
+// spreads out from its pupil until it glows.
+fn eye_to_lure(p: PartIn, t: f32) -> vec4<f32> {
+    let a = p.a;
+    let w = p.w;
+    let s = p.s;
+    let aa = p.aa;
+    let q = vec2<f32>(a, p.c);
+    let sway = 0.15 * sin(p.time * 0.9 + p.phase) + 0.1;
+    let y = sway * a * a * t;
+    let centre = vec2<f32>(mix(0.5, 0.8, t), sway * 0.64 * t);
+    let radius = min(0.5, w * mix(1.0, 0.55 + 0.45 * s, t));
+    let stem = fill(abs(p.c - y), w * 0.22 * t + aa * 0.3, aa) * step(0.0, a) * step(a, centre.x)
+        * step(0.001, t);
+    let eye = eye_art((q - centre) / radius, s, p.seed + p.index * 0.37, p.time, aa / radius);
+    let pulse = 0.75 + 0.25 * sin(p.time * 2.0 + p.phase);
+    let glow = mix(vec3<f32>(0.35, 1.0, 0.85), p.base, 0.25) * (1.5 + 4.0 * s) * pulse;
+    // Light spreads out from the pupil until it fills the eye.
+    let e = (q - centre) / radius;
+    let lit = 1.0 - smoothstep(t * 1.05 - aa / radius, t * 1.05 + aa / radius,
+        length(e - vec2<f32>(0.2 * (1.0 - t), 0.0)));
+    let bulb = select(mix(eye.rgb, glow, lit), vec3<f32>(0.4), p.dead && t > 0.5);
+    var col = mix(p.base * 0.7, bulb, eye.a);
+    var alpha = max(stem, eye.a);
+    if !p.dead {
+        let edge_fade = 1.0 - smoothstep(0.6, 1.0, max(abs(p.uv.x), abs(p.uv.y)));
+        let bd = length(q - centre);
+        let halo = exp(-max(bd - radius, 0.0) / (radius * (0.5 + 1.0 * s))) * (0.3 + 0.5 * s) * pulse
+            * edge_fade * t;
+        col = mix(col, glow, halo * (1.0 - alpha));
+        alpha = max(alpha, halo * 0.6);
+    }
+    return vec4<f32>(col, alpha);
+}
+
+// Spine → jaw: the thorn bows out and hooks in, its barbs shrink away and teeth grow along its
+// inner edge as it becomes a mandible.
+fn spine_to_jaw(p: PartIn, t: f32) -> vec4<f32> {
+    let a = p.a;
+    let w = p.w;
+    let s = p.s;
+    let aa = p.aa;
+    let y = mix(kind_sway(13u, a, p.sway), kind_sway(14u, a, p.sway), t);
+    let barb = smoothstep(0.75, 0.9, s) * max(0.0, 1.0 - fract(a * 5.0) * 3.0) * step(0.25, a) * (1.0 - t);
+    let hw = mix(w * (1.0 - a) + w * 0.5 * barb * (1.0 - a), w * (1.0 - pow(clamp(a, 0.0, 1.0), 1.4) * 0.85), t);
+    let dist = p.c - y;
+    var alpha = fill(abs(dist), hw + aa * 0.3, aa) * step(0.0, a) * step(a, 1.0);
+    let band = 1.0 - smoothstep(0.15, 0.25, abs(fract(a * 6.0) - 0.5));
+    let spine = mix(p.base * 0.4, vec3<f32>(0.9, 0.85, 0.72), 0.55 + 0.3 * a)
+        * (1.0 - 0.3 * band * smoothstep(0.4, 0.55, s) * p.detail);
+    let chitin = mix(vec3<f32>(0.2, 0.11, 0.05), vec3<f32>(0.85, 0.7, 0.5), a * a);
+    let jaw = mix(chitin, p.base * 0.5, 0.2) * mix(1.15, 0.8, abs(dist) / max(hw, 1e-3));
+    var col = mix(spine, jaw, t);
+    let teeth_w = smoothstep(0.3, 0.45, s);
+    if teeth_w > 0.0 {
+        let count = 3.0 + floor(s * 5.0);
+        let f = fract(a * count);
+        let height = w * (0.3 + 0.3 * s) * (1.0 - abs(f - 0.5) * 2.0) * t;
+        let inward = -dist - hw;
+        let tooth = step(-aa, inward) * step(inward, height) * step(0.15, a) * step(a, 0.95) * teeth_w
+            * step(0.001, t);
+        col = mix(col, vec3<f32>(0.3, 0.17, 0.07), tooth);
+        alpha = max(alpha, tooth);
+    }
+    return vec4<f32>(col, alpha);
+}
+
+// Spine → shell plate: the thorn flattens out sideways and curves into a plate, its bands
+// spreading into growth lines.
+fn spine_to_shell(p: PartIn, t: f32) -> vec4<f32> {
+    let w = p.w;
+    let s = p.s;
+    let aa = p.aa;
+    let c = p.c - kind_sway(13u, p.a, p.sway) * (1.0 - t);
+    let rb = 1.0 / (0.08 + 0.25 * s);
+    let ac = p.a + c * c / (2.0 * rb) * t;
+    let hw = w * mix(1.0 - clamp(ac, 0.0, 1.0), 1.0, t);
+    var alpha = fill(abs(ac - 0.5), 0.5, aa) * fill(abs(c), hw + aa * 0.3, aa);
+    let freq = mix(6.0, 2.0 + 4.0 * s, t);
+    let line = 1.0 - smoothstep(mix(0.15, 0.0, t), mix(0.25, 0.15, t), abs(fract(ac * freq) - 0.5));
+    let marks = mix(0.3 * smoothstep(0.4, 0.55, s), 0.25 * smoothstep(0.35, 0.5, s), t) * p.detail;
+    let spine = mix(p.base * 0.4, vec3<f32>(0.9, 0.85, 0.72), 0.55 + 0.3 * ac);
+    let shell = mix(p.base * 0.45, vec3<f32>(0.55, 0.5, 0.4), 0.45);
+    var col = mix(spine, shell, t) * (1.0 - marks * line);
+    let knobs = fill(length(vec2<f32>(ac - 0.75, fract(c * 1.5 + 0.5) - 0.5)), 0.12 * t, aa) * smoothstep(0.7, 0.85, s);
+    col = mix(col, col * 1.4 + vec3<f32>(0.08), knobs * p.detail);
+    col += vec3<f32>(0.12) * smoothstep(0.7, 1.0, ac) * t;
+    alpha *= mix(1.0, mix(0.75, 1.0, smoothstep(0.0, 0.4, s)), t);
+    return vec4<f32>(col, alpha);
+}
+
+// The art for a part `t` of the way from kind `lo` to the related kind `hi` (lo < hi).
+fn link_look(p: PartIn, lo: u32, hi: u32, t: f32) -> vec4<f32> {
+    if lo == 1u && hi == 3u {
+        return flagellum_to_tentacle(p, t);
+    } else if lo == 1u && hi == 2u {
+        return flagellum_to_cilia(p, t);
+    } else if lo == 2u && hi == 5u {
+        return cilia_to_fin(p, t);
+    } else if lo == 4u && hi == 5u {
+        return frond_to_fin(p, t);
+    } else if lo == 5u && hi == 7u {
+        return fin_to_leg(p, t);
+    } else if lo == 5u && hi == 6u {
+        return fin_to_fluke(p, t);
+    } else if lo == 7u && hi == 8u {
+        return leg_to_holdfast(p, t);
+    } else if lo == 3u && hi == 11u {
+        return tentacle_to_antenna(p, t);
+    } else if lo == 9u && hi == 11u {
+        return stalk_to_antenna(p, t);
+    } else if lo == 10u && hi == 11u {
+        return eye_to_antenna(p, t);
+    } else if lo == 10u && hi == 12u {
+        return eye_to_lure(p, t);
+    } else if lo == 13u && hi == 14u {
+        return spine_to_jaw(p, t);
+    } else if lo == 13u && hi == 15u {
+        return spine_to_shell(p, t);
+    }
+    // Not a link (the paths in parts.rs and these must match).
+    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+}
+
+// A body part: its kind's look, or, partway to a related kind (the other kind in the high
+// nibble, how far in wound.x), that pair's own in-between art.
+fn part(in: VertexOutput) -> vec4<f32> {
+    let flags = u32(in.state.z * 255.0 + 0.5);
+    let dead = (flags & FLAG_DEAD) != 0u;
+    let code = u32(in.body.x * 255.0 + 0.5);
+    let own = code & 15u;
+    let toward = code >> 4u;
+    let t = in.wound.x;
+    var look: vec4<f32>;
+    if toward != 0u && t > 0.0 {
+        look = link_look(part_in(in), min(own, toward), max(own, toward), select(1.0 - t, t, own < toward));
+    } else {
+        look = part_look(in, own);
+    }
+    var col = look.rgb;
+    var alpha = look.a;
 
     // Starving organisms fade; wounded ones redden (like the body).
     col *= 0.55 + 0.45 * smoothstep(0.0, 0.35, in.state.x);

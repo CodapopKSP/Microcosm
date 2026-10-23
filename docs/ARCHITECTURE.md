@@ -14,8 +14,8 @@ The core has **no rendering dependencies**. Headless runs (tuning, benchmarks, l
 | Module | Responsibility |
 |--------|----------------|
 | `config.rs` | Every tunable number, with defaults that must match `configs/default.toml` (a test enforces this) |
-| `genome.rs` | 60-byte genome, chromosome table, parsing/formatting (`B:20A050200000 C:55C000 …`), mutation (including part duplication, deletion and type shifts), genetic distance |
-| `parts.rs` | The body-part catalog, decoding the P chromosome, and laying parts out on the body (shared by the simulation and the renderer) |
+| `genome.rs` | 68-byte genome, chromosome table, parsing/formatting (`B:20A050200000 C:55C000 …`, and the old 60-byte genomes), mutation (including part duplication, deletion, and parts walking toward related kinds), genetic distance |
+| `parts.rs` | The body-part catalog and the paths between related kinds, decoding the P chromosome (including parts partway between two kinds), and laying parts out on the body (shared by the simulation and the renderer) |
 | `traits.rs` | Decodes a genome into `Traits` (phenotype) once at birth, summing the parts into plain numbers (thrust, grip, eye cones, …); plain-English gene descriptions for the inspector |
 | `organism.rs` | `Organism` (position, mass, energy, HP, traits, RNG, …) and `Carcass` |
 | `world.rs` | `World` and the tick pipeline (below); feeding, reproduction, death; save/load |
@@ -75,4 +75,4 @@ The viewer interpolates organism positions between ticks, so motion stays smooth
 
 ## Saves
 
-`World::save`/`load` write lz4-compressed MessagePack **with field names**, so saves survive code changes: removed fields are ignored, and new fields marked `#[serde(default)]` take their defaults. The file starts with a magic marker (`EVOSAVE2`); it was bumped when the genome grew to 60 bytes, since older saves can't be converted. Decoded traits aren't saved; they're re-decoded from genomes on load, so changes to gene formulas apply to existing worlds. The viewer autosaves to `saves/autosave.bin` every 10 minutes by default (`--autosave-minutes`) and quicksaves with F5. Resume with `--load`.
+`World::save`/`load` write lz4-compressed MessagePack **with field names**, so saves survive code changes: removed fields are ignored, and new fields marked `#[serde(default)]` take their defaults. The file starts with a magic marker (`EVOSAVE2`); it was bumped when the genome grew to 60 bytes, since older saves can't be converted. When it grew to 68 (a form byte per part slot), old saves were converted instead: a 60-byte genome loads with every form byte zero, and the per-organism mutation masks are renumbered (`Genome::from_bytes`, `gene_mask_serde`). Decoded traits aren't saved; they're re-decoded from genomes on load, so changes to gene formulas apply to existing worlds. The viewer autosaves to `saves/autosave.bin` every 10 minutes by default (`--autosave-minutes`) and quicksaves with F5. Resume with `--load`.

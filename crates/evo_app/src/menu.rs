@@ -248,7 +248,7 @@ fn preset_name(i: usize, users: &[crate::paths::SavedOrganism]) -> String {
 
 /// The vent lineage's genome (also the "Vent chemotroph" preset).
 const VENT_ANCESTOR: &str = "B:207060300000 C:10C040 D:00FF0000 G:400080000000 H:2030 \
-     N:80808080808080808000 P:086010 000000 000000 000000 000000 000000 000000 000000 \
+     N:80808080808080808000 P:08601000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 \
      R:FF00B0 T:FFFF";
 
 impl Preset {

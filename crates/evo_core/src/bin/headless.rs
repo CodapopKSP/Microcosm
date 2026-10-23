@@ -478,7 +478,7 @@ fn ecology(world: &World) {
     for o in &world.organisms {
         let mut seen = [false; 15];
         for p in evo_core::parts::decode_parts(&o.genome) {
-            seen[p.kind as usize - 1] = true;
+            seen[p.main_kind() as usize - 1] = true;
         }
         for (k, s) in seen.iter().enumerate() {
             has[k] += *s as u32;
@@ -492,6 +492,23 @@ fn ecology(world: &World) {
         .map(|(k, c)| format!("{} {:.0}%", k.plural(), c as f32 * 100.0 / n))
         .collect();
     println!("  parts carried: {}", list.join(", "));
+    // Parts partway to another kind, by where they're heading.
+    let mut changing: std::collections::BTreeMap<(&str, &str), u32> = Default::default();
+    for o in &world.organisms {
+        for p in evo_core::parts::decode_parts(&o.genome) {
+            if let Some((other, _)) = p.toward {
+                *changing.entry((p.kind.name(), other.name())).or_default() += 1;
+            }
+        }
+    }
+    let mut changing: Vec<_> = changing.into_iter().collect();
+    changing.sort_by_key(|&(_, c)| std::cmp::Reverse(c));
+    let list: Vec<String> = changing
+        .iter()
+        .take(8)
+        .map(|((from, to), c)| format!("{from}→{to} {c}"))
+        .collect();
+    println!("  parts changing kind: {}", list.join(", "));
     let d = |k: usize| {
         world
             .organisms

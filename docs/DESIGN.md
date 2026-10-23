@@ -59,7 +59,7 @@ All the chemistry is described in §4.
 
 ## 2. The genome
 
-A genome is **60 bytes** in nine lettered chromosomes. **Every byte is one gene** and means one thing. Genes are written in hex, e.g. `B:20A050200000`.
+A genome is **68 bytes** in nine lettered chromosomes. **Every byte is one gene** and means one thing. Genes are written in hex, e.g. `B:20A050200000`.
 
 | Chr | Byte | Gene | Decoding (g = byte, f = g/255) | Upkeep* |
 |-----|------|------|---------------------------|---------|
@@ -86,7 +86,7 @@ A genome is **60 bytes** in nine lettered chromosomes. **Every byte is one gene*
 | | H1 | Toughness | Max HP = (0.3 + 1.7 f) × mass | 0.3 f |
 | **N** Nature | N0–N8 | Drives | Signed: `80` = 0, full strength (±1) from `C0` toward / `40` away. See §6 | — |
 | | N9 | Restlessness | Cruising throttle and random wandering when nothing is sensed | — |
-| **P** Parts | P0–P23 | Eight body parts, 3 bytes each | See §3 | per part |
+| **P** Parts | P0–P31 | Eight body parts, 4 bytes each | See §3 | per part |
 | **R** Reproduction | R0 | Offspring size | Newborn mass = 0.5 × 2^(−(255−g)/32) × adult mass (`FF` = 50%, fission-like; `00` ≈ 0.2%) | — |
 | | R1 | Brood size | 1 + (g >> 5) offspring per event (1–8) | — |
 | | R2 | Patience | Reproduce when reserves ≥ (30 + 70 f)% full | — |
@@ -129,10 +129,11 @@ Optionally (`population.vent_ancestor`), a second lineage can start at the vents
 
 Applied independently to each gene of each offspring:
 
-- Probability **3%** per gene (9% for the three color genes, a fast-ticking "molecular clock" so lineages visibly diverge in color; 0.9% for part types). About a quarter of offspring are exact copies.
+- Probability **3%** per gene (9% for the three color genes, a fast-ticking "molecular clock" so lineages visibly diverge in color; 0.45% for part types; 6% for part forms). About a quarter of offspring are exact copies.
 - 5% of mutations **re-roll** the gene to a random value. The rest step by ±2 (50%), ±4 (25%), ±8 (12.5%) or ±16 (12.5%).
 - Values clamp at `00` and `FF`.
-- A part's **type** byte doesn't step: it shifts to a neighboring kind in the catalog (fin ↔ leg, spine ↔ jaw, eye ↔ antenna, …) or gains or loses symmetry (single → pair → ring).
+- A part's **type** byte doesn't step: it gains or loses symmetry (single → pair → ring). Its kind never jumps.
+- A part's **form** byte walks it toward a related kind (see §3): each mutation moves it about an eighth of the way, forward or back (4, 8 or 16 of 64 steps). Only a part that hasn't started changing picks a new path, so it never jumps from one half-made form to another. Past the end of its path it becomes the other kind, and its path leads back.
 - Whole parts: **duplication** (0.3% per offspring: a part is copied into an empty slot, often to a new place), **deletion** (0.4%), and **new parts** (0.5%: a random kind grows in an empty slot from its leftover bytes; a slot that has never held a part starts at a random place and angle, since its all-zero bytes would put every new part at the very front).
 - **Diet shifts** (0.5% per offspring): 30–60% of one diet gene's investment jumps to another diet in one step. Mixed diets are worse than both of their neighbours, so walking from one way of living to another (photosynthesis plus scavenging to photosynthesis plus hunting) means crossing a dip; a shift jumps it.
 
@@ -144,13 +145,14 @@ Low mutation rates keep lineages coherent, so species persist and drift is visib
 
 Bodies are ellipses: the Elongation gene stretches them from round to 4:1 (keeping their area) and tapers them toward the tail. The Segments gene gives 1–6 segments, each extra one making the body 50% longer; segments are drawn as beads with a waist between them, the head bead a little larger and holding the nucleus. Extra segments cost upkeep (5% each), make building the body 10% dearer each, and slow turning. Every body has a front: its **mouth** is at the front of the head. On the body sit up to **eight parts** from a fixed catalog of fifteen kinds. Every kind has its own look and job. How many, where, how big, mirrored or not, and what they attach to all evolve.
 
-Each part is three bytes in chromosome P:
+Each part is four bytes in chromosome P:
 
 | Byte | Meaning |
 |------|---------|
 | Type | Low 4 bits: kind (0 = empty slot). High 4 bits: symmetry: 0 single, 1 mirrored pair, 2–5 a ring of 3–6 |
 | Size | Strength, length, and how elaborate it looks (a small eye is a pigment spot, a big one a camera eye; looks only, for eyes) |
 | Place | High 3 bits: segment 1–6, 6 = every segment, 7 = on the tip of the previous part. Low 5 bits: angle around the body (0 = forward, 16 = back) |
+| Form | High 2 bits: a path to a related kind (below). Low 6 bits: how far along it the part has changed (0 = not at all, 63 = almost all the way) |
 
 Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-segment body is 8 legs. Parts attached "on the previous part" make trees: an eye on a stalk, fronds on stems, claws on legs.
 
@@ -171,6 +173,30 @@ Symmetry and repetition multiply a part: a pair of legs on every segment of a 4-
 | Spine | Hurts attackers | |
 | Jaw | Bite strength | Works best facing forward |
 | Shell plate | Armor; also insulates: each full-size plate widens the tolerated temperatures by ±1 °C (smaller plates less) | Heavy: slows and sinks the body |
+
+**Parts change gradually (exaptation).** A part can slowly turn into a related kind, and every step on the way works a little: a whip thickens into an arm, a leaf stiffens into a paddle, a light-sensing spot starts to glow. The paths:
+
+| Kind | Can become |
+|------|------------|
+| Flagellum | tentacle, cilia band |
+| Cilia band | flagellum, fin |
+| Tentacle | flagellum, antenna |
+| Antenna | tentacle, stalk, eye |
+| Stalk | antenna |
+| Fin | frond, leg, cilia band, tail fluke |
+| Tail fluke | fin |
+| Frond | fin |
+| Leg | fin, holdfast |
+| Holdfast | leg |
+| Eye | lure, antenna |
+| Lure | eye |
+| Spine | jaw, shell plate |
+| Jaw | spine |
+| Shell plate | spine |
+
+Each kind has four path settings; each link is one setting at both of its ends, and the rest lead nowhere. So a kind with few relatives is as hard to leave as it is to reach, and by drift alone every kind would end up equally common, however many ways lead to it (a fin isn't favoured just because four kinds can become one).
+
+A part partway along does both kinds' jobs, by its share of each (a part 40% of the way from flagellum to tentacle gives 60% of the whip's thrust and 40% of the arm's grip), less a penalty for being in between: `form_penalty` (15%) halfway, less nearer either end, none at the ends. Its length, width, mass, upkeep and drag blend the same way. Each pair of related kinds has its own in-between art, in the game and in the notebook, drawn continuously in how far along the part is: features grow, shrink, split, fuse and bend from one kind's into the other's rather than fading (a whip's hairs draw in as it thickens, rings and suckers grow; hairs fan out and web over into a fin; a leaf's veins swing round into rays; an eye rises on a stalk and light spreads from its pupil into a lure). It counts as the kind it's closer to (for eyes and antennae counted, drawing in front of the body, and species, §7).
 
 **What parts add up to.** At birth the parts are laid out on the body and summed into plain numbers, so the per-tick simulation never looks at parts again:
 
@@ -326,8 +352,8 @@ Examples of what the drives can produce: phototaxis (+Light), vent-seeking (+Min
 ## 7. Species
 
 - Every organism carries a **species ID** inherited from its parent.
-- Distance between genomes = weighted mean of per-gene differences. Color genes weigh 25%, part size and placement 30% (and only when both genomes have a part in that slot), everything else 100%. Each gene contributes at most 0.3 of its range (size up to 0.5; colour genes up to 0.15 after their weight), so one large jump can't make a species on its own: it takes changes in several genes. A different kind of part in a slot counts 0.5.
-- If a newborn's distance from its species' **founder genome** exceeds the species threshold, it founds a **new species**. The new species records its parent species and founding time. So does a newborn that has a kind of part the founder lacked, or whose main diet clearly differs from the founder's (leading it by `diet_margin`); however close their genes, those are a different kind of organism.
+- Distance between genomes = weighted mean of per-gene differences. Color genes weigh 25%, part size and placement 30% (and only when both genomes have a part in that slot), everything else 100%. Each gene contributes at most 0.3 of its range (size up to 0.5; colour genes up to 0.15 after their weight), so one large jump can't make a species on its own: it takes changes in several genes. A different kind of part in a slot counts 0.5; a part partway to another kind counts that share of it, so the distance grows smoothly as the part changes.
+- If a newborn's distance from its species' **founder genome** exceeds the species threshold, it founds a **new species**. The new species records its parent species and founding time. So does a newborn that has a kind of part the founder lacked (a changing part counts as the kind it's closer to), or whose main diet clearly differs from the founder's (leading it by `diet_margin`); however close their genes, those are a different kind of organism.
 - A species is **established** (named, listed, charted) once it reaches 20 living members. Variants that die out before that are forgotten.
 - **Names** are generated pseudo-Latin binomials. The genus is inherited unless the distance from the genus founder exceeds a larger threshold or the main diet switches, so related species share a genus name (*Rubrovorax lentus*, *Rubrovorax magnus*). Names describe the organism:
   - **Genus** = prefix + diet root + size ending. The prefix is the body's most striking feature (*Acantho-* spines, *Cirro-* tentacles, *Ommato-* eyes, *Pyro-* heat-loving, *Macro-* large…), or its colour if nothing stands out. A new genus keeps its parent genus's diet root while it eats the same way, so related genera sound related (*Chlorothallus* → *Rhizothallella*).

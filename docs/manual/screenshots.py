@@ -31,7 +31,9 @@ FIGURES = HERE / "figures"
 SPACING, TOP, LEFT, HEIGHT = 48.0, 180.0, 1000.0, 6000.0
 ZOOM = 0.08  # world units per pixel: 12.5 pixels per unit
 SHOT_COLUMNS = (1, 4, 7)  # each capture shows its column and the two beside it
-GALLERY_ROWS = 29
+GALLERY_ROWS = 42
+# Rows of parts partway to a related kind (gallery.rs `form_rows`), after the animation rows.
+FORM_ROWS = range(29, 42)
 
 
 def capture(out, game_args, delay=5.5, hide_ui=False):
@@ -158,6 +160,18 @@ def strips():
     # Swallowed whole: the hunter sits 4 units left of the column, its prey to its right.
     save(grid([(tile(26, c, (300, 210), dx=0.5), "") for c in range(9)], 9, label_height=0),
          "strip-swallow.png")
+
+    form_strip()
+
+
+def form_strip():
+    """Parts changing kind: flagellum to tentacle, cilia band to fin, eye to lure, spines to shell
+    plates, from not at all (left) to almost all the way (right). Each column is a quarter of the
+    way further."""
+    rows = [29, 35, 32, 41]
+    tiles = [(tile(r, c, (300, 220)), f"{(c * 255 // 8) // 4 * 100 // 64}%")
+             for r in rows for c in (0, 2, 4, 6, 8)]
+    save(grid(tiles, 5), "strip-forms.png")
 
 
 def main():

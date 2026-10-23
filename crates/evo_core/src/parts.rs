@@ -1,12 +1,15 @@
 //! Body parts: the part catalog, decoding the P chromosome, and laying parts out on the body.
 //!
-//! A genome has eight part slots of three bytes each:
+//! A genome has eight part slots of four bytes each:
 //!
 //! - **kind**: low nibble = part type (0 = empty slot), high nibble = symmetry
 //!   (0 single, 1 mirrored pair, 2–5 radial ×3–×6).
 //! - **size**: 0–255; strength, length, and how elaborate the part looks.
 //! - **place**: high 3 bits = where (0–5 a body segment, 6 every segment, 7 on the tip of the
 //!   previous part), low 5 bits = angle around the attachment point (0 = forward, 16 = back).
+//! - **form**: high 2 bits = a path to a related kind (see [`PartKind::paths`]), low 6 bits =
+//!   how far along it the part has changed (0 = not at all, 63 = almost all the way). A part
+//!   partway along does some of both kinds' jobs and looks like a mix of the two.
 //!
 //! Layout happens in body-local units: 1.0 = the body's radius, x points forward.
 //! The simulation aggregates parts into traits once at birth; the renderer lays them out
@@ -148,6 +151,45 @@ impl PartKind {
         }
     }
 
+    /// The kinds this one can gradually turn into, picked by the form byte's path bits.
+    ///
+    /// Every link is listed once from each end, and unused paths lead nowhere, so a kind with
+    /// few relatives is as hard to leave as it is to reach: by drift alone, every kind would
+    /// end up as common as any other, however many ways lead to it.
+    pub fn paths(self) -> [Option<PartKind>; 4] {
+        use PartKind::*;
+        match self {
+            Flagellum => [Some(Tentacle), Some(Cilia), None, None],
+            Cilia => [Some(Flagellum), Some(Fin), None, None],
+            Tentacle => [Some(Flagellum), Some(Antenna), None, None],
+            Frond => [Some(Fin), None, None, None],
+            Fin => [Some(Frond), Some(Leg), Some(Cilia), Some(Fluke)],
+            Fluke => [Some(Fin), None, None, None],
+            Leg => [Some(Fin), Some(Holdfast), None, None],
+            Holdfast => [Some(Leg), None, None, None],
+            Stalk => [Some(Antenna), None, None, None],
+            Eye => [Some(Lure), Some(Antenna), None, None],
+            Antenna => [Some(Tentacle), Some(Stalk), Some(Eye), None],
+            Lure => [Some(Eye), None, None, None],
+            Spine => [Some(Jaw), Some(Shell), None, None],
+            Jaw => [Some(Spine), None, None, None],
+            Shell => [Some(Spine), None, None, None],
+        }
+    }
+
+    /// Where path `path` (0–3) leads, if anywhere.
+    pub fn path(self, path: u8) -> Option<PartKind> {
+        self.paths()[(path & 3) as usize]
+    }
+
+    /// The path from this kind to `other`, if they're related.
+    pub fn path_to(self, other: PartKind) -> Option<u8> {
+        self.paths()
+            .iter()
+            .position(|&k| k == Some(other))
+            .map(|p| p as u8)
+    }
+
     /// Drawn on top of the body (the rest are drawn behind it).
     pub fn in_front(self) -> bool {
         matches!(self, PartKind::Eye | PartKind::Jaw | PartKind::Shell)
@@ -200,9 +242,32 @@ pub struct Part {
     pub anchor: Anchor,
     /// Radians, body-local (0 = forward, π = back).
     pub angle: f32,
+    /// Partway to a related kind: that kind, and how far (0..1).
+    pub toward: Option<(PartKind, f32)>,
+}
+
+/// Each kind a part is made of, with its share (they add up to 1).
+fn shares_of(kind: PartKind, toward: Option<(PartKind, f32)>) -> [(PartKind, f32); 2] {
+    match toward {
+        Some((other, t)) => [(kind, 1.0 - t), (other, t)],
+        None => [(kind, 1.0), (kind, 0.0)],
+    }
 }
 
 impl Part {
+    /// The kind it's closer to: its own until it's more than halfway to the other.
+    pub fn main_kind(&self) -> PartKind {
+        match self.toward {
+            Some((other, t)) if t > 0.5 => other,
+            _ => self.kind,
+        }
+    }
+
+    /// Each kind it's made of, with its share.
+    pub fn shares(&self) -> [(PartKind, f32); 2] {
+        shares_of(self.kind, self.toward)
+    }
+
     pub fn symmetry_label(&self) -> &'static str {
         match self.count {
             1 => "single",
@@ -215,10 +280,25 @@ impl Part {
     }
 }
 
+/// Bytes per part slot: kind, size, place, form.
+pub const SLOT_BYTES: usize = 4;
+/// Steps of the form byte's "how far" (the part becomes the other kind at the last).
+pub const FORM_STEPS: u8 = 64;
+
 /// Byte offset of slot `k`'s kind byte.
 #[inline]
 pub fn slot_offset(k: usize) -> usize {
-    gene::PARTS + 3 * k
+    gene::PARTS + SLOT_BYTES * k
+}
+
+/// The related kind a part of `kind` is partway to, and how far (0..1), from its form byte.
+pub fn decode_form(kind: PartKind, form: u8) -> Option<(PartKind, f32)> {
+    let amount = form % FORM_STEPS;
+    if amount == 0 {
+        return None;
+    }
+    kind.path(form >> 6)
+        .map(|other| (other, amount as f32 / FORM_STEPS as f32))
 }
 
 pub fn symmetry_count(kind_byte: u8) -> u8 {
@@ -252,6 +332,7 @@ pub fn decode_parts(genome: &Genome) -> Vec<Part> {
             size: genome.0[o + 1] as f32 / 255.0,
             anchor,
             angle,
+            toward: decode_form(kind, genome.0[o + 3]),
         });
     }
     parts
@@ -367,6 +448,8 @@ impl BodyShape {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Instance {
     pub kind: PartKind,
+    /// Partway to a related kind: that kind, and how far (0..1).
+    pub toward: Option<(PartKind, f32)>,
     pub slot: usize,
     pub size: f32,
     /// Attachment point and direction (body-local).
@@ -378,7 +461,7 @@ pub struct Instance {
     pub mirror: f32,
     /// Index among the copies of this part (animation phase).
     pub index: u8,
-    /// Kind of the part this one is attached to, if any.
+    /// Kind of the part this one is attached to, if any (the kind it's closer to).
     pub parent: Option<PartKind>,
     /// Index (in the laid-out instances) of the part this one is attached to, if any: it sits
     /// on that part's tip and moves with it.
@@ -388,6 +471,28 @@ pub struct Instance {
 impl Instance {
     pub fn tip(&self) -> Vec2 {
         self.base + Vec2::from_angle(self.dir) * self.length
+    }
+
+    /// The kind it's closer to: its own until it's more than halfway to the other.
+    pub fn main_kind(&self) -> PartKind {
+        match self.toward {
+            Some((other, t)) if t > 0.5 => other,
+            _ => self.kind,
+        }
+    }
+
+    /// Each kind it's made of, with its share.
+    pub fn shares(&self) -> [(PartKind, f32); 2] {
+        shares_of(self.kind, self.toward)
+    }
+
+    /// How much of it is `kind` (0..1).
+    pub fn share(&self, kind: PartKind) -> f32 {
+        self.shares()
+            .iter()
+            .filter(|s| s.0 == kind)
+            .map(|s| s.1)
+            .sum()
     }
 }
 
@@ -416,9 +521,17 @@ pub fn layout(parts: &[Part], body: &BodyShape, out: &mut Vec<Instance>) {
     out.clear();
     let mut previous: Option<(usize, usize)> = None; // range of the previous part's instances
     for part in parts {
-        let spec = part.kind.spec();
-        let length = lerp(spec.length, part.size);
-        let width = lerp(spec.width, part.size);
+        // A part between two kinds takes its shape from both.
+        let (mut length, mut width, mut sink) = (0.0, 0.0, 0.0);
+        for (kind, share) in part.shares() {
+            let spec = kind.spec();
+            length += share * lerp(spec.length, part.size);
+            width += share * lerp(spec.width, part.size);
+            // Eyes and shell plates sit on the surface; everything else grows outward.
+            if matches!(kind, PartKind::Eye | PartKind::Shell) {
+                sink += share * 0.35;
+            }
+        }
         let start = out.len();
         let push = |out: &mut Vec<Instance>,
                     base: Vec2,
@@ -427,13 +540,10 @@ pub fn layout(parts: &[Part], body: &BodyShape, out: &mut Vec<Instance>) {
                     index: u8,
                     parent: Option<usize>| {
             if out.len() < MAX_INSTANCES {
-                // Eyes and shell plates sit on the surface; everything else grows outward.
-                let base = match part.kind {
-                    PartKind::Eye | PartKind::Shell => base - Vec2::from_angle(dir) * length * 0.35,
-                    _ => base,
-                };
+                let base = base - Vec2::from_angle(dir) * length * sink;
                 out.push(Instance {
                     kind: part.kind,
+                    toward: part.toward,
                     slot: part.slot,
                     size: part.size,
                     base,
@@ -442,7 +552,7 @@ pub fn layout(parts: &[Part], body: &BodyShape, out: &mut Vec<Instance>) {
                     width,
                     mirror,
                     index,
-                    parent: parent.map(|p| out[p].kind),
+                    parent: parent.map(|p| out[p].main_kind()),
                     attached_to: parent,
                 });
             }
@@ -491,13 +601,27 @@ pub fn layout(parts: &[Part], body: &BodyShape, out: &mut Vec<Instance>) {
 
 /// Plain-English description of one part (for the inspector).
 pub fn describe(part: &Part, body: &BodyShape) -> String {
-    let what = if part.count == 1 {
-        format!("a {}", part.kind.name())
+    let a = |name: &str| {
+        let vowel = name.starts_with(['a', 'e', 'i', 'o', 'u']);
+        format!("{} {name}", if vowel { "an" } else { "a" })
+    };
+    let name = |k: PartKind| {
+        if part.count == 1 {
+            a(k.name())
+        } else {
+            k.plural().to_string()
+        }
+    };
+    let mut what = if part.count == 1 {
+        a(part.kind.name())
     } else if part.count == 2 {
         format!("a pair of {}", part.kind.plural())
     } else {
         format!("a ring of {} {}", part.count, part.kind.plural())
     };
+    if let Some((other, t)) = part.toward {
+        what += &format!(" {:.0}% of the way to {}", t * 100.0, name(other));
+    }
     let deg = part.angle.to_degrees().round() as i32;
     let facing = match deg {
         0..=20 | 340..=360 => "facing forward".to_string(),
@@ -530,6 +654,49 @@ mod tests {
             g.0[o + 2] = place;
         }
         g
+    }
+
+    #[test]
+    fn paths_lead_both_ways_once() {
+        for kind in PartKind::ALL {
+            let paths = kind.paths();
+            for (p, other) in paths.iter().enumerate() {
+                let Some(other) = *other else { continue };
+                assert_ne!(other, kind);
+                assert_eq!(
+                    paths.iter().filter(|&&k| k == Some(other)).count(),
+                    1,
+                    "{kind:?} lists {other:?} once"
+                );
+                assert!(other.path_to(kind).is_some(), "{other:?} leads back to {kind:?}");
+                assert_eq!(kind.path(p as u8), Some(other));
+            }
+            assert!(paths.iter().any(|k| k.is_some()), "{kind:?} leads somewhere");
+        }
+    }
+
+    #[test]
+    fn forms_blend_two_kinds() {
+        let mut g = genome_with(&[(PartKind::Flagellum.code(), 0x80, 16)]);
+        let o = slot_offset(0);
+        assert_eq!(decode_parts(&g)[0].toward, None);
+        // Path 0 of a flagellum leads to the tentacle; 16 of 64 steps is a quarter of the way.
+        g.0[o + 3] = 16;
+        let p = decode_parts(&g)[0];
+        assert_eq!(p.toward, Some((PartKind::Tentacle, 0.25)));
+        assert_eq!(p.main_kind(), PartKind::Flagellum);
+        g.0[o + 3] = 40;
+        assert_eq!(decode_parts(&g)[0].main_kind(), PartKind::Tentacle);
+        // Its shape is between the two.
+        let body = BodyShape::from_genome(&g);
+        let mut out = Vec::new();
+        layout(&decode_parts(&g), &body, &mut out);
+        let len = |k: PartKind| lerp(k.spec().length, 128.0 / 255.0);
+        assert!(out[0].length > len(PartKind::Flagellum) && out[0].length < len(PartKind::Tentacle));
+        assert!((out[0].share(PartKind::Tentacle) - 40.0 / 64.0).abs() < 1e-6);
+        // A path that leads nowhere is just the part itself.
+        g.0[o + 3] = 3 << 6 | 40;
+        assert_eq!(decode_parts(&g)[0].toward, None);
     }
 
     #[test]

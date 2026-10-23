@@ -102,6 +102,7 @@ lure_radius = 160.0          # glow radius of a full lure
 contact_margin = 2.0         # distance from rock that still counts as touching
 shell_insulation = 1.0       # each full-size shell plate widens the tolerated temperatures by +-1 C
 base_sense = 4.0             # everyone senses everything this far around (body radii): light, water, bodies, carcasses
+form_penalty = 0.15          # a part halfway between two kinds does each job this much worse
 
 # Running cost of each capability at full strength, as a fraction of basal metabolism.
 [upkeep]
@@ -230,7 +231,9 @@ cooldown = 2.0
 rate = 0.03              # chance per gene per offspring
 reroll = 0.05            # fraction of mutations that re-roll the gene
 step_scale = 2.0         # multiplier on mutation step sizes (±1, 2, 4, 8)
-part_type_rate_multiplier = 0.3  # part types change less often (type shifts are big steps)
+part_type_rate_multiplier = 0.15  # part symmetry changes less often (a big step)
+form_rate_multiplier = 2.0  # part forms change more often, so parts can turn into related kinds
+form_step = 8.0          # average step of a part-form mutation, in 64ths of the way
 color_rate_multiplier = 3.0  # color genes mutate faster, so lineages visibly diverge
 part_duplicate = 0.003   # chance per offspring that a part is copied into an empty slot
 part_delete = 0.004      # chance per offspring that a part is lost
@@ -250,7 +253,7 @@ established = 20         # members needed before a species is named and listed
 
 [population]
 # The ancestor: a tiny, floating, green photosynthesizer with no parts, so it can't move.
-ancestor = "B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 N:80808080808080808000 P:000000 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:80A0"
+ancestor = "B:20A050200000 C:55C000 D:FF000000 G:E0FF80000000 H:2030 N:80808080808080808000 P:00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 R:FF00B0 T:80A0"
 initial = 2000
 spawn_min_depth = 0.0    # life starts between these depths...
 spawn_depth = 300.0
@@ -258,7 +261,7 @@ spawn_x = [0.0, 1.0]     # ...across this part of the ocean's width (0 = left ed
 max_population = 250000  # safety cap on births
 # Optional second founding lineage at the vents, in chromosome notation (empty = none, so
 # life has to find its own way down). Example: an anchored, fermenting vent chemosynthesizer:
-# "B:207060300000 C:10C040 D:00FF0000 G:400080000000 H:2030 N:80808080808080808000 P:086010 000000 000000 000000 000000 000000 000000 000000 R:FF00B0 T:FFFF"
+# "B:207060300000 C:10C040 D:00FF0000 G:400080000000 H:2030 N:80808080808080808000 P:08601000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 R:FF00B0 T:FFFF"
 vent_ancestor = ""
 vent_initial = 40        # around each vent at the start (if there is a vent ancestor)
 

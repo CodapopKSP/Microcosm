@@ -758,8 +758,17 @@ fn smooth(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Extra room around a part (in part lengths) for its bending animation.
-fn part_margin(kind: PartKind) -> f32 {
+/// Extra room around a part (in part lengths) for its bending animation (for one between two
+/// kinds, the more of the two).
+fn part_margin(inst: &Instance) -> f32 {
+    inst.shares()
+        .iter()
+        .filter(|s| s.1 > 0.0)
+        .map(|s| kind_margin(s.0))
+        .fold(0.0, f32::max)
+}
+
+fn kind_margin(kind: PartKind) -> f32 {
     match kind {
         PartKind::Flagellum => 0.2,
         PartKind::Cilia => 0.25,
@@ -885,7 +894,26 @@ struct PartOwner {
     holds: Vec<(usize, glam::Vec2, f32, f32)>,
 }
 
-/// Where a part's midline sits across it, at `a` along it (0 base, 1 tip): in part lengths,
+/// Where a part's midline sits across it, at `a` along it: each of its kinds' sway, by its
+/// share (as the shader blends them).
+#[allow(clippy::too_many_arguments)]
+fn part_midline(
+    inst: &Instance,
+    a: f32,
+    time: f32,
+    phase: f32,
+    activity: f32,
+    grip: f32,
+    arch: f32,
+) -> f32 {
+    inst.shares()
+        .iter()
+        .filter(|s| s.1 > 0.0)
+        .map(|&(kind, share)| share * midline(kind, a, time, phase, activity, grip, arch))
+        .sum()
+}
+
+/// Where a kind's midline sits across it, at `a` along it (0 base, 1 tip): in part lengths,
 /// in the part's mirrored frame. The same sway as in `organism.wgsl` (keep them in step), so
 /// parts attached to a tip can follow it. Flagella are left out: parts on a flagellum stay on
 /// its resting tip rather than whipping about with it.
@@ -981,7 +1009,7 @@ fn push_parts(
         let mut chord = length;
         let mut bend = 0.0;
         let mut grip = 0.0;
-        if inst.kind == PartKind::Tentacle
+        if inst.share(PartKind::Tentacle) > 0.0
             && let Some(&(_, target, target_r, g)) = owner.holds.iter().find(|h| h.0 == index)
         {
             let to = target - base;
@@ -1007,7 +1035,7 @@ fn push_parts(
         let phase = part_seed * 40.0 + inst.index.min(100) as f32 * 1.9;
         let arch = unorm(0.5 + 0.5 * bend * m / 0.75) as f32 / 255.0 * 1.5 - 0.75;
         let grip_q = unorm(grip) as f32 / 255.0;
-        let y = |a: f32| midline(inst.kind, a, time, phase, activity, grip_q, arch);
+        let y = |a: f32| part_midline(inst, a, time, phase, activity, grip_q, arch);
         let (end, slope) = (y(1.0), (y(1.0) - y(0.98)) / 0.02);
         let axis = glam::Vec2::from_angle(angle);
         let side = glam::Vec2::new(-axis.y, axis.x);
@@ -1023,7 +1051,7 @@ fn push_parts(
     }
 
     for (inst, p) in instances.iter().zip(&placed) {
-        if inst.kind.in_front() != front {
+        if inst.main_kind().in_front() != front {
             continue;
         }
         let length = inst.length * owner.radius * owner.grow;
@@ -1034,19 +1062,23 @@ fn push_parts(
         let axis = glam::Vec2::from_angle(p.angle);
         let center = p.base + axis * (chord * 0.5);
         let half_width = inst.width * owner.radius * owner.grow / chord * 0.5;
-        let margin = part_margin(inst.kind) + 2.0 * px / chord;
+        let margin = part_margin(inst) + 2.0 * px / chord;
         let hx = 0.5 + margin.min(0.3);
         let hy = half_width + margin + bend.abs();
         let mut quad = owner.quad;
         quad.shape = [hx, hy, half_width, chord / px];
-        if inst.kind == PartKind::Tentacle {
+        if inst.share(PartKind::Tentacle) > 0.0 {
             // In the part's mirrored frame, as the shader draws it.
             quad.chem[2] = unorm(p.grip);
             quad.chem[3] = unorm(0.5 + 0.5 * bend * inst.mirror.signum() / 0.75);
         }
         let mirror = if inst.mirror < 0.0 { 1u8 } else { 0 };
+        // Partway to another kind: that kind in the high nibble, how far in the wound slot
+        // (which parts don't otherwise use).
+        let (toward, amount) = inst.toward.map_or((0, 0.0), |(k, t)| (k.code(), t));
+        quad.wound = [unorm(amount), 0, 0, 0];
         quad.body = [
-            inst.kind.code(),
+            inst.kind.code() | toward << 4,
             unorm(inst.size),
             mirror | inst.index.min(100) << 1,
             seed.wrapping_add((inst.slot as u8).wrapping_mul(37)),

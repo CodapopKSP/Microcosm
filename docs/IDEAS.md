@@ -326,49 +326,8 @@ decoded; comparing two is one integer comparison.
 
 ## 7. Gradual exaptation: parts that turn into other parts
 
-**The problem.** A body part's kind is 4 bits of its slot's type byte. When that byte mutates,
-the part jumps straight to a neighbouring kind in the catalog (fin ↔ frond or tail fluke,
-spine ↔ jaw, eye ↔ antenna). There are no in-between forms, so a new organ appears all at once, usually
-useless at first, and is usually lost again. Real exaptation is gradual: a structure doing
-one job slowly reshapes into something that does another, and every step on the way works a
-little.
-
-**The idea: a "form" byte per part.** Each part slot gets a fourth byte, so the P chromosome
-grows from 8 × 3 to 8 × 4 bytes. It says how far the part has changed toward a related kind:
-
-- **Paths between kinds** (a small graph, each kind with one to three neighbours), for
-  example:
-  - flagellum ↔ tentacle (a whip thickens into a muscular arm);
-  - tentacle ↔ antenna (an arm thins into a feeler);
-  - frond ↔ fin (a light-catching blade stiffens into a paddle);
-  - fin ↔ leg (a paddle gains joints);
-  - leg ↔ holdfast;
-  - spine ↔ jaw;
-  - spine ↔ shell plate;
-  - stalk ↔ antenna;
-  - eye ↔ lure (a light-sensing spot becomes a light-making one);
-  - cilia band ↔ fin.
-- **The byte:** 2 bits pick which neighbour it's heading toward, and 6 bits say how far along,
-  from 0 (fully the part's own kind) to 63 (fully the neighbour). Mutation nudges the amount
-  a step at a time. When it runs past the end, the part becomes the neighbour kind and the
-  amount starts again from 0, so a lineage can walk from flagellum to tentacle over many
-  generations.
-- **Function blends.** A part partway along does both jobs, weighted by how far it has gone:
-  a half-flagellum, half-tentacle gives half the thrust and half the grasp. A small penalty
-  for being in between (say 10–20% of both) keeps pure forms worth having without making the
-  path a dead end. Mass, upkeep and drag blend the same way.
-- **Art blends.** The part shader already draws each kind from a few parameters. A blended
-  part draws its two kinds' shapes and colours mixed by the amount, so viewers can watch a
-  flagellum thicken and grow suckers over hours.
-
-**Watch out for:**
-
-- **Genome distance:** the form byte counts like any other gene, so gradual change splits
-  species gradually. With [§6](#6-species-split-on-new-abilities-and-new-kinds-of-body-part),
-  a part counts as its new kind once it's more than halfway along.
-- **The old jump mutation:** keep a small chance of it, or remove it. Removing it makes every
-  new kind of part come from a path, which is slower but more believable.
-- **The genome grows** by 8 bytes, which needs a version bump (see the cross-cutting notes).
+Built: each part slot has a form byte, and parts walk along paths between related kinds,
+working a little at every step. See [DESIGN.md](DESIGN.md) §3, "Parts change gradually".
 
 ---
 
@@ -683,9 +642,7 @@ changes.
 The species rework (§6) is small and independent of everything else, so it can be done at any
 time. It's also worth doing early, because it makes the results of balancing easier to read.
 Body shapes (§8) are visual only and independent too. Small offspring (§10) is small and
-independent, but it changes the balance, so do it between tuning rounds, not during one. Gradual exaptation (§7) changes how
-body plans evolve, so do it after the current balance is settled, and with §6, since the two
-decide together when a changing part makes a new species.
+independent, but it changes the balance, so do it between tuning rounds, not during one.
 
 1. **State-dependent behaviour (§4).** Smallest and most self-contained, and it makes the
    others richer (breeding aggregations, daily migration, stage-specific behaviour).

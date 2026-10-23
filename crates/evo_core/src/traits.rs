@@ -328,85 +328,93 @@ fn sum_parts(instances: &[Instance], radius: f32, config: &Config) -> PartSums {
     let large = large_swimmer(radius, pc.large_swimmer_radius);
     let mut p = PartSums::default();
     for (index, inst) in instances.iter().enumerate() {
-        let s = inst.size;
-        let spec = inst.kind.spec();
+        let size = inst.size;
         // Even a tiny part weighs and costs something.
-        let bulk = 0.2 + 0.8 * s;
-        p.mass += spec.mass * bulk;
-        p.upkeep += spec.upkeep * bulk;
-        p.drag += spec.drag * bulk;
+        let bulk = 0.2 + 0.8 * size;
         let cos = inst.dir.cos();
-        let raised = if inst.parent == Some(PartKind::Stalk) {
-            pc.stalk_bonus
-        } else {
-            1.0
+        let raised = match inst.attached_to {
+            Some(at) => 1.0 + (pc.stalk_bonus - 1.0) * instances[at].share(PartKind::Stalk),
+            None => 1.0,
         };
-        match inst.kind {
-            PartKind::Flagellum => {
-                // A whip pushes the body away from the side it's on.
-                add_thrust(&mut p.thrust, inst.dir, 1.0 * s * small, pushing);
-                p.turning += 0.3 * s;
+        // A part between two kinds does some of each one's job (by its share of each), and
+        // a little worse than that, most of all halfway.
+        let between = inst.toward.map_or(0.0, |(_, t)| 4.0 * t * (1.0 - t));
+        let knack = 1.0 - pc.form_penalty * between;
+        match inst.main_kind() {
+            PartKind::Eye => p.eye_count = p.eye_count.saturating_add(1),
+            PartKind::Antenna => p.antenna_count = p.antenna_count.saturating_add(1),
+            _ => {}
+        }
+        for (kind, share) in inst.shares() {
+            if share <= 0.0 {
+                continue;
             }
-            PartKind::Cilia => {
-                add_thrust(&mut p.thrust, inst.dir, 0.35 * s * small, across);
-                p.turning += 0.4 * s;
-                p.filter += 0.6 * s;
-            }
-            PartKind::Tentacle => {
-                add_thrust(&mut p.thrust, inst.dir, 0.1 * s, along);
-                p.turning += 0.1 * s;
-                p.grip += 0.1 * s;
-                p.filter += 0.15 * s;
-                // It bends, so it can grasp anything within its length of its base.
-                p.grasps.push(Zone {
-                    x: inst.base.x,
-                    y: inst.base.y,
-                    radius: inst.length * pc.tentacle_reach,
-                    strength: saturating(1.5 * s),
-                    part: index.min(255) as u8,
-                });
-            }
-            PartKind::Frond => p.fronds += inst.length * raised,
-            PartKind::Fin => {
-                add_thrust(&mut p.thrust, inst.dir, 0.5 * s * large, across);
-                p.turning += 0.6 * s;
-            }
-            PartKind::Fluke => {
-                add_thrust(&mut p.thrust, inst.dir, 1.4 * s * large, pushing);
-                p.turning += 0.2 * s;
-            }
-            PartKind::Leg => {
-                // Jointed legs walk on rock and row through open water (like a copepod's).
-                add_thrust(&mut p.crawl, inst.dir, 0.8 * s, across);
-                add_thrust(&mut p.thrust, inst.dir, 0.3 * s, across);
-                p.turning += 0.15 * s;
-                p.walk_turning += 0.5 * s;
-                p.grip += 0.35 * s;
-            }
-            PartKind::Holdfast => p.holdfast += s,
-            PartKind::Stalk => {}
-            // Eyes and antennae work the same: each widens the sense all round.
-            PartKind::Eye => {
-                p.senses += s * raised;
-                p.eye_count = p.eye_count.saturating_add(1);
-            }
-            PartKind::Antenna => {
-                p.senses += s * raised;
-                p.antenna_count = p.antenna_count.saturating_add(1);
-            }
-            PartKind::Lure => p.lure += s * raised,
-            PartKind::Spine => {
-                for (k, v) in p.spines.iter_mut().enumerate() {
-                    *v += side_weight(inst.dir, k) * s;
+            let spec = kind.spec();
+            p.mass += share * spec.mass * bulk;
+            p.upkeep += share * spec.upkeep * bulk;
+            p.drag += share * spec.drag * bulk;
+            let s = size * share * knack;
+            match kind {
+                PartKind::Flagellum => {
+                    // A whip pushes the body away from the side it's on.
+                    add_thrust(&mut p.thrust, inst.dir, 1.0 * s * small, pushing);
+                    p.turning += 0.3 * s;
                 }
-            }
-            PartKind::Jaw => p.jaws += s * cos.max(0.15),
-            PartKind::Shell => {
-                for (k, v) in p.shell.iter_mut().enumerate() {
-                    *v += side_weight(inst.dir, k) * (0.4 + 0.6 * s);
+                PartKind::Cilia => {
+                    add_thrust(&mut p.thrust, inst.dir, 0.35 * s * small, across);
+                    p.turning += 0.4 * s;
+                    p.filter += 0.6 * s;
                 }
-                // Each plate also insulates, widening the temperatures the body can stand.
-                p.insulation += pc.shell_insulation * (0.5 + 0.5 * s);
+                PartKind::Tentacle => {
+                    add_thrust(&mut p.thrust, inst.dir, 0.1 * s, along);
+                    p.turning += 0.1 * s;
+                    p.grip += 0.1 * s;
+                    p.filter += 0.15 * s;
+                    // It bends, so it can grasp anything within its length of its base.
+                    p.grasps.push(Zone {
+                        x: inst.base.x,
+                        y: inst.base.y,
+                        radius: inst.length * pc.tentacle_reach,
+                        strength: saturating(1.5 * s),
+                        part: index.min(255) as u8,
+                    });
+                }
+                PartKind::Frond => p.fronds += inst.length * share * knack * raised,
+                PartKind::Fin => {
+                    add_thrust(&mut p.thrust, inst.dir, 0.5 * s * large, across);
+                    p.turning += 0.6 * s;
+                }
+                PartKind::Fluke => {
+                    add_thrust(&mut p.thrust, inst.dir, 1.4 * s * large, pushing);
+                    p.turning += 0.2 * s;
+                }
+                PartKind::Leg => {
+                    // Jointed legs walk on rock and row through open water (like a copepod's).
+                    add_thrust(&mut p.crawl, inst.dir, 0.8 * s, across);
+                    add_thrust(&mut p.thrust, inst.dir, 0.3 * s, across);
+                    p.turning += 0.15 * s;
+                    p.walk_turning += 0.5 * s;
+                    p.grip += 0.35 * s;
+                }
+                PartKind::Holdfast => p.holdfast += s,
+                PartKind::Stalk => {}
+                // Eyes and antennae work the same: each widens the sense all round.
+                PartKind::Eye | PartKind::Antenna => p.senses += s * raised,
+                PartKind::Lure => p.lure += s * raised,
+                PartKind::Spine => {
+                    for (k, v) in p.spines.iter_mut().enumerate() {
+                        *v += side_weight(inst.dir, k) * s;
+                    }
+                }
+                PartKind::Jaw => p.jaws += s * cos.max(0.15),
+                PartKind::Shell => {
+                    let w = share * knack;
+                    for (k, v) in p.shell.iter_mut().enumerate() {
+                        *v += side_weight(inst.dir, k) * (0.4 + 0.6 * size) * w;
+                    }
+                    // Each plate also insulates, widening the temperatures the body can stand.
+                    p.insulation += pc.shell_insulation * (0.5 + 0.5 * size) * w;
+                }
             }
         }
     }
@@ -696,7 +704,7 @@ pub fn describe_gene(index: usize, genome: &Genome, traits: &Traits, config: &Co
             format!("away {:+.0}%", x * 100.0)
         }
     };
-    if (gene::PARTS..gene::PARTS + 3 * parts::SLOTS).contains(&index) {
+    if (gene::PARTS..gene::PARTS + parts::SLOT_BYTES * parts::SLOTS).contains(&index) {
         return describe_part_gene(index, genome);
     }
     match index {
@@ -789,7 +797,7 @@ pub fn describe_gene(index: usize, genome: &Genome, traits: &Traits, config: &Co
 
 /// Meaning of one byte of a part slot.
 fn describe_part_gene(index: usize, genome: &Genome) -> String {
-    let slot = (index - gene::PARTS) / 3;
+    let slot = (index - gene::PARTS) / parts::SLOT_BYTES;
     let o = parts::slot_offset(slot);
     let kind_byte = genome.get(o);
     let Some(kind) = PartKind::from_code(kind_byte) else {
@@ -806,6 +814,13 @@ fn describe_part_gene(index: usize, genome: &Genome) -> String {
             n => format!("ring of {n} {}", kind.plural()),
         },
         1 => format!("size {:.0}%", genome.frac(index) * 100.0),
+        3 => match parts::decode_form(kind, genome.get(index)) {
+            Some((other, t)) => format!("{:.0}% of the way to {}", t * 100.0, other.name()),
+            None => match kind.path(genome.get(index) >> 6) {
+                Some(other) => format!("could turn into {}", other.name()),
+                None => format!("wholly {}", kind.name()),
+            },
+        },
         _ => {
             let (anchor, angle) = parts::decode_anchor(genome.get(index));
             let place = match anchor {
@@ -818,6 +833,32 @@ fn describe_part_gene(index: usize, genome: &Genome) -> String {
             format!("{place}, {deg:+}°")
         }
     }
+}
+
+/// Part slot `slot` in a few words, as "Pair of fins on segment 2", or `None` when it's empty.
+pub fn describe_slot(genome: &Genome, slot: usize) -> Option<String> {
+    let o = parts::slot_offset(slot);
+    let kind_byte = genome.get(o);
+    let kind = PartKind::from_code(kind_byte)?;
+    let what = match parts::symmetry_count(kind_byte) {
+        1 => {
+            let name = kind.name();
+            let mut c = name.chars();
+            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        }
+        2 => format!("Pair of {}", kind.plural()),
+        n => format!("Ring of {n} {}", kind.plural()),
+    };
+    let place = match parts::decode_anchor(genome.get(o + 2)).0 {
+        parts::Anchor::Segment(k) => format!("segment {}", k + 1),
+        parts::Anchor::EverySegment => "every segment".into(),
+        parts::Anchor::OnPrevious => "the previous part".into(),
+    };
+    let mut s = format!("{what} on {place}");
+    if let Some((other, t)) = parts::decode_form(kind, genome.get(o + 3)) {
+        s += &format!(", {:.0}% of the way to {}", t * 100.0, other.name());
+    }
+    Some(s)
 }
 
 fn pct_precise(x: f32) -> String {
@@ -1136,6 +1177,21 @@ mod tests {
         let (g, config) = with_part(PartKind::Shell, 5, 0xFF, 0);
         let t = Traits::decode(&g, &config);
         assert!(t.armor > 0.8 && t.buoyancy < 0.0);
+    }
+
+    #[test]
+    fn a_part_between_two_kinds_does_some_of_each_job() {
+        let (flagellum, config) = with_part(PartKind::Flagellum, 0, 0xC0, 16);
+        let (tentacle, _) = with_part(PartKind::Tentacle, 0, 0xC0, 16);
+        let mut half = flagellum;
+        half.0[parts::slot_offset(0) + 3] = 32; // path 0, halfway to a tentacle
+        let [f, h, t] = [flagellum, half, tentacle].map(|g| Traits::decode(&g, &config));
+        assert_eq!((f.grasp_count, h.grasp_count, t.grasp_count), (0, 1, 1));
+        let strength = |t: &Traits| t.grasps[0].strength;
+        assert!(strength(&h) > 0.0 && strength(&h) < strength(&t), "a weaker grip");
+        assert!(h.swim < f.swim && h.swim > t.swim, "some of the whip's thrust");
+        let tentacle_swim = Traits::decode(&tentacle, &config).swim;
+        assert!(h.swim < (f.swim + tentacle_swim) / 2.0, "a little worse than a mix");
     }
 
     #[test]

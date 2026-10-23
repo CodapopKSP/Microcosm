@@ -2693,7 +2693,7 @@ impl World {
             if o.traits.part_count > 0 {
                 let mut has = [false; 15];
                 for p in crate::parts::decode_parts(&o.genome) {
-                    has[p.kind as usize - 1] = true;
+                    has[p.main_kind() as usize - 1] = true;
                 }
                 for (n, h) in sample.part_carriers.iter_mut().zip(has) {
                     *n += h as u32;
@@ -2832,7 +2832,7 @@ mod tests {
         let mut c = small_config();
         c.population.vent_initial = 30;
         c.population.vent_ancestor = "B:207060300000 C:10C040 D:00FF0000 G:400080000000 H:2030 \
-            N:80808080808080808000 P:086010 000000 000000 000000 000000 000000 000000 000000 \
+            N:80808080808080808000 P:08601000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 \
             R:FF00B0 T:FFFF"
             .into();
         let world = World::new(c);

@@ -4,7 +4,7 @@ use glam::Vec2;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
-use crate::genome::Genome;
+use crate::genome::{GeneMask, Genome};
 use crate::rng::Rng;
 use crate::traits::Traits;
 
@@ -147,7 +147,8 @@ pub struct Organism {
     pub generation: u32,
     pub genome: Genome,
     /// Genes that differ from the parent's (bit i = gene i).
-    pub mutations: u64,
+    #[serde(with = "crate::genome::gene_mask_serde")]
+    pub mutations: GeneMask,
     /// Decoded from the genome; not saved (re-decoded on load).
     #[serde(skip)]
     pub traits: Traits,
@@ -229,7 +230,7 @@ impl Organism {
         species: u32,
         generation: u32,
         genome: Genome,
-        mutations: u64,
+        mutations: GeneMask,
         config: &Config,
         pos: Vec2,
         mass: f32,

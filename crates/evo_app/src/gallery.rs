@@ -26,6 +26,15 @@ fn set_part(g: &mut Genome, k: usize, kind: PartKind, sym: u8, size: u8, place: 
     g.0[o + 2] = place << 5 | angle;
 }
 
+/// Turn the part in slot `k` partway into `other` (a kind related to it): the swept value
+/// 0–255 runs from not at all to almost all the way.
+fn set_form(g: &mut Genome, k: usize, other: PartKind, v: u8) {
+    let o = slot_offset(k);
+    let kind = PartKind::from_code(g.0[o]).expect("a part to change");
+    let path = kind.path_to(other).expect("related kinds");
+    g.0[o + 3] = path << 6 | (v / 4);
+}
+
 pub fn rows() -> Vec<(&'static str, Setter)> {
     vec![
         ("Flagellum", |g, v| {
@@ -100,6 +109,71 @@ pub fn rows() -> Vec<(&'static str, Setter)> {
     ]
 }
 
+/// Rows below the animation rows: parts partway to a related kind, from not at all (left) to
+/// almost all the way (right). (After the others, so the manual's crops keep their rows.)
+pub fn form_rows() -> Vec<(&'static str, Setter)> {
+    vec![
+        ("Flagellum → tentacle", |g, v| {
+            set_part(g, 0, PartKind::Flagellum, 0, 0xC0, 0, 16);
+            set_form(g, 0, PartKind::Tentacle, v);
+        }),
+        ("Frond → fin", |g, v| {
+            set_part(g, 0, PartKind::Frond, 1, 0xA0, 0, 9);
+            set_form(g, 0, PartKind::Fin, v);
+        }),
+        ("Fin → leg", |g, v| {
+            set_part(g, 0, PartKind::Fin, 1, 0xA0, 0, 10);
+            set_form(g, 0, PartKind::Leg, v);
+        }),
+        ("Eye → lure", |g, v| {
+            set_part(g, 0, PartKind::Eye, 0, 0xC0, 0, 3);
+            set_form(g, 0, PartKind::Lure, v);
+        }),
+        ("Spine → jaw", |g, v| {
+            g.0[gene::HUNT] = 0xC0;
+            g.0[gene::PHOTO] = 0x20;
+            set_part(g, 0, PartKind::Spine, 1, 0xC0, 0, 2);
+            set_form(g, 0, PartKind::Jaw, v);
+        }),
+        ("Flagellum → cilia band", |g, v| {
+            set_part(g, 0, PartKind::Flagellum, 0, 0xC0, 0, 16);
+            set_form(g, 0, PartKind::Cilia, v);
+        }),
+        ("Cilia band → fin", |g, v| {
+            set_part(g, 0, PartKind::Cilia, 1, 0xC0, 0, 8);
+            set_form(g, 0, PartKind::Fin, v);
+        }),
+        ("Fin → tail fluke", |g, v| {
+            g.0[gene::ELONGATION] = 0x60;
+            set_part(g, 0, PartKind::Fin, 0, 0xC0, 0, 16);
+            set_form(g, 0, PartKind::Fluke, v);
+        }),
+        ("Leg → holdfast", |g, v| {
+            set_part(g, 0, PartKind::Leg, 1, 0xC0, 0, 12);
+            set_form(g, 0, PartKind::Holdfast, v);
+        }),
+        ("Tentacle → antenna", |g, v| {
+            set_part(g, 0, PartKind::Tentacle, 1, 0xC0, 0, 2);
+            set_form(g, 0, PartKind::Antenna, v);
+        }),
+        ("Stalk → antenna", |g, v| {
+            set_part(g, 0, PartKind::Stalk, 1, 0xC0, 0, 3);
+            set_form(g, 0, PartKind::Antenna, v);
+        }),
+        ("Eye → antenna", |g, v| {
+            set_part(g, 0, PartKind::Eye, 1, 0xC0, 0, 3);
+            set_form(g, 0, PartKind::Antenna, v);
+        }),
+        ("Spine → shell plate", |g, v| {
+            set_part(g, 0, PartKind::Spine, 4, 0xC0, 0, 0);
+            set_form(g, 0, PartKind::Shell, v);
+        }),
+    ]
+}
+
+/// Rows of animations between the gene rows and the form rows.
+const ANIMATION_ROWS: usize = 6;
+
 pub fn build() -> World {
     let mut config = Config::default();
     config.population.initial = 0;
@@ -109,7 +183,12 @@ pub fn build() -> World {
     let h = config.world.height;
     let base = world.ancestor;
     let mut id = 1_000_000;
-    for (row, (_, set)) in rows().into_iter().enumerate() {
+    let genes = rows().len();
+    let form_rows = form_rows()
+        .into_iter()
+        .enumerate()
+        .map(|(k, r)| (genes + ANIMATION_ROWS + k, r));
+    for (row, (_, set)) in rows().into_iter().enumerate().chain(form_rows) {
         for col in 0..COLUMNS {
             let value = ((col * 255) / (COLUMNS - 1)) as u8;
             let mut genome = base;
@@ -138,7 +217,7 @@ pub fn build() -> World {
             id += 1;
         }
     }
-    animation_rows(&mut world, rows().len(), &mut id);
+    animation_rows(&mut world, genes, &mut id);
     world
 }
 
@@ -396,7 +475,7 @@ fn animation_rows(world: &mut World, first_row: usize, id: &mut u64) {
 
 /// The gallery's view centre depends on the world height, so compute it at runtime.
 pub fn view_for(config: &Config) -> (f32, f32, f32) {
-    let rows = rows().len() as f32 + 6.0;
+    let rows = (rows().len() + ANIMATION_ROWS + form_rows().len()) as f32;
     (
         VIEW.0,
         config.world.height - TOP - (rows - 1.0) * SPACING * 0.5,
